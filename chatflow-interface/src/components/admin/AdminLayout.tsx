@@ -61,16 +61,16 @@ export function AdminLayout({
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[oklch(0.13_0.012_260)]">
+    <div className="flex h-screen w-screen overflow-hidden bg-background">
       {/* ── Sidebar ─────────────────────────────────── */}
       <aside
-        className={`flex flex-col border-r border-border/50 bg-[oklch(0.11_0.012_260)] transition-all duration-300 ${
+        className={`flex flex-col border-r border-border/50 bg-background transition-all duration-300 ${
           collapsed ? "w-16" : "w-60"
         }`}
       >
         {/* Brand */}
         <div className="flex items-center gap-2.5 border-b border-border/40 px-4 py-4">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white text-xs font-bold shadow-lg shadow-violet-500/25">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-fuchsia-500 text-white text-xs font-bold shadow-lg shadow-primary/25">
             CF
           </div>
           {!collapsed && (
@@ -89,11 +89,11 @@ export function AdminLayout({
               onClick={() => onTabChange(item.id)}
               className={`group flex w-full items-center gap-2.5 px-4 py-2 text-sm transition-all duration-150 ${
                 activeTab === item.id
-                  ? "bg-gradient-to-r from-violet-500/15 to-fuchsia-500/10 text-violet-300 border-l-2 border-violet-400"
+                  ? "bg-gradient-to-r from-primary/15 to-fuchsia-500/10 text-primary border-l-2 border-primary"
                   : "text-muted-foreground hover:bg-accent/60 hover:text-foreground border-l-2 border-transparent"
               }`}
             >
-              <span className={`shrink-0 ${activeTab === item.id ? "text-violet-400" : "text-muted-foreground group-hover:text-foreground"}`}>
+              <span className={`shrink-0 ${activeTab === item.id ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}>
                 {item.icon}
               </span>
               {!collapsed && <span className="truncate">{item.label}</span>}
@@ -113,7 +113,7 @@ export function AdminLayout({
       {/* ── Main Content ────────────────────────────── */}
       <main className="flex flex-1 flex-col min-w-0 overflow-hidden">
         {/* Top bar */}
-        <header className="flex items-center justify-between border-b border-border/40 bg-[oklch(0.14_0.012_260)] px-6 py-3">
+        <header className="flex items-center justify-between border-b border-border/40 bg-background px-6 py-3">
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-semibold tracking-tight text-foreground">
               {NAV_ITEMS.find((n) => n.id === activeTab)?.label ?? "Admin"}
@@ -134,7 +134,7 @@ export function AdminLayout({
             {onRefresh && (
               <button
                 onClick={onRefresh}
-                className="flex items-center gap-1.5 rounded-md bg-violet-500/15 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-violet-500/25 transition"
+                className="flex items-center gap-1.5 rounded-md bg-primary/15 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/25 transition"
               >
                 <RefreshCw className="h-3 w-3" />
                 Refresh

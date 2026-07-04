@@ -12,10 +12,10 @@ interface StatCardProps {
 
 const colorMap = {
   violet: {
-    bg: "from-violet-500/20 to-fuchsia-500/10",
-    icon: "bg-violet-500/20 text-violet-400",
-    text: "text-violet-300",
-    border: "border-violet-500/20",
+    bg: "from-primary/20 to-fuchsia-500/10",
+    icon: "bg-primary/20 text-primary",
+    text: "text-primary",
+    border: "border-primary/20",
   },
   green: {
     bg: "from-emerald-500/20 to-teal-500/10",

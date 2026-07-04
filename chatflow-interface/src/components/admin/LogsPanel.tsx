@@ -52,7 +52,7 @@ export function LogsPanel() {
               key={s}
               onClick={() => setService(s)}
               className={`rounded-lg px-3 py-1.5 text-xs font-medium transition capitalize ${
-                service === s ? "bg-violet-500/20 text-violet-300 border border-violet-500/40" : "bg-card/60 text-muted-foreground border border-border/40"
+                service === s ? "bg-primary/20 text-primary border border-primary/40" : "bg-card/60 text-muted-foreground border border-border/40"
               }`}
             >
               {s}
@@ -63,10 +63,10 @@ export function LogsPanel() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter…"
-          className="rounded-xl border border-border/50 bg-card/60 px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:border-violet-500/60 focus:outline-none w-40"
+          className="rounded-xl border border-border/50 bg-card/60 px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none w-40"
         />
         <label className="flex items-center gap-2 cursor-pointer" onClick={() => setAutoRefresh((v) => !v)}>
-          <div className={`relative h-5 w-9 rounded-full transition-colors ${autoRefresh ? "bg-violet-500" : "bg-zinc-700"}`}>
+          <div className={`relative h-5 w-9 rounded-full transition-colors ${autoRefresh ? "bg-primary" : "bg-zinc-700"}`}>
             <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${autoRefresh ? "translate-x-4" : "translate-x-0.5"}`} />
           </div>
           <span className="text-xs text-muted-foreground">Live</span>
@@ -74,7 +74,7 @@ export function LogsPanel() {
         <span className="ml-auto text-xs text-muted-foreground">{filtered.length} entries</span>
       </div>
 
-      <div className="flex-1 overflow-y-auto rounded-2xl border border-border/40 bg-[oklch(0.1_0.01_260)] p-4 font-mono text-xs scroll-thin">
+      <div className="flex-1 overflow-y-auto rounded-2xl border border-border/40 bg-background p-4 font-mono text-xs scroll-thin">
         {loading && !entries.length ? (
           <p className="text-muted-foreground">Loading…</p>
         ) : !filtered.length ? (

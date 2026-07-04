@@ -49,7 +49,7 @@ export function SessionIntelPanel() {
                 type="button"
                 onClick={() => setSelected(s.session_id)}
                 className={`flex w-full items-center gap-2 border-b border-border/20 px-4 py-2.5 text-left text-sm transition hover:bg-white/5 ${
-                  selected === s.session_id ? "bg-violet-500/10" : ""
+                  selected === s.session_id ? "bg-primary/10" : ""
                 }`}
               >
                 <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -68,7 +68,7 @@ export function SessionIntelPanel() {
         </div>
       </div>
 
-      <div className="flex flex-col rounded-2xl border border-border/40 bg-[oklch(0.1_0.015_260)]">
+      <div className="flex flex-col rounded-2xl border border-border/40 bg-background">
         <div className="flex items-center gap-2 border-b border-border/30 px-4 py-3 text-sm font-medium">
           <Clock className="h-4 w-4 text-cyan-400" />
           Timeline {selected ? `· ${selected.slice(0, 8)}…` : ""}
@@ -99,7 +99,7 @@ export function SessionIntelPanel() {
                         {ev.ts ? new Date(ev.ts as string).toLocaleTimeString() : ""}
                       </span>
                     </button>
-                    {ev.route ? <div className="mt-1 text-[10px] text-violet-300/80">{String(ev.route)}</div> : null}
+                    {ev.route ? <div className="mt-1 text-[10px] text-primary/80">{String(ev.route)}</div> : null}
                     {open ? (
                       <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-black/40 p-2 text-[10px] text-zinc-200">
                         {JSON.stringify(ev.payload ?? {}, null, 2)}

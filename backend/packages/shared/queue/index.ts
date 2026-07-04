@@ -56,7 +56,7 @@ const PRIORITY_MAP: Record<JobPriority, number> = {
 
 // ─── Enqueue Job ─────────────────────────────────────────────
 
-export async function enqueueJob(job: BaseJob): Promise<string> {
+export async function enqueueJob(job: import('../types/index.js').CrawlJob | import('../types/index.js').ExecuteJob | import('../types/index.js').RemapJob | import('../types/index.js').AIPlanJob | import('../types/index.js').BaseJob): Promise<string> {
   const queue = getQueue(job.type);
 
   const bullJob = await queue.add(job.type, job, {

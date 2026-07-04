@@ -8,6 +8,7 @@ import { getRedisClient } from '../shared/db/index.js';
 import { userFileStore } from './user-file-store.js';
 import { createLogger } from '../shared/logger/index.js';
 import { captchaService } from './captcha-service.js';
+import { cryptoService } from './crypto-service.js';
 const logger = createLogger('execution-engine');
 class JobCancelledError extends Error {
     constructor(jobId) {
@@ -691,6 +692,146 @@ const ACTION_HANDLERS = {
         });
     },
     // ── New Universal Actions ──────────────────────────────────
+    credentialFill: async (step, ctx) => {
+        const keyName = step.metadata?.keyName || step.id;
+        const pool = getPgPool();
+        const redis = await getRedisClient();
+        const res = await pool.query('SELECT encrypted_value FROM user_secrets WHERE user_id = $1 AND site_id = $2 AND key_name = $3', [ctx.userId, ctx.siteId, keyName]);
+        let plainText = '';
+        if (res.rows.length > 0) {
+            plainText = cryptoService.decrypt(res.rows[0].encrypted_value);
+        }
+        else {
+            await updateJobRuntimeState(ctx, {
+                status: 'paused',
+                activeStepId: step.id,
+                lastInputType: 'direct_input',
+            });
+            await redis.publish('chat:pause', JSON.stringify({
+                jobId: ctx.jobId,
+                userId: ctx.userId,
+                sessionId: ctx.sessionId,
+                stepId: step.id,
+                type: 'direct_input',
+                contextMessage: step.contextMessage || 'Please provide your credential.',
+            }));
+            plainText = await new Promise((resolve, reject) => {
+                const subRedis = redis.duplicate();
+                const idleTimeoutMs = step.timeout || 3 * 60 * 1000;
+                let settled = false;
+                subRedis.connect().then(() => {
+                    const cleanup = async () => {
+                        settled = true;
+                        clearTimeout(idleTimer);
+                        try {
+                            await subRedis.unsubscribe(`job:resume:${ctx.jobId}`);
+                            await subRedis.unsubscribe(`job:cancel:${ctx.jobId}`);
+                        }
+                        catch { }
+                        await subRedis.quit().catch(() => { });
+                    };
+                    const idleTimer = setTimeout(() => {
+                        if (settled)
+                            return;
+                        ctx.cancellation.cancelled = true;
+                        updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => { });
+                        cleanup().catch(() => { });
+                        reject(new JobCancelledError(ctx.jobId));
+                    }, idleTimeoutMs);
+                    subRedis.subscribe(`job:resume:${ctx.jobId}`, async (message) => {
+                        if (settled)
+                            return;
+                        updateJobRuntimeState(ctx, { status: 'running', activeStepId: step.id }).catch(() => { });
+                        cleanup().catch(() => { });
+                        resolve(message);
+                    });
+                    subRedis.subscribe(`job:cancel:${ctx.jobId}`, () => {
+                        if (settled)
+                            return;
+                        ctx.cancellation.cancelled = true;
+                        updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => { });
+                        cleanup().catch(() => { });
+                        reject(new JobCancelledError(ctx.jobId));
+                    });
+                });
+            });
+            const encrypted = cryptoService.encrypt(plainText);
+            await pool.query(`INSERT INTO user_secrets (user_id, site_id, key_name, encrypted_value)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id, site_id, key_name) DO UPDATE SET encrypted_value = EXCLUDED.encrypted_value, updated_at = NOW()`, [ctx.userId, ctx.siteId, keyName, encrypted]);
+        }
+        const locator = await resolveLocator(step, ctx);
+        await locator.first().fill(plainText, { timeout: step.timeout });
+        plainText = '********';
+    },
+    paymentGateway: async (step, ctx) => {
+        const stream = ctx.activeStream;
+        if (stream)
+            stream.setFps(5);
+        await ensureNotCancelled(ctx);
+        const locator = await resolveLocator(step, ctx);
+        await humanClick(ctx.page, locator);
+        const redis = await getRedisClient();
+        await updateJobRuntimeState(ctx, {
+            status: 'paused',
+            activeStepId: step.id,
+            lastInputType: 'confirmation',
+        });
+        await redis.publish('chat:pause', JSON.stringify({
+            jobId: ctx.jobId,
+            userId: ctx.userId,
+            sessionId: ctx.sessionId,
+            stepId: step.id,
+            type: 'confirmation',
+            contextMessage: step.contextMessage || 'Please complete the payment on the gateway and confirm when done.',
+        }));
+        await new Promise((resolve, reject) => {
+            const subRedis = redis.duplicate();
+            const idleTimeoutMs = step.timeout || 5 * 60 * 1000;
+            let settled = false;
+            subRedis.connect().then(() => {
+                const cleanup = async () => {
+                    settled = true;
+                    clearTimeout(idleTimer);
+                    try {
+                        await subRedis.unsubscribe(`job:resume:${ctx.jobId}`);
+                        await subRedis.unsubscribe(`job:cancel:${ctx.jobId}`);
+                    }
+                    catch { }
+                    await subRedis.quit().catch(() => { });
+                };
+                const idleTimer = setTimeout(() => {
+                    if (settled)
+                        return;
+                    ctx.cancellation.cancelled = true;
+                    updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => { });
+                    if (stream)
+                        stream.setFps(1);
+                    cleanup().catch(() => { });
+                    reject(new JobCancelledError(ctx.jobId));
+                }, idleTimeoutMs);
+                subRedis.subscribe(`job:resume:${ctx.jobId}`, () => {
+                    if (settled)
+                        return;
+                    updateJobRuntimeState(ctx, { status: 'running', activeStepId: step.id }).catch(() => { });
+                    if (stream)
+                        stream.setFps(1);
+                    cleanup().catch(() => { });
+                    resolve();
+                });
+                subRedis.subscribe(`job:cancel:${ctx.jobId}`, () => {
+                    if (settled)
+                        return;
+                    ctx.cancellation.cancelled = true;
+                    updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => { });
+                    if (stream)
+                        stream.setFps(1);
+                    cleanup().catch(() => { });
+                    reject(new JobCancelledError(ctx.jobId));
+                });
+            });
+        });
+    },
     pressKey: async (step, ctx) => {
         const key = resolveRuntimeValue(step.value, ctx) || 'Enter';
         if (step.target?.value) {
@@ -918,9 +1059,26 @@ export class ExecutionEngine {
                 error: allSucceeded ? undefined : (failedStepError || 'Workflow finished with failed steps'),
                 result: { steps: stepResults },
             });
+            let failureMessage = `⚠️ Task encountered errors and could not complete all steps.`;
+            if (!allSucceeded && failedStepError?.toLowerCase().includes('selector')) {
+                const { enqueueJob } = await import('../shared/queue/index.js');
+                const { randomUUID } = await import('crypto');
+                await enqueueJob({
+                    id: randomUUID(),
+                    type: 'remap',
+                    priority: 'high',
+                    createdAt: new Date(),
+                    userId: job.userId,
+                    payload: {
+                        siteId: job.payload.siteId,
+                        reason: 'selector-failure'
+                    }
+                });
+                failureMessage = `⚠️ The website's layout seems to have changed, so I couldn't complete the task automatically. I've scheduled an update to learn the new layout.\n\nIn the meantime, you can complete the rest of the task manually on the website. Let me know if you need any other help!`;
+            }
             await getRedisClient().then(r => r.publish('chat:message', JSON.stringify({
                 sessionId,
-                message: allSucceeded ? `✅ Task completed successfully.` : `⚠️ Task encountered errors and could not complete all steps.`,
+                message: allSucceeded ? `✅ Task completed successfully.` : failureMessage,
             }))).catch(() => { });
             if (allSucceeded) {
                 await getRedisClient().then(r => r.del(`cb:errors:${job.payload.siteId}`)).catch(() => { });

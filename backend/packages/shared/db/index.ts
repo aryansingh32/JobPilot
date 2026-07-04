@@ -265,6 +265,7 @@ ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1;
 ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
 ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS completion_artifact TEXT;
 ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft';
 UPDATE site_workflows
 SET workflow_key = COALESCE(workflow_key, CONCAT(site_id::text, ':', lower(regexp_replace(name, '[^a-zA-Z0-9]+', '-', 'g'))))
 WHERE workflow_key IS NULL;

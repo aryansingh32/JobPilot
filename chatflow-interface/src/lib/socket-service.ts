@@ -21,6 +21,10 @@ export type PauseType =
   | "email"
   | "mobile"
   | "password"
+  | "gridCaptcha"
+  | "sliderCaptcha"
+  | "paymentPending"
+  | "invisibleCaptcha"
   | "file";
 
 export interface PauseEvent {

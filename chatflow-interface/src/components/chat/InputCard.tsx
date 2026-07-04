@@ -24,6 +24,12 @@ export function InputCard({ msg }: Props) {
       return <TextCard msg={msg} />;
     case "credentialFill":
       return <CredentialFillCard msg={msg} />;
+    case "gridCaptcha":
+      return <GridCaptchaCard msg={msg} />;
+    case "sliderCaptcha":
+      return <SliderCaptchaCard msg={msg} />;
+    case "paymentPending":
+      return <PaymentPendingCard msg={msg} />;
   }
 }
 
@@ -155,7 +161,7 @@ function CaptchaCard({ msg }: { msg: InputCardMessage }) {
           value={v}
           onChange={(e) => setV(e.target.value)}
           placeholder="Type the characters"
-          className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
+          className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[16px] focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
           onKeyDown={(e) => {
             if (e.key === "Enter" && v) resolveCard(msg.id, v, msg.jobId);
           }}
@@ -184,7 +190,7 @@ function UpiCard({ msg }: { msg: InputCardMessage }) {
           value={v}
           onChange={(e) => setV(e.target.value)}
           placeholder="yourname@bank"
-          className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
+          className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[16px] focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
         />
         <button
           onClick={() => valid && resolveCard(msg.id, v, msg.jobId)}
@@ -243,7 +249,7 @@ function TextCard({ msg }: { msg: InputCardMessage }) {
           value={v}
           onChange={(e) => setV(e.target.value)}
           placeholder="Type here..."
-          className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
+          className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[16px] focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
           onKeyDown={(e) => {
             if (e.key === "Enter" && v) resolveCard(msg.id, v, msg.jobId);
           }}
@@ -290,33 +296,149 @@ function ClickCaptchaCard({ msg }: { msg: InputCardMessage }) {
 }
 
 function CredentialFillCard({ msg }: { msg: InputCardMessage }) {
-  // CRITICAL REQUIREMENT: This PII/Aadhaar auto-save opt-in feature is disabled by default
-  const FEATURE_ENABLED = false;
+  const [val, setVal] = useState("");
+  const [mode, setMode] = useState<"ask" | "type">("ask");
 
-  if (!FEATURE_ENABLED) return null;
+  if (mode === "ask") {
+    return (
+      <CardShell icon={<KeyRound className="h-4 w-4" />} title="Saved Credentials">
+        <p className="mb-1 text-sm text-muted-foreground">{msg.prompt}</p>
+        <div className="my-3 text-lg font-semibold tracking-tight">
+          Use saved login for {msg.data?.domain ?? "this site"}?
+        </div>
+        <div className="mt-2 flex gap-2">
+          <button
+            onClick={() => resolveCard(msg.id, "Confirm", msg.jobId)}
+            className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer"
+          >
+            <Check className="mr-1 inline h-4 w-4" />
+            Yes, use saved
+          </button>
+          <button
+            onClick={() => setMode("type")}
+            className="flex-1 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium transition-all hover:bg-muted active:scale-95 cursor-pointer"
+          >
+            <Type className="mr-1 inline h-4 w-4" />
+            No, let me type
+          </button>
+        </div>
+      </CardShell>
+    );
+  }
 
   return (
-    <CardShell icon={<KeyRound className="h-4 w-4" />} title="Saved Credentials">
+    <CardShell icon={<KeyRound className="h-4 w-4" />} title="Enter Value Securely">
+       <p className="mb-3 text-sm text-muted-foreground">Your input is sent directly to the site and is not seen by the AI.</p>
+       <div className="flex gap-2">
+        <input
+          autoFocus
+          type="password"
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          placeholder="Enter securely..."
+          className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[16px] focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40 text-[16px]"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && val) resolveCard(msg.id, val, msg.jobId);
+          }}
+        />
+        <button
+          onClick={() => val && resolveCard(msg.id, val, msg.jobId)}
+          disabled={!val}
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer disabled:opacity-50 flex items-center justify-center min-w-[80px]"
+        >
+          Submit
+        </button>
+      </div>
+    </CardShell>
+  );
+}
+
+function GridCaptchaCard({ msg }: { msg: InputCardMessage }) {
+  const [selected, setSelected] = useState<number[]>([]);
+  
+  const toggle = (i: number) => {
+    setSelected(p => p.includes(i) ? p.filter(x => x !== i) : [...p, i]);
+  };
+  
+  return (
+    <CardShell icon={<ShieldCheck className="h-4 w-4" />} title="Select Images">
+      <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
+      {msg.data?.captchaUrl ? (
+        <div className="mb-3 relative inline-block overflow-hidden rounded-lg border border-border bg-background">
+          <img src={msg.data.captchaUrl} className="block max-h-64 max-w-full object-contain pointer-events-none" alt="Grid Captcha" />
+          <div className="absolute inset-0 grid grid-cols-3 grid-rows-3">
+            {Array.from({length: 9}).map((_, i) => (
+              <div 
+                key={i} 
+                onClick={() => toggle(i)}
+                onTouchEnd={(e) => { e.preventDefault(); toggle(i); }}
+                className={`border border-white/20 cursor-pointer transition-all ${selected.includes(i) ? 'bg-primary/40' : 'hover:bg-primary/10'}`} 
+              />
+            ))}
+          </div>
+        </div>
+      ) : (
+         <p className="text-xs text-muted-foreground">See live screen.</p>
+      )}
+      <div className="flex justify-end">
+        <button
+          onClick={() => resolveCard(msg.id, selected.join(','), msg.jobId)}
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer"
+        >
+          Verify
+        </button>
+      </div>
+    </CardShell>
+  );
+}
+
+function SliderCaptchaCard({ msg }: { msg: InputCardMessage }) {
+  const [val, setVal] = useState(0);
+  
+  return (
+    <CardShell icon={<ShieldCheck className="h-4 w-4" />} title="Slide to verify">
+       <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
+       {msg.data?.captchaUrl && (
+         <div className="mb-3 overflow-hidden rounded-lg border border-border bg-background">
+           <img src={msg.data.captchaUrl} className="block max-h-64 max-w-full object-contain" alt="Slider Captcha" />
+         </div>
+       )}
+       <input 
+         type="range" 
+         min="0" max="100" 
+         value={val} 
+         onChange={e => setVal(parseInt(e.target.value))} 
+         onTouchMove={e => e.stopPropagation()}
+         className="w-full mb-3 accent-primary" 
+       />
+       <div className="flex justify-end">
+         <button
+           onClick={() => resolveCard(msg.id, val.toString(), msg.jobId)}
+           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer"
+         >
+           Submit
+         </button>
+       </div>
+    </CardShell>
+  );
+}
+
+function PaymentPendingCard({ msg }: { msg: InputCardMessage }) {
+  return (
+    <CardShell icon={<Wallet className="h-4 w-4 text-warning" />} title="Complete Payment">
       <p className="mb-1 text-sm text-muted-foreground">{msg.prompt}</p>
-      <div className="my-3 text-lg font-semibold tracking-tight">
-        Use saved login for {msg.data?.domain ?? "this site"}?
+      {msg.data?.amount && (
+        <div className="my-3 text-2xl font-semibold tracking-tight">{msg.data.amount}</div>
+      )}
+      <div className="rounded-lg bg-warning/10 p-3 mb-3 border border-warning/20">
+         <p className="text-sm text-warning">Please complete the payment in your UPI app. Do not refresh.</p>
       </div>
-      <div className="mt-2 flex gap-2">
-        <button
-          onClick={() => resolveCard(msg.id, "Confirm", msg.jobId)}
-          className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer"
-        >
-          <Check className="mr-1 inline h-4 w-4" />
-          Yes, use saved
-        </button>
-        <button
-          onClick={() => resolveCard(msg.id, "Cancel", msg.jobId)}
-          className="flex-1 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium transition-all hover:bg-muted active:scale-95 cursor-pointer"
-        >
-          <X className="mr-1 inline h-4 w-4" />
-          No, let me type
-        </button>
-      </div>
+      <button
+        onClick={() => resolveCard(msg.id, "Paid", msg.jobId)}
+        className="w-full rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer"
+      >
+        I have paid
+      </button>
     </CardShell>
   );
 }

@@ -814,14 +814,14 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
       await updateJobRuntimeState(ctx, {
         status: 'paused',
         activeStepId: step.id,
-        lastInputType: step.expectedInput || 'password',
+        lastInputType: 'direct_input',
       });
       await redis.publish('chat:pause', JSON.stringify({
         jobId: ctx.jobId,
         userId: ctx.userId,
         sessionId: ctx.sessionId,
         stepId: step.id,
-        type: step.expectedInput || 'password',
+        type: 'direct_input',
         contextMessage: step.contextMessage || 'Please provide your credential.',
       }));
 

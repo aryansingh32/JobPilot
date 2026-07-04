@@ -30,7 +30,7 @@ function formatWorkflowSummary(workflows) {
     if (!workflows.length)
         return 'No active workflows available.';
     return workflows
-        .filter((workflow) => workflow.isActive !== false)
+        .filter((workflow) => workflow.status === 'published')
         .slice(0, 50)
         .map((workflow) => JSON.stringify({
         siteId: workflow.siteId,
@@ -49,7 +49,7 @@ async function findMatchingWorkflow(task) {
     const workflows = await siteWorkflowService.listAll();
     let best = null;
     for (const workflow of workflows) {
-        if (workflow.isActive === false)
+        if (workflow.status !== 'published')
             continue;
         let score = 0;
         const trigger = normalizeText(workflow.trigger);

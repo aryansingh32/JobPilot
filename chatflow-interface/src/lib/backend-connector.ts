@@ -15,6 +15,7 @@ import {
 } from "./socket-service";
 import type { ChatMessage, InputCardKind, TimelineStep } from "./chat-types";
 import { createLogger } from "./logger";
+import { toast } from "sonner";
 
 const logger = createLogger("frontend-backend-connector");
 
@@ -36,6 +37,12 @@ function mapPauseToCardKind(type: string): InputCardKind | null {
       return "captcha";
     case "clickCaptcha":
       return "clickCaptcha";
+    case "gridCaptcha":
+      return "gridCaptcha";
+    case "sliderCaptcha":
+      return "sliderCaptcha";
+    case "paymentPending":
+      return "paymentPending";
     case "upi_id":
       return "upi";
     case "confirmation":
@@ -186,6 +193,14 @@ function buildCallbacks(emitter: BotEmitter) {
       emitter.setBusy(true);
       setTrackedJobId(event.jobId);
 
+      if (event.type === "invisibleCaptcha") {
+        toast.info("Invisible Captcha Detected", {
+          description: "Agent is handling security checks in the background."
+        });
+        resolveCard(`pause-${event.stepId}`, "auto-solved", event.jobId);
+        return;
+      }
+
       const cardKind = mapPauseToCardKind(event.type);
 
       if (cardKind) {
@@ -199,23 +214,11 @@ function buildCallbacks(emitter: BotEmitter) {
           prompt: event.contextMessage || `Please provide ${event.type}`,
           jobId: event.jobId,
           stepId: event.stepId,
-          data:
-            event.type === "captcha" || event.type === "clickCaptcha"
-              ? { captchaUrl: (event as any).data?.captchaUrl || "" } // The CAPTCHA is visible on the live screen if this fails
-              : event.type === "upi_id"
-                ? {}
-                : event.type === "confirmation"
-                  ? { confirmLabel: "Confirm", cancelLabel: "Cancel" }
-                  : ["text", "password", "email", "mobile"].includes(event.type)
-                    ? {
-                        inputType:
-                          event.type === "password"
-                            ? "password"
-                            : event.type === "email"
-                              ? "email"
-                              : "text",
-                      }
-                    : undefined,
+          data: {
+            ...((event as any).data || {}),
+            ...(event.type === "confirmation" ? { confirmLabel: "Confirm", cancelLabel: "Cancel" } : {}),
+            ...(["text", "password", "email", "mobile"].includes(event.type) ? { inputType: event.type } : {})
+          }
         });
       } else {
         // For text/email/mobile/password/file — show a text prompt

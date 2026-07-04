@@ -206,19 +206,21 @@ function Index() {
   const showEmpty = messages.length === 0;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+    <div className="flex h-[100dvh] w-screen overflow-hidden bg-background text-foreground pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] relative">
+      <ChatSidebar
+        isOpen={sidebarOpen}
+        threads={store.threads}
+        activeId={store.activeId}
+        onSelect={store.setActiveId}
+        onNew={handleNewChat}
+        onDelete={store.deleteThread}
+        onClose={() => setSidebarOpen(false)}
+        profile={profile}
+        profiles={PROFILES}
+        onProfileChange={setProfileId}
+      />
       {sidebarOpen && (
-        <ChatSidebar
-          threads={store.threads}
-          activeId={store.activeId}
-          onSelect={store.setActiveId}
-          onNew={handleNewChat}
-          onDelete={store.deleteThread}
-          onClose={() => setSidebarOpen(false)}
-          profile={profile}
-          profiles={PROFILES}
-          onProfileChange={setProfileId}
-        />
+        <div onClick={() => setSidebarOpen(false)} className="absolute inset-0 z-30 bg-black/50 md:hidden" />
       )}
 
       <main className="flex h-full min-w-0 flex-1 flex-col">
@@ -301,16 +303,20 @@ function Index() {
                 <MessageItem key={m.id} msg={m} />
               ))}
               {typing && <TypingIndicator />}
-              {liveOpen && (
-                <div className="mx-auto w-full max-w-3xl pb-2">
-                  <LiveScreenPanel
-                    frame={liveFrame}
-                    hot={liveHot}
-                    onClose={() => setLiveOpen(false)}
-                    connected={connected}
-                  />
-                </div>
-              )}
+              {liveOpen && (() => {
+                 const activePause = messages.find((m) => m.type === "input-card" && !m.resolved) as InputCardMessage | undefined;
+                 return (
+                  <div className="mx-auto w-full max-w-3xl pb-2">
+                    <LiveScreenPanel
+                      frame={liveFrame}
+                      hot={liveHot}
+                      onClose={() => setLiveOpen(false)}
+                      connected={connected}
+                      activePause={activePause}
+                    />
+                  </div>
+                 );
+              })()}
             </div>
           )}
         </div>

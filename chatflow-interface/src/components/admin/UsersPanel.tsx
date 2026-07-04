@@ -25,11 +25,11 @@ function UserDetailModal({ userId, onClose }: { userId: string; onClose: () => v
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col rounded-2xl border border-border/60 bg-[oklch(0.16_0.012_260)] shadow-2xl">
+      <div className="w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col rounded-2xl border border-border/60 bg-background shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border/40 px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-500/20 text-violet-300">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/20 text-primary">
               <User className="h-4 w-4" />
             </div>
             <div>
@@ -47,7 +47,7 @@ function UserDetailModal({ userId, onClose }: { userId: string; onClose: () => v
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`pb-2 px-3 text-xs font-medium capitalize transition border-b-2 ${tab === t ? "border-violet-400 text-violet-300" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+              className={`pb-2 px-3 text-xs font-medium capitalize transition border-b-2 ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
             >
               {t} {t === "jobs" && data ? `(${data.jobs?.length ?? 0})` : ""} {t === "files" && data ? `(${data.files?.length ?? 0})` : ""}
             </button>
@@ -57,14 +57,14 @@ function UserDetailModal({ userId, onClose }: { userId: string; onClose: () => v
         <div className="flex-1 overflow-y-auto p-6 scroll-thin">
           {!data ? (
             <div className="flex justify-center py-8">
-              <div className="h-8 w-8 rounded-full border-2 border-violet-500/40 border-t-violet-400 animate-spin" />
+              <div className="h-8 w-8 rounded-full border-2 border-primary/40 border-t-primary animate-spin" />
             </div>
           ) : tab === "jobs" ? (
             <div className="space-y-2">
               {data.jobs?.map((j: any) => (
                 <div key={j.job_id} className="flex items-center justify-between rounded-xl border border-border/40 bg-card/60 px-4 py-2.5">
                   <div>
-                    <p className="text-xs font-mono text-violet-300">{j.job_id?.slice(0, 20)}…</p>
+                    <p className="text-xs font-mono text-primary">{j.job_id?.slice(0, 20)}…</p>
                     <p className="text-[11px] text-muted-foreground">{j.type} · {ago(j.started_at)}</p>
                   </div>
                   <StatusBadge status={j.status} />
@@ -135,7 +135,7 @@ export function UsersPanel() {
       <div className="rounded-2xl border border-border/40 bg-card/30 overflow-hidden">
         <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1.2fr_auto] text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/30">
           {["User ID", "Total Jobs", "Completed", "Failed", "Last Active", ""].map((h) => (
-            <div key={h} className="bg-[oklch(0.15_0.012_260)] px-4 py-3">{h}</div>
+            <div key={h} className="bg-background px-4 py-3">{h}</div>
           ))}
         </div>
         <div className="divide-y divide-border/20">
@@ -149,7 +149,7 @@ export function UsersPanel() {
               className="grid grid-cols-[2fr_1fr_1fr_1fr_1.2fr_auto] hover:bg-accent/20 cursor-pointer transition-colors"
               onClick={() => setSelectedUserId(u.user_id)}
             >
-              <div className="px-4 py-3 font-mono text-xs text-violet-300 truncate">{u.user_id}</div>
+              <div className="px-4 py-3 font-mono text-xs text-primary truncate">{u.user_id}</div>
               <div className="px-4 py-3 text-xs text-foreground tabular-nums">{Number(u.total_jobs).toLocaleString()}</div>
               <div className="px-4 py-3 text-xs text-emerald-400 tabular-nums">{Number(u.completed_jobs).toLocaleString()}</div>
               <div className="px-4 py-3 text-xs text-red-400 tabular-nums">{Number(u.failed_jobs).toLocaleString()}</div>
@@ -157,7 +157,7 @@ export function UsersPanel() {
               <div className="px-4 py-3 flex items-center gap-1">
                 <button
                   onClick={(e) => { e.stopPropagation(); setSelectedUserId(u.user_id); }}
-                  className="rounded p-1 text-muted-foreground hover:text-violet-300 transition"
+                  className="rounded p-1 text-muted-foreground hover:text-primary transition"
                 >
                   <Eye className="h-3.5 w-3.5" />
                 </button>

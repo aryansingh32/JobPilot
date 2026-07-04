@@ -23,6 +23,7 @@ const WORKFLOW_SELECT = `SELECT
   error_recovery_plan as "errorRecoveryPlan",
   version,
   is_active as "isActive",
+  status,
   completion_artifact as "completionArtifact",
   metadata,
   created_at as "createdAt",
@@ -120,6 +121,7 @@ export class SiteWorkflowService {
     errorRecoveryPlan?: ActionStep[];
     version?: number;
     isActive?: boolean;
+    status?: 'draft' | 'published' | 'archived';
     completionArtifact?: string;
     metadata?: Record<string, unknown>;
   }): Promise<SiteWorkflow> {
@@ -147,12 +149,13 @@ export class SiteWorkflowService {
          error_recovery_plan,
          version,
          is_active,
+         status,
          completion_artifact,
          metadata,
          created_at,
          updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW(), NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, NOW(), NOW())
        ON CONFLICT (workflow_key)
        DO UPDATE SET
          workflow_key = EXCLUDED.workflow_key,
@@ -173,6 +176,8 @@ export class SiteWorkflowService {
          error_recovery_plan = EXCLUDED.error_recovery_plan,
          version = EXCLUDED.version,
          is_active = EXCLUDED.is_active,
+         status = EXCLUDED.status,
+         status,
          completion_artifact = EXCLUDED.completion_artifact,
          metadata = EXCLUDED.metadata,
          updated_at = NOW()
@@ -198,6 +203,7 @@ export class SiteWorkflowService {
          error_recovery_plan as "errorRecoveryPlan",
          version,
          is_active as "isActive",
+  status,
          completion_artifact as "completionArtifact",
          metadata,
          created_at as "createdAt",
@@ -225,6 +231,7 @@ export class SiteWorkflowService {
         input.isActive ?? true,
         input.completionArtifact?.trim() || null,
         JSON.stringify(input.metadata ?? {}),
+        input.status ?? 'draft',
       ]
     );
 

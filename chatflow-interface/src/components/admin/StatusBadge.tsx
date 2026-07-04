@@ -6,7 +6,7 @@ export function StatusBadge({ status }: { status: string }) {
     active: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
     solved: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
     running: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-    queued: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+    queued: "bg-primary/20 text-primary border-primary/30",
     paused: "bg-amber-500/20 text-amber-300 border-amber-500/30",
     pending: "bg-amber-500/20 text-amber-300 border-amber-500/30",
     degraded: "bg-amber-500/20 text-amber-300 border-amber-500/30",

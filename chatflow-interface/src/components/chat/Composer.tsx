@@ -49,7 +49,7 @@ export function Composer({ onSend, busy, onStop }: Props) {
           const dropped = Array.from(e.dataTransfer.files);
           if (dropped.length) setFiles((f) => [...f, ...dropped]);
         }}
-        className={`mx-auto flex max-w-3xl flex-col rounded-full border bg-card shadow-sm transition ${
+        className={`mx-auto flex max-w-3xl flex-col rounded-3xl border bg-card shadow-sm transition ${
           drag ? "border-primary ring-2 ring-primary/30" : "border-border"
         }`}
       >

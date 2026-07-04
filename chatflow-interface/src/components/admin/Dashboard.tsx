@@ -103,7 +103,7 @@ export function Dashboard() {
     return (
       <div className="flex h-64 items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <div className="h-10 w-10 rounded-full border-2 border-violet-500/40 border-t-violet-400 animate-spin" />
+          <div className="h-10 w-10 rounded-full border-2 border-primary/40 border-t-primary animate-spin" />
           <p className="text-sm text-muted-foreground">Loading system overview…</p>
         </div>
       </div>

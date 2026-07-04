@@ -20,7 +20,7 @@ function JobDetailModal({ job, onClose }: { job: AdminJob; onClose: () => void }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-2xl rounded-2xl border border-border/60 bg-[oklch(0.16_0.012_260)] p-6 shadow-2xl">
+      <div className="w-full max-w-2xl rounded-2xl border border-border/60 bg-background p-6 shadow-2xl">
         <div className="flex items-start justify-between mb-4">
           <div>
             <h3 className="text-lg font-semibold text-foreground">Job Details</h3>
@@ -147,7 +147,7 @@ export function JobsPanel() {
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(0); }}
             placeholder="Filter by user ID…"
-            className="w-full rounded-xl border border-border/50 bg-card/60 pl-9 pr-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-violet-500/60 focus:outline-none"
+            className="w-full rounded-xl border border-border/50 bg-card/60 pl-9 pr-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none"
           />
         </div>
         <div className="flex gap-1.5">
@@ -157,8 +157,8 @@ export function JobsPanel() {
               onClick={() => { setStatusFilter(s); setPage(0); }}
               className={`rounded-lg px-3 py-1.5 text-xs font-medium transition capitalize ${
                 statusFilter === s
-                  ? "bg-violet-500/20 text-violet-300 border border-violet-500/40"
-                  : "bg-card/60 text-muted-foreground border border-border/40 hover:border-violet-500/30"
+                  ? "bg-primary/20 text-primary border border-primary/40"
+                  : "bg-card/60 text-muted-foreground border border-border/40 hover:border-primary/30"
               }`}
             >
               {s}
@@ -172,7 +172,7 @@ export function JobsPanel() {
       <div className="rounded-2xl border border-border/40 bg-card/30 overflow-hidden">
         <div className="grid grid-cols-[2fr_1fr_1fr_1.5fr_1fr_auto] gap-px bg-border/20 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           {["Job ID", "Type", "User", "Started", "Status", "Actions"].map((h) => (
-            <div key={h} className="bg-[oklch(0.15_0.012_260)] px-4 py-3">{h}</div>
+            <div key={h} className="bg-background px-4 py-3">{h}</div>
           ))}
         </div>
         <div className="divide-y divide-border/20">
@@ -187,7 +187,7 @@ export function JobsPanel() {
                   onClick={() => openJob(job)}
                   className="grid grid-cols-[2fr_1fr_1fr_1.5fr_1fr_auto] gap-px bg-transparent hover:bg-accent/20 cursor-pointer transition-colors"
                 >
-                  <div className="bg-transparent px-4 py-3 font-mono text-xs text-violet-300 truncate">
+                  <div className="bg-transparent px-4 py-3 font-mono text-xs text-primary truncate">
                     {job.job_id.slice(0, 16)}…
                   </div>
                   <div className="px-4 py-3 text-xs text-foreground capitalize">{job.type}</div>
@@ -197,7 +197,7 @@ export function JobsPanel() {
                   <div className="px-4 py-3 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                     <button
                       onClick={() => openJob(job)}
-                      className="rounded p-1 text-muted-foreground hover:text-violet-300 transition"
+                      className="rounded p-1 text-muted-foreground hover:text-primary transition"
                       title="View"
                     >
                       <Eye className="h-3.5 w-3.5" />

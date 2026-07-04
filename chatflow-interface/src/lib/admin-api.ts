@@ -116,6 +116,7 @@ export interface AdminWorkflow {
   entry_url?: string;
   page_url?: string;
   instructions: string;
+  captcha_policy?: string;
   is_active: boolean;
   version?: number;
   created_at: string;
@@ -301,4 +302,5 @@ export const adminApi = {
     aGet<{ errors: ErrorReportRow[] }>(`/admin/observability/errors?limit=${limit}`),
   observabilityCopilot: (body: { question: string; errorReportId?: string; context?: Record<string, unknown> }) =>
     aPost<{ answer: string; model?: string; structured?: unknown }>("/admin/observability/copilot", body),
+  generalizeSteps: (body: { steps: any[]; starterActionPlan?: any }) => aPost<{ generalized: any[] }>("/admin/record/generalize", body),
 } as const;

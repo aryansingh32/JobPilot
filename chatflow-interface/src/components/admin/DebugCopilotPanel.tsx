@@ -28,7 +28,7 @@ export function DebugCopilotPanel() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4">
-      <div className="rounded-2xl border border-violet-500/25 bg-gradient-to-br from-violet-950/40 to-slate-950/60 p-5 backdrop-blur-lg">
+      <div className="rounded-2xl border border-primary/25 bg-gradient-to-br from-violet-950/40 to-slate-950/60 p-5 backdrop-blur-lg">
         <div className="mb-3 flex items-center gap-2 text-sm font-medium text-violet-200">
           <Sparkles className="h-4 w-4" />
           AI debugging copilot
@@ -56,7 +56,7 @@ export function DebugCopilotPanel() {
           whileTap={{ scale: 0.98 }}
           disabled={loading || !question.trim()}
           onClick={() => void ask()}
-          className="mt-3 inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+          className="mt-3 inline-flex items-center gap-2 rounded-xl bg-primary/90 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
         >
           <Send className="h-4 w-4" />
           {loading ? "Thinking…" : "Analyze"}
@@ -64,7 +64,7 @@ export function DebugCopilotPanel() {
       </div>
 
       {answer ? (
-        <div className="rounded-2xl border border-border/40 bg-card/40 p-5 text-sm leading-relaxed text-foreground [&_a]:text-violet-400 [&_code]:rounded [&_code]:bg-black/40 [&_code]:px-1">
+        <div className="rounded-2xl border border-border/40 bg-card/40 p-5 text-sm leading-relaxed text-foreground [&_a]:text-primary [&_code]:rounded [&_code]:bg-black/40 [&_code]:px-1">
           <ReactMarkdown>{answer}</ReactMarkdown>
         </div>
       ) : null}

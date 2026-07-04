@@ -139,6 +139,9 @@ export interface BoundingBox {
 
 // ─── Action Types ────────────────────────────────────────────
 
+export type InputCardKind = 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file' | 'direct_input';
+
+
 export interface ActionStep {
   id: string;
   order?: number;
@@ -158,7 +161,7 @@ export interface ActionStep {
   retries?: number;
   humanDelay?: boolean;
   humanType?: boolean;
-  expectedInput?: 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file';
+  expectedInput?: InputCardKind;
   contextMessage?: string;
   condition?: {
     type: 'exists' | 'contains_text' | 'url_contains' | 'status';
@@ -331,7 +334,7 @@ export interface ConversationState {
   awaitingInput?: {
     jobId: string;
     stepId: string;
-    type: 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file';
+    type: InputCardKind;
     contextMessage: string;
   };
   memoryContext: Record<string, any>;
@@ -346,7 +349,7 @@ export interface JobRuntimeState {
   task: string;
   status: 'queued' | 'running' | 'paused' | 'completed' | 'failed';
   activeStepId?: string;
-  lastInputType?: 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file';
+  lastInputType?: InputCardKind;
   error?: string;
   result?: unknown;
   createdAt: string;
@@ -375,6 +378,7 @@ export interface SiteWorkflow {
   errorRecoveryPlan?: ActionStep[];
   version?: number;
   isActive?: boolean;
+  status?: 'draft' | 'published' | 'archived';
   completionArtifact?: string;
   metadata?: Record<string, unknown> & { lightweight?: boolean };
   createdAt: Date;

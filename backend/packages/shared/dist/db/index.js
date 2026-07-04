@@ -246,6 +246,7 @@ ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1;
 ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
 ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS completion_artifact TEXT;
 ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft';
 UPDATE site_workflows
 SET workflow_key = COALESCE(workflow_key, CONCAT(site_id::text, ':', lower(regexp_replace(name, '[^a-zA-Z0-9]+', '-', 'g'))))
 WHERE workflow_key IS NULL;
@@ -429,6 +430,30 @@ CREATE TABLE IF NOT EXISTS workflow_audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_audit_log_admin_id ON workflow_audit_log(admin_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_audit_log_workflow_id ON workflow_audit_log(workflow_id);
+
+-- ── Zero Shot History ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS zero_shot_history (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  url TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  steps JSONB NOT NULL,
+  result JSONB,
+  success BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ── User Secrets (PII) ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS user_secrets (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id TEXT NOT NULL,
+  site_id UUID REFERENCES sites(id) ON DELETE CASCADE,
+  key_name TEXT NOT NULL,
+  encrypted_value TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id, site_id, key_name)
+);
+CREATE INDEX IF NOT EXISTS idx_user_secrets_user_id ON user_secrets(user_id);
 
 `;
 export async function seedAdmins() {

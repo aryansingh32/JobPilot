@@ -27,6 +27,7 @@ interface Props {
   profile: Profile;
   profiles: Profile[];
   onProfileChange: (id: string) => void;
+  isOpen?: boolean;
 }
 
 export function ChatSidebar({
@@ -39,6 +40,7 @@ export function ChatSidebar({
   profile,
   profiles,
   onProfileChange,
+  isOpen = true,
 }: Props) {
   const [backendProfiles, setBackendProfiles] = useState<UserProfile[]>([]);
   const [workflows, setWorkflows] = useState<SiteWorkflow[]>([]);
@@ -88,7 +90,10 @@ export function ChatSidebar({
   ];
 
   return (
-    <aside className="flex h-full w-72 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+    <aside 
+      data-state={isOpen ? 'open' : 'closed'}
+      className="absolute z-40 flex h-full w-72 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:relative md:translate-x-0 transition-transform -translate-x-full data-[state=open]:translate-x-0 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
+    >
       <div className="flex items-center justify-between px-3 py-3">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <span className="grid h-7 w-7 place-items-center rounded-lg bg-primary text-primary-foreground">

@@ -25,6 +25,7 @@ export declare class SiteWorkflowService {
         errorRecoveryPlan?: ActionStep[];
         version?: number;
         isActive?: boolean;
+        status?: 'draft' | 'published' | 'archived';
         completionArtifact?: string;
         metadata?: Record<string, unknown>;
     }): Promise<SiteWorkflow>;

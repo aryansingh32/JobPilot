@@ -70,7 +70,7 @@ function shouldCancelTask(message: string): boolean {
 function formatWorkflowSummary(workflows: Awaited<ReturnType<typeof siteWorkflowService.listAll>>): string {
   if (!workflows.length) return 'No active workflows available.';
   return workflows
-    .filter((workflow) => workflow.isActive !== false)
+    .filter((workflow) => workflow.status === 'published')
     .slice(0, 50)
     .map((workflow) => JSON.stringify({
       siteId: workflow.siteId,
@@ -91,7 +91,7 @@ async function findMatchingWorkflow(task: string): Promise<WorkflowMatch | null>
   let best: WorkflowMatch | null = null;
 
   for (const workflow of workflows) {
-    if (workflow.isActive === false) continue;
+    if (workflow.status !== 'published') continue;
     let score = 0;
     const trigger = normalizeText(workflow.trigger);
     const name = normalizeText(workflow.name);
@@ -453,7 +453,7 @@ export class ChatOrchestrator {
     sessionId: string, 
     jobId: string, 
     stepId: string, 
-    type: 'otp' | 'upi_id' | 'captcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file',
+    type: import('../shared/types/index.js').InputCardKind,
     contextMessage: string,
     replyCallback: (msg: string) => void
   ) {

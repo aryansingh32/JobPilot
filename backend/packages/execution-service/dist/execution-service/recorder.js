@@ -35,20 +35,61 @@ export class RecorderService {
             }
         });
         await page.addInitScript(() => {
-            const getSelector = (el) => {
+            const getSelectors = (el) => {
+                const selectors = [];
                 if (el.id)
-                    return `#${el.id}`;
+                    selectors.push(`#${el.id}`);
+                const ariaLabel = el.getAttribute('aria-label');
+                if (ariaLabel)
+                    selectors.push(`[aria-label="${ariaLabel}"]`);
+                const testId = el.getAttribute('data-testid');
+                if (testId)
+                    selectors.push(`[data-testid="${testId}"]`);
                 let path = el.tagName.toLowerCase();
                 if (el.className && typeof el.className === 'string') {
-                    path += '.' + el.className.trim().split(/\s+/).join('.');
+                    const cls = el.className.trim().split(/\s+/).join('.');
+                    if (cls)
+                        selectors.push(`${path}.${cls}`);
                 }
-                return path;
+                if (!selectors.length)
+                    selectors.push(path);
+                return selectors;
             };
+            const getInputMetadata = (el) => {
+                return {
+                    name: el.name || undefined,
+                    placeholder: el.placeholder || undefined,
+                    autocomplete: el.autocomplete || undefined,
+                    type: el.type || undefined
+                };
+            };
+            const detectWidgets = () => {
+                // Simple live detection
+                const hasCaptcha = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-turnstile');
+                const hasPayment = !!document.querySelector('iframe[src*="stripe"], iframe[src*="razorpay"], iframe[src*="paypal"]');
+                if (hasCaptcha || hasPayment) {
+                    window.reportAction({
+                        action: hasPayment ? 'paymentGateway' : 'captcha',
+                        timestamp: Date.now()
+                    });
+                }
+            };
+            const redactValue = (val, el) => {
+                if (el.type === 'password')
+                    return '[REDACTED]';
+                const piiRegex = /aadhaar|pan|passport|cvv|cc|credit card|otp/i;
+                if (piiRegex.test(el.name || '') || piiRegex.test(el.placeholder || '') || piiRegex.test(el.id || '')) {
+                    return '[REDACTED_PII]';
+                }
+                return val;
+            };
+            // Periodic check for widgets
+            setInterval(detectWidgets, 5000);
             window.addEventListener('click', (e) => {
                 const target = e.target;
                 window.reportAction({
                     action: 'click',
-                    target: { selector: getSelector(target), text: target.innerText?.slice(0, 50) },
+                    target: { selectors: getSelectors(target), text: target.innerText?.slice(0, 50) },
                     timestamp: Date.now()
                 });
             }, true);
@@ -56,8 +97,8 @@ export class RecorderService {
                 const target = e.target;
                 window.reportAction({
                     action: 'input',
-                    target: { selector: getSelector(target) },
-                    value: target.value,
+                    target: { selectors: getSelectors(target), metadata: getInputMetadata(target) },
+                    value: redactValue(target.value, target),
                     timestamp: Date.now()
                 });
             }, true);
@@ -65,8 +106,8 @@ export class RecorderService {
                 const target = e.target;
                 window.reportAction({
                     action: 'change',
-                    target: { selector: getSelector(target) },
-                    value: target.value,
+                    target: { selectors: getSelectors(target), metadata: getInputMetadata(target) },
+                    value: redactValue(target.value, target),
                     timestamp: Date.now()
                 });
             }, true);

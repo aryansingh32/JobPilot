@@ -33,7 +33,7 @@ export function SitesPanel() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Globe className="h-4 w-4 text-violet-400" />
+          <Globe className="h-4 w-4 text-primary" />
           <span className="text-sm font-medium text-foreground">{total.toLocaleString()} sites registered</span>
         </div>
       </div>
@@ -41,7 +41,7 @@ export function SitesPanel() {
       <div className="rounded-2xl border border-border/40 bg-card/30 overflow-hidden">
         <div className="grid grid-cols-[2fr_1fr_1fr_1fr_auto] text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/30">
           {["Domain", "Pages", "Status", "Added", ""].map((h) => (
-            <div key={h} className="bg-[oklch(0.15_0.012_260)] px-4 py-3">{h}</div>
+            <div key={h} className="bg-background px-4 py-3">{h}</div>
           ))}
         </div>
         <div className="divide-y divide-border/20">

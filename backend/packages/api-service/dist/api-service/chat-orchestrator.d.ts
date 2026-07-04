@@ -12,7 +12,7 @@ export declare class ChatOrchestrator {
     /**
      * Called by the Execution engine via Redis pub/sub when a job pauses for OTP/CAPTCHA
      */
-    handleJobPauseRequest(userId: string, sessionId: string, jobId: string, stepId: string, type: 'otp' | 'upi_id' | 'captcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file', contextMessage: string, replyCallback: (msg: string) => void): Promise<void>;
+    handleJobPauseRequest(userId: string, sessionId: string, jobId: string, stepId: string, type: import('../shared/types/index.js').InputCardKind, contextMessage: string, replyCallback: (msg: string) => void): Promise<void>;
     private resumeJob;
     private getState;
     private saveState;

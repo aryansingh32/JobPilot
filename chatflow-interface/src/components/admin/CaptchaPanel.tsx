@@ -37,10 +37,10 @@ export function CaptchaPanel() {
       </div>
 
       {/* How it works info */}
-      <div className="rounded-2xl border border-violet-500/20 bg-violet-500/5 p-5">
+      <div className="rounded-2xl border border-primary/20 bg-primary/5 p-5">
         <div className="flex items-center gap-2 mb-2">
-          <MousePointerClick className="h-4 w-4 text-violet-400" />
-          <span className="text-sm font-semibold text-violet-300">Universal Captcha Solver</span>
+          <MousePointerClick className="h-4 w-4 text-primary" />
+          <span className="text-sm font-semibold text-primary">Universal Captcha Solver</span>
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed">
           When the bot encounters a captcha, it captures a screenshot and pushes it here.
@@ -78,7 +78,7 @@ export function CaptchaPanel() {
                   {solvingId === c.id ? (
                     <div className="flex items-center gap-2">
                       <input value={solution} onChange={(e) => setSolution(e.target.value)} placeholder="Solution…"
-                        className="rounded-lg border border-border/50 bg-card/60 px-3 py-1.5 text-xs text-foreground focus:border-violet-500/60 focus:outline-none w-40"
+                        className="rounded-lg border border-border/50 bg-card/60 px-3 py-1.5 text-xs text-foreground focus:border-primary/60 focus:outline-none w-40"
                         onKeyDown={(e) => { if (e.key === "Enter") handleSolve(c.id); }} autoFocus />
                       <button onClick={() => handleSolve(c.id)}
                         className="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 transition">
@@ -91,7 +91,7 @@ export function CaptchaPanel() {
                     </div>
                   ) : (
                     <button onClick={() => { setSolvingId(c.id); setSolution(""); }}
-                      className="rounded-xl bg-violet-500/20 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-violet-500/30 transition">
+                      className="rounded-xl bg-primary/20 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/30 transition">
                       Solve Manually
                     </button>
                   )}

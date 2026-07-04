@@ -7,7 +7,10 @@ export type InputCardKind =
   | "upi"
   | "confirm"
   | "text"
-  | "credentialFill";
+  | "credentialFill"
+  | "gridCaptcha"
+  | "sliderCaptcha"
+  | "paymentPending";
 
 export interface BaseMessage {
   id: string;

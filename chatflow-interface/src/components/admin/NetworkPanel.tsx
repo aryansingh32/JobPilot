@@ -39,7 +39,7 @@ export function NetworkPanel() {
             return (
               <div key={i} className="flex-1 flex flex-col items-center justify-end" title={`${h.total} reqs, ${h.failed} failed, ${h.latency}ms`}>
                 <div
-                  className={`w-full rounded-t-sm transition-all ${h.failed > 0 ? "bg-red-400/60" : "bg-violet-400/60"}`}
+                  className={`w-full rounded-t-sm transition-all ${h.failed > 0 ? "bg-red-400/60" : "bg-primary/60"}`}
                   style={{ height: `${Math.max(pct, 2)}%` }}
                 />
               </div>

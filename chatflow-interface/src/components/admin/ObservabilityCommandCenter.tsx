@@ -102,7 +102,7 @@ export function ObservabilityCommandCenter() {
   const cards = useMemo(
     () => [
       { label: "Events 24h", value: summary?.events24h ?? "—", tone: "from-cyan-500/20 to-blue-500/10" },
-      { label: "Sessions 24h", value: summary?.sessions24h ?? "—", tone: "from-violet-500/20 to-fuchsia-500/10" },
+      { label: "Sessions 24h", value: summary?.sessions24h ?? "—", tone: "from-primary/20 to-fuchsia-500/10" },
       { label: "Errors 24h", value: summary?.errors24h ?? "—", tone: "from-rose-500/20 to-orange-500/10" },
     ],
     [summary]
@@ -142,7 +142,7 @@ export function ObservabilityCommandCenter() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-2xl border border-violet-500/20 bg-[oklch(0.12_0.02_280)]/80 p-4 backdrop-blur-md">
+        <div className="rounded-2xl border border-primary/20 bg-background/80 p-4 backdrop-blur-md">
           <div className="mb-2 flex items-center gap-2 text-sm font-medium text-violet-200">
             <Activity className="h-4 w-4" />
             Topology pulse

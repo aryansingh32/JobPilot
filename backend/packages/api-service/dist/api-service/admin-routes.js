@@ -363,6 +363,11 @@ export async function registerAdminRoutes(app) {
     });
     app.post('/admin/workflows', { preHandler: adminAuth }, async (req, reply) => {
         const body = req.body;
+        const isActive = body.isActive ?? true;
+        const starterActionPlan = body.starterActionPlan ?? [];
+        if (isActive && starterActionPlan.length === 0) {
+            return reply.status(400).send({ error: 'starterActionPlan cannot be empty when workflow is active' });
+        }
         const pool = getPgPool();
         try {
             const { rows } = await pool.query(`
@@ -371,8 +376,8 @@ export async function registerAdminRoutes(app) {
            site_section, entry_url, page_url, page_url_pattern, page_url_patterns,
            required_inputs, required_files, instructions, default_profile_name,
            starter_action_plan, error_recovery_plan, version, is_active,
-           completion_artifact, metadata)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+           completion_artifact, metadata, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
         RETURNING *
       `, [
                 body.siteId, body.workflowKey, body.category, body.name,
@@ -382,10 +387,11 @@ export async function registerAdminRoutes(app) {
                 JSON.stringify(body.requiredInputs ?? []),
                 JSON.stringify(body.requiredFiles ?? []),
                 body.instructions, body.defaultProfileName,
-                JSON.stringify(body.starterActionPlan ?? []),
+                JSON.stringify(starterActionPlan),
                 JSON.stringify(body.errorRecoveryPlan ?? []),
-                body.version ?? 1, body.isActive ?? true,
+                body.version ?? 1, isActive,
                 body.completionArtifact, JSON.stringify(body.metadata ?? {}),
+                body.status ?? 'draft'
             ]);
             const admin = req.admin;
             if (admin) {
@@ -402,6 +408,15 @@ export async function registerAdminRoutes(app) {
         const body = req.body;
         const pool = getPgPool();
         try {
+            const oldRows = await pool.query('SELECT * FROM site_workflows WHERE id = $1', [workflowId]);
+            if (!oldRows.rows.length)
+                return reply.status(404).send({ error: 'Workflow not found' });
+            const oldWorkflow = oldRows.rows[0];
+            const isActive = body.isActive !== undefined ? body.isActive : oldWorkflow.is_active;
+            const starterActionPlan = body.starterActionPlan !== undefined ? body.starterActionPlan : oldWorkflow.starter_action_plan;
+            if (isActive && (!starterActionPlan || starterActionPlan.length === 0)) {
+                return reply.status(400).send({ error: 'starterActionPlan cannot be empty when workflow is active' });
+            }
             const sets = [];
             const params = [];
             let pi = 1;
@@ -410,6 +425,7 @@ export async function registerAdminRoutes(app) {
                 is_active: body.isActive, portal_type: body.portalType,
                 entry_url: body.entryUrl, page_url: body.pageUrl,
                 category: body.category, version: body.version,
+                status: body.status, starter_action_plan: body.starterActionPlan !== undefined ? JSON.stringify(body.starterActionPlan) : undefined
             };
             for (const [col, val] of Object.entries(map)) {
                 if (val !== undefined) {
@@ -420,7 +436,6 @@ export async function registerAdminRoutes(app) {
             if (!sets.length)
                 return reply.status(400).send({ error: 'No fields to update' });
             params.push(workflowId);
-            const oldRows = await pool.query('SELECT * FROM site_workflows WHERE id = $1', [workflowId]);
             const { rows } = await pool.query(`UPDATE site_workflows SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${pi} RETURNING *`, params);
             if (!rows.length)
                 return reply.status(404).send({ error: 'Workflow not found' });

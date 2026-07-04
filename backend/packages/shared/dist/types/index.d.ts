@@ -114,6 +114,7 @@ export interface BoundingBox {
     width: number;
     height: number;
 }
+export type InputCardKind = 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file' | 'direct_input';
 export interface ActionStep {
     id: string;
     order?: number;
@@ -133,7 +134,7 @@ export interface ActionStep {
     retries?: number;
     humanDelay?: boolean;
     humanType?: boolean;
-    expectedInput?: 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file';
+    expectedInput?: InputCardKind;
     contextMessage?: string;
     condition?: {
         type: 'exists' | 'contains_text' | 'url_contains' | 'status';
@@ -144,7 +145,7 @@ export interface ActionStep {
     falseSteps?: ActionStep[];
     metadata?: Record<string, any>;
 }
-export type ActionType = 'navigate' | 'click' | 'fill' | 'select' | 'check' | 'uncheck' | 'upload' | 'download' | 'waitForSelector' | 'waitForNavigation' | 'waitForTimeout' | 'scroll' | 'mouseMove' | 'humanType' | 'pauseForUserInput' | 'extractData' | 'runSubWorkflow' | 'conditional' | 'customJS' | 'refresh' | 'wait' | 'screenshot' | 'extract' | 'payment' | 'retryLoop' | 'clickCaptcha' | 'pressKey' | 'doubleClick' | 'hover' | 'rightClick' | 'clearField' | 'switchTab' | 'closeTab' | 'acceptDialog' | 'dismissDialog' | 'assertText' | 'assertURL' | 'iframe' | 'loop' | 'dragDrop' | 'goBack' | 'goForward';
+export type ActionType = 'navigate' | 'click' | 'fill' | 'select' | 'check' | 'uncheck' | 'upload' | 'download' | 'waitForSelector' | 'waitForNavigation' | 'waitForTimeout' | 'scroll' | 'mouseMove' | 'humanType' | 'pauseForUserInput' | 'extractData' | 'runSubWorkflow' | 'conditional' | 'customJS' | 'refresh' | 'wait' | 'screenshot' | 'extract' | 'payment' | 'retryLoop' | 'clickCaptcha' | 'pressKey' | 'doubleClick' | 'hover' | 'rightClick' | 'clearField' | 'switchTab' | 'closeTab' | 'acceptDialog' | 'dismissDialog' | 'assertText' | 'assertURL' | 'iframe' | 'loop' | 'dragDrop' | 'goBack' | 'goForward' | 'credentialFill' | 'paymentGateway';
 export interface ExecutionResult {
     jobId: string;
     success: boolean;
@@ -242,7 +243,7 @@ export interface ConversationState {
     awaitingInput?: {
         jobId: string;
         stepId: string;
-        type: 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file';
+        type: InputCardKind;
         contextMessage: string;
     };
     memoryContext: Record<string, any>;
@@ -256,7 +257,7 @@ export interface JobRuntimeState {
     task: string;
     status: 'queued' | 'running' | 'paused' | 'completed' | 'failed';
     activeStepId?: string;
-    lastInputType?: 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file';
+    lastInputType?: InputCardKind;
     error?: string;
     result?: unknown;
     createdAt: string;
@@ -284,6 +285,7 @@ export interface SiteWorkflow {
     errorRecoveryPlan?: ActionStep[];
     version?: number;
     isActive?: boolean;
+    status?: 'draft' | 'published' | 'archived';
     completionArtifact?: string;
     metadata?: Record<string, unknown> & {
         lightweight?: boolean;

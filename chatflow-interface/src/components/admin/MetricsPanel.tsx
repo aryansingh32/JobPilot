@@ -27,7 +27,7 @@ export function MetricsPanel() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <BarChart3 className="h-4 w-4 text-violet-400" />
+          <BarChart3 className="h-4 w-4 text-primary" />
           <span className="text-sm font-medium text-foreground">Prometheus Metrics</span>
           <span className="text-xs text-muted-foreground">({parsed.length} metrics)</span>
         </div>
@@ -44,7 +44,7 @@ export function MetricsPanel() {
           {/* Key metrics highlight */}
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {parsed.slice(0, 8).map((m, i) => (
-              <div key={i} className="rounded-2xl border border-border/40 bg-card/40 p-4 hover:border-violet-500/30 transition">
+              <div key={i} className="rounded-2xl border border-border/40 bg-card/40 p-4 hover:border-primary/30 transition">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider truncate">{m!.name.replace(/_/g, " ")}</p>
                 <p className="mt-1 text-xl font-bold text-foreground tabular-nums">
                   {isNaN(Number(m!.value)) ? m!.value : Number(m!.value).toLocaleString()}
@@ -55,7 +55,7 @@ export function MetricsPanel() {
           </div>
 
           {/* Raw Prometheus output */}
-          <div className="rounded-2xl border border-border/40 bg-[oklch(0.1_0.01_260)] overflow-hidden">
+          <div className="rounded-2xl border border-border/40 bg-background overflow-hidden">
             <div className="flex items-center gap-2 border-b border-border/30 px-4 py-2.5">
               <Database className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="text-xs text-muted-foreground font-mono">Raw /metrics output</span>
