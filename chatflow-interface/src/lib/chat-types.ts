@@ -1,6 +1,13 @@
 export type Role = "user" | "bot" | "system";
 
-export type InputCardKind = "otp" | "captcha" | "clickCaptcha" | "upi" | "confirm" | "text";
+export type InputCardKind =
+  | "otp"
+  | "captcha"
+  | "clickCaptcha"
+  | "upi"
+  | "confirm"
+  | "text"
+  | "credentialFill";
 
 export interface BaseMessage {
   id: string;
@@ -50,6 +57,7 @@ export interface InputCardMessage extends BaseMessage {
     cancelLabel?: string;
     amount?: string;
     inputType?: string;
+    domain?: string;
   };
   resolved?: { value: string; at: number };
   /** Backend job ID, used when resuming a paused job */

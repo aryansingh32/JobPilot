@@ -862,6 +862,12 @@ export class ExecutionEngine {
             };
             if (!actionPlan?.length)
                 throw new Error('No action plan provided for execution');
+            // Circuit Breaker Check
+            const redis = await getRedisClient();
+            const cbOpen = await redis.get(`cb:open:${job.payload.siteId}`);
+            if (cbOpen) {
+                throw new Error(`Circuit breaker open for site ${job.payload.siteId}. Temporarily paused due to consecutive errors.`);
+            }
             const stream = await streamLiveView(ctx, job.id, 1);
             ctx.activeStream = stream;
             await updateJobRuntimeState(ctx, { status: 'running' });
@@ -916,6 +922,17 @@ export class ExecutionEngine {
                 sessionId,
                 message: allSucceeded ? `✅ Task completed successfully.` : `⚠️ Task encountered errors and could not complete all steps.`,
             }))).catch(() => { });
+            if (allSucceeded) {
+                await getRedisClient().then(r => r.del(`cb:errors:${job.payload.siteId}`)).catch(() => { });
+            }
+            else {
+                const r = await getRedisClient();
+                const errs = await r.incr(`cb:errors:${job.payload.siteId}`);
+                if (errs === 1)
+                    await r.expire(`cb:errors:${job.payload.siteId}`, 3600);
+                if (errs >= 5)
+                    await r.setEx(`cb:open:${job.payload.siteId}`, 300, '1');
+            }
             // Cleanup old temp files (best effort)
             userFileStore.cleanupTempFiles().catch(() => { });
             // Explicitly release the context to immediately destroy it and free up memory
@@ -975,6 +992,17 @@ export class ExecutionEngine {
                 sessionId,
                 message: `❌ Task failed: ${error}`,
             }))).catch(() => { });
+            if (!wasCancelled) {
+                try {
+                    const r = await getRedisClient();
+                    const errs = await r.incr(`cb:errors:${job.payload.siteId}`);
+                    if (errs === 1)
+                        await r.expire(`cb:errors:${job.payload.siteId}`, 3600);
+                    if (errs >= 5)
+                        await r.setEx(`cb:open:${job.payload.siteId}`, 300, '1');
+                }
+                catch { }
+            }
             await this.logResult(job.id, job.userId, sessionId, job.payload.siteId, false, stepResults, { aiCallCount: 0, selectorFallbackCount: 0, retryCount: 0 }, error).catch((logError) => {
                 logger.error('job:log-result-failed', logError, { jobId: job.id, originalError: error });
             });

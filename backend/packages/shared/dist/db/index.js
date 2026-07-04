@@ -409,12 +409,48 @@ CREATE INDEX IF NOT EXISTS idx_error_reports_ts ON error_reports(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_error_reports_fingerprint ON error_reports(fingerprint, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_error_reports_user ON error_reports(user_id, ts DESC);
 
+
+-- ── Admins ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS admins (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  api_key TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL CHECK (role IN ('viewer', 'editor', 'super-admin')),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ── Workflow Audit Log ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS workflow_audit_log (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+  workflow_id UUID REFERENCES site_workflows(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  diff JSONB,
+  timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_audit_log_admin_id ON workflow_audit_log(admin_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_audit_log_workflow_id ON workflow_audit_log(workflow_id);
+
 `;
+export async function seedAdmins() {
+    const pool = getPgPool();
+    try {
+        const res = await pool.query(`SELECT COUNT(*) FROM admins`);
+        if (parseInt(res.rows[0].count) === 0) {
+            const defaultKey = process.env.ADMIN_API_KEY || 'default-super-admin-key-change-me';
+            await pool.query(`INSERT INTO admins (api_key, role) VALUES ($1, 'super-admin')`, [defaultKey]);
+            logger.info('migrations:seeded-default-admin');
+        }
+    }
+    catch (err) {
+        logger.error('migrations:seed-admins-failed', err);
+    }
+}
 export async function runMigrations() {
     const pool = getPgPool();
     try {
         await pool.query(SCHEMA_SQL);
         logger.info('migrations:complete');
+        await seedAdmins();
     }
     catch (err) {
         logger.error('migrations:failed', err);

@@ -65,6 +65,7 @@ export interface SocketCallbacks {
   onConnect?: () => void;
   onDisconnect?: (reason: string) => void;
   onError?: (error: Error) => void;
+  onRecordStep?: (step: any) => void;
 }
 
 class SocketService {
@@ -165,6 +166,10 @@ class SocketService {
 
     this.socket.on("action_update", (update: ActionUpdate) => {
       this.callbacks.onActionUpdate?.(update);
+    });
+
+    this.socket.on("workflow:record-step", (step: any) => {
+      this.callbacks.onRecordStep?.(step);
     });
   }
 

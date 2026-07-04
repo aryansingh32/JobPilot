@@ -15,5 +15,6 @@ export declare const CacheKeys: {
     jobCancel: (jobId: string) => string;
     proxyPool: () => string;
 };
+export declare function seedAdmins(): Promise<void>;
 export declare function runMigrations(): Promise<void>;
 //# sourceMappingURL=index.d.ts.map

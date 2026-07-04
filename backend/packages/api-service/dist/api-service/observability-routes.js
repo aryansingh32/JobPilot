@@ -7,17 +7,36 @@ import { ingestClientEvents, listRecentSessions, getSessionTimeline, listErrorRe
 const logger = createLogger('observability-routes');
 async function adminAuth(req, reply) {
     const key = req.headers['x-admin-key'];
-    const expected = process.env.ADMIN_API_KEY ?? process.env.API_KEY ?? 'dev-key-change-in-prod';
-    if (!key || key !== expected) {
+    if (!key) {
         logger.warn('observability:admin-auth-failed', { ip: req.ip });
-        reply.status(401).send({ error: 'Unauthorized — admin key required' });
+        await reply.status(401).send({ error: 'Unauthorized — admin key required' });
+        return;
+    }
+    try {
+        const { getPgPool } = await import('../shared/db/index.js');
+        const pool = getPgPool();
+        const { rows } = await pool.query('SELECT id, role FROM admins WHERE api_key = $1', [key]);
+        if (!rows.length) {
+            logger.warn('observability:admin-auth-failed', { ip: req.ip });
+            await reply.status(401).send({ error: 'Unauthorized — invalid admin key' });
+            return;
+        }
+    }
+    catch (err) {
+        logger.error('observability:admin-auth-error', err);
+        await reply.status(500).send({ error: 'Internal Server Error' });
+        return;
     }
 }
 async function apiAuth(req, reply) {
     const key = req.headers['x-api-key'];
-    const expected = process.env.API_KEY ?? 'dev-key-change-in-prod';
+    const expected = process.env.API_KEY;
+    if (!expected) {
+        await reply.status(401).send({ error: 'Unauthorized' });
+        return;
+    }
     if (!key || key !== expected) {
-        reply.status(401).send({ error: 'Unauthorized' });
+        await reply.status(401).send({ error: 'Unauthorized' });
     }
 }
 function hashIp(ip) {

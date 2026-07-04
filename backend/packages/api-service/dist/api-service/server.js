@@ -51,7 +51,11 @@ function isAllowedOrigin(origin, allowedOrigins) {
 // ─── Auth Middleware (simple API key) ─────────────────────────
 async function authMiddleware(req, reply) {
     const key = req.headers['x-api-key'];
-    const expectedKey = process.env.API_KEY ?? 'dev-key-change-in-prod';
+    const expectedKey = process.env.API_KEY;
+    if (!expectedKey) {
+        reply.status(401).send({ error: 'Unauthorized' });
+        return;
+    }
     if (!key || key !== expectedKey) {
         reply.status(401).send({ error: 'Unauthorized' });
     }
@@ -118,20 +122,25 @@ async function buildApp() {
             catch {
                 traceId = undefined;
             }
-            await persistErrorReport({
-                message: error.message || 'Internal Server Error',
-                stack: error.stack,
-                requestId: String(req.id),
-                traceId,
-                route: req.url,
-                method: req.method,
-                httpStatus: status,
-                source: 'api',
-                context: {
-                    validation: error.validation,
-                    code: error.code,
-                },
-            });
+            try {
+                await persistErrorReport({
+                    message: error.message || 'Internal Server Error',
+                    stack: error.stack,
+                    requestId: String(req.id),
+                    traceId,
+                    route: req.url,
+                    method: req.method,
+                    httpStatus: status,
+                    source: 'api',
+                    context: {
+                        validation: error.validation,
+                        code: error.code,
+                    },
+                });
+            }
+            catch {
+                /* never block response on observability persistence */
+            }
         }
         reply.status(status).send({ error: error.message || 'Internal Server Error' });
     });
@@ -584,16 +593,26 @@ async function main() {
         await subClient.connect();
         io.adapter(createAdapter(pubClient, subClient));
         const adminNs = io.of('/admin');
-        adminNs.use((socket, next) => {
+        adminNs.use(async (socket, next) => {
             const auth = socket.handshake.auth;
             const headerKey = socket.handshake.headers['x-admin-key'];
             const key = (typeof headerKey === 'string' ? headerKey : undefined) ?? auth?.adminKey;
-            const expected = process.env.ADMIN_API_KEY ?? process.env.API_KEY ?? 'dev-key-change-in-prod';
-            if (!key || key !== expected) {
+            if (!key) {
                 next(new Error('Unauthorized'));
                 return;
             }
-            next();
+            try {
+                const pool = getPgPool();
+                const { rows } = await pool.query('SELECT id FROM admins WHERE api_key = $1', [key]);
+                if (!rows.length) {
+                    next(new Error('Unauthorized'));
+                    return;
+                }
+                next();
+            }
+            catch (err) {
+                next(new Error('Internal Server Error'));
+            }
         });
         adminNs.on('connection', (socket) => {
             logger.info('admin-socket:connected', { socketId: socket.id });

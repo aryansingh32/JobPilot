@@ -213,7 +213,9 @@ export type ActionType =
   | 'loop'
   | 'dragDrop'
   | 'goBack'
-  | 'goForward';
+  | 'goForward'
+  | 'credentialFill'
+  | 'paymentGateway';
 
 // ─── Execution Results ───────────────────────────────────────
 

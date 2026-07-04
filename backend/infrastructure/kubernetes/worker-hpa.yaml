@@ -1,0 +1,16 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-scaledobject
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: worker-deployment
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  triggers:
+  - type: redis
+    metadata:
+      address: redis-service.default.svc.cluster.local:6379
+      listName: bull:execute:wait
+      listLength: "5"

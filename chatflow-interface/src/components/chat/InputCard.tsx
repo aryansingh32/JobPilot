@@ -22,6 +22,8 @@ export function InputCard({ msg }: Props) {
       return <ConfirmCard msg={msg} />;
     case "text":
       return <TextCard msg={msg} />;
+    case "credentialFill":
+      return <CredentialFillCard msg={msg} />;
   }
 }
 
@@ -172,7 +174,7 @@ function CaptchaCard({ msg }: { msg: InputCardMessage }) {
 
 function UpiCard({ msg }: { msg: InputCardMessage }) {
   const [v, setV] = useState("");
-  const valid = /^[\w.\-]{2,}@[a-z]{2,}$/i.test(v);
+  const valid = /^[\w.-]{2,}@[a-z]{2,}$/i.test(v);
   return (
     <CardShell icon={<Wallet className="h-4 w-4" />} title="UPI ID">
       <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
@@ -283,6 +285,38 @@ function ClickCaptchaCard({ msg }: { msg: InputCardMessage }) {
           Click the CAPTCHA image on the live screen to solve.
         </p>
       )}
+    </CardShell>
+  );
+}
+
+function CredentialFillCard({ msg }: { msg: InputCardMessage }) {
+  // CRITICAL REQUIREMENT: This PII/Aadhaar auto-save opt-in feature is disabled by default
+  const FEATURE_ENABLED = false;
+
+  if (!FEATURE_ENABLED) return null;
+
+  return (
+    <CardShell icon={<KeyRound className="h-4 w-4" />} title="Saved Credentials">
+      <p className="mb-1 text-sm text-muted-foreground">{msg.prompt}</p>
+      <div className="my-3 text-lg font-semibold tracking-tight">
+        Use saved login for {msg.data?.domain ?? "this site"}?
+      </div>
+      <div className="mt-2 flex gap-2">
+        <button
+          onClick={() => resolveCard(msg.id, "Confirm", msg.jobId)}
+          className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer"
+        >
+          <Check className="mr-1 inline h-4 w-4" />
+          Yes, use saved
+        </button>
+        <button
+          onClick={() => resolveCard(msg.id, "Cancel", msg.jobId)}
+          className="flex-1 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium transition-all hover:bg-muted active:scale-95 cursor-pointer"
+        >
+          <X className="mr-1 inline h-4 w-4" />
+          No, let me type
+        </button>
+      </div>
     </CardShell>
   );
 }

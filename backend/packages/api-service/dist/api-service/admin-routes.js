@@ -5,6 +5,8 @@
 // ============================================================
 import { getPgPool, getRedisClient, CacheKeys } from '../shared/db/index.js';
 import { getBrowserPool } from '../execution-service/browser-pool.js';
+import { recorderService } from '../execution-service/recorder.js';
+import { generalizeSteps } from '../execution-service/llm-generalizer.js';
 import { getAllQueueStats } from '../shared/queue/index.js';
 import { register as promRegister } from 'prom-client';
 import { createLogger } from '../shared/logger/index.js';
@@ -31,10 +33,35 @@ const JOB_ERROR_SQL = `
 // ── Admin Auth Middleware ──────────────────────────────────
 async function adminAuth(req, reply) {
     const key = req.headers['x-admin-key'];
-    const expected = process.env.ADMIN_API_KEY ?? process.env.API_KEY ?? 'dev-key-change-in-prod';
-    if (!key || key !== expected) {
-        logger.warn('admin:auth-failed', { ip: req.ip, url: req.url });
+    if (!key) {
+        logger.warn('admin:auth-missing-key', { ip: req.ip, url: req.url });
         reply.status(401).send({ error: 'Unauthorized — admin key required' });
+        return;
+    }
+    const pool = getPgPool();
+    try {
+        const { rows } = await pool.query('SELECT id, role FROM admins WHERE api_key = $1', [key]);
+        if (!rows.length) {
+            logger.warn('admin:auth-failed', { ip: req.ip, url: req.url });
+            reply.status(401).send({ error: 'Unauthorized — invalid admin key' });
+            return;
+        }
+        const admin = rows[0];
+        req.admin = admin;
+        const method = req.method.toUpperCase();
+        if (method === 'DELETE' && admin.role !== 'super-admin') {
+            reply.status(403).send({ error: 'Forbidden — super-admin required for DELETE' });
+            return;
+        }
+        if ((method === 'POST' || method === 'PUT') && admin.role === 'viewer') {
+            reply.status(403).send({ error: 'Forbidden — editor or super-admin required for POST/PUT' });
+            return;
+        }
+    }
+    catch (err) {
+        logger.error('admin:auth-error', err);
+        reply.status(500).send({ error: 'Internal Server Error' });
+        return;
     }
 }
 // ── Helpers ────────────────────────────────────────────────
@@ -360,6 +387,10 @@ export async function registerAdminRoutes(app) {
                 body.version ?? 1, body.isActive ?? true,
                 body.completionArtifact, JSON.stringify(body.metadata ?? {}),
             ]);
+            const admin = req.admin;
+            if (admin) {
+                await pool.query(`INSERT INTO workflow_audit_log (admin_id, workflow_id, action, diff) VALUES ($1, $2, $3, $4)`, [admin.id, rows[0].id, 'CREATE', JSON.stringify({ new: rows[0] })]);
+            }
             return reply.status(201).send({ workflow: rows[0] });
         }
         catch (e) {
@@ -389,9 +420,14 @@ export async function registerAdminRoutes(app) {
             if (!sets.length)
                 return reply.status(400).send({ error: 'No fields to update' });
             params.push(workflowId);
+            const oldRows = await pool.query('SELECT * FROM site_workflows WHERE id = $1', [workflowId]);
             const { rows } = await pool.query(`UPDATE site_workflows SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${pi} RETURNING *`, params);
             if (!rows.length)
                 return reply.status(404).send({ error: 'Workflow not found' });
+            const admin = req.admin;
+            if (admin && oldRows.rows.length) {
+                await pool.query(`INSERT INTO workflow_audit_log (admin_id, workflow_id, action, diff) VALUES ($1, $2, $3, $4)`, [admin.id, workflowId, 'UPDATE', JSON.stringify({ old: oldRows.rows[0], new: rows[0] })]);
+            }
             return reply.send({ workflow: rows[0] });
         }
         catch (e) {
@@ -402,6 +438,13 @@ export async function registerAdminRoutes(app) {
         const { workflowId } = req.params;
         const pool = getPgPool();
         try {
+            const oldRows = await pool.query('SELECT * FROM site_workflows WHERE id = $1', [workflowId]);
+            if (!oldRows.rows.length)
+                return reply.status(404).send({ error: 'Workflow not found' });
+            const admin = req.admin;
+            if (admin) {
+                await pool.query(`INSERT INTO workflow_audit_log (admin_id, workflow_id, action, diff) VALUES ($1, $2, $3, $4)`, [admin.id, workflowId, 'DELETE', JSON.stringify({ old: oldRows.rows[0] })]);
+            }
             const { rowCount } = await pool.query(`DELETE FROM site_workflows WHERE id = $1`, [workflowId]);
             if (!rowCount)
                 return reply.status(404).send({ error: 'Workflow not found' });
@@ -409,6 +452,37 @@ export async function registerAdminRoutes(app) {
         }
         catch {
             return reply.status(500).send({ error: 'Failed to delete workflow' });
+        }
+    });
+    // ── Workflow Recorder ───────────────────────────────────
+    app.post('/admin/record/start', { preHandler: adminAuth }, async (req, reply) => {
+        const { url, sessionId } = req.body;
+        try {
+            await recorderService.startRecording(sessionId, url);
+            return reply.send({ success: true, sessionId, url });
+        }
+        catch (e) {
+            return reply.status(500).send({ error: e.message });
+        }
+    });
+    app.post('/admin/record/stop', { preHandler: adminAuth }, async (req, reply) => {
+        const { sessionId } = req.body;
+        try {
+            const steps = await recorderService.stopRecording(sessionId);
+            return reply.send({ success: true, steps });
+        }
+        catch (e) {
+            return reply.status(500).send({ error: e.message });
+        }
+    });
+    app.post('/admin/record/generalize', { preHandler: adminAuth }, async (req, reply) => {
+        const { steps } = req.body;
+        try {
+            const generalized = await generalizeSteps(steps);
+            return reply.send({ success: true, generalized });
+        }
+        catch (e) {
+            return reply.status(500).send({ error: e.message });
         }
     });
     // ── Browser Pool Control ────────────────────────────────

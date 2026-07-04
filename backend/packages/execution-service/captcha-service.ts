@@ -35,6 +35,24 @@ export class CaptchaService {
   }
 
   private async solveWithPremiumAPI(challenge: CaptchaChallenge): Promise<string> {
+    const redis = await getRedisClient();
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const spendKey = `captcha:spend:${currentMonth}`;
+    
+    const CAPTCHA_COST = 0.002;
+    const MAX_MONTHLY_SPEND = parseFloat(process.env.MAX_CAPTCHA_SPEND ?? '5.0');
+    
+    const currentSpend = parseFloat((await redis.get(spendKey)) || '0');
+    if (currentSpend + CAPTCHA_COST > MAX_MONTHLY_SPEND) {
+      logger.warn('captcha:spend-cap-reached', { id: challenge.id, currentSpend });
+      return this.solveWithHumanInTheLoop(challenge);
+    }
+
+    await redis.incrByFloat(spendKey, CAPTCHA_COST);
+    if (currentSpend === 0) {
+      await redis.expire(spendKey, 31 * 24 * 60 * 60);
+    }
+
     // Placeholder for 2Captcha / Anti-Captcha / CapSolver integration
     // For now, we'll log and fallback to human if API key is missing
     const apiKey = process.env.CAPTCHA_SOLVER_API_KEY;

@@ -10,9 +10,12 @@
   },
   "dependencies": {
     "@automation/shared": "*",
+    "@types/ws": "^8.18.1",
+    "pidusage": "^4.0.1",
     "playwright": "^1.45.0",
     "playwright-extra": "^4.3.6",
     "prom-client": "^15.1.2",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "ws": "^8.21.0"
   }
 }

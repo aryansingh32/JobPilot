@@ -122,6 +122,16 @@ export interface AdminWorkflow {
   updated_at: string;
 }
 
+export interface AdminZeroShotRun {
+  id: string;
+  user_id: string;
+  site_id: string;
+  prompt: string;
+  status: string;
+  result?: unknown;
+  created_at: string;
+}
+
 export interface CaptchaItem {
   id: string;
   siteId: string;
@@ -236,6 +246,16 @@ export const adminApi = {
   createWorkflow: (data: Partial<AdminWorkflow>) => aPost<{ workflow: AdminWorkflow }>("/admin/workflows", data),
   updateWorkflow: (id: string, data: Partial<AdminWorkflow>) => aPut<{ workflow: AdminWorkflow }>(`/admin/workflows/${id}`, data),
   deleteWorkflow: (id: string) => aDel<{ deleted: boolean }>(`/admin/workflows/${id}`),
+
+  // Zero-Shot Runs
+  listZeroShotRuns: (params?: { limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
+    return aGet<{ runs: AdminZeroShotRun[]; total: number }>(`/admin/zero-shot-runs?${q}`);
+  },
+  promoteToWorkflow: (runId: string, data: Partial<AdminWorkflow>) => 
+    aPost<{ workflow: AdminWorkflow }>(`/admin/zero-shot-runs/${runId}/promote`, data),
 
   // Browsers
   browsers: () => aGet<{ browsers: Record<string, unknown> }>("/admin/browsers"),

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, Paperclip, X, Square } from "lucide-react";
+import { Send, Plus, X, Square, Mic, Paperclip } from "lucide-react";
 
 interface Props {
   onSend: (text: string, files: File[]) => void;
@@ -49,16 +49,16 @@ export function Composer({ onSend, busy, onStop }: Props) {
           const dropped = Array.from(e.dataTransfer.files);
           if (dropped.length) setFiles((f) => [...f, ...dropped]);
         }}
-        className={`mx-auto max-w-3xl rounded-2xl border bg-card shadow-sm transition ${
+        className={`mx-auto flex max-w-3xl flex-col rounded-full border bg-card shadow-sm transition ${
           drag ? "border-primary ring-2 ring-primary/30" : "border-border"
         }`}
       >
         {files.length > 0 && (
-          <div className="flex flex-wrap gap-2 border-b border-border px-3 py-2">
+          <div className="flex flex-wrap gap-2 px-4 pt-3 sm:px-6">
             {files.map((f, i) => (
               <div
                 key={i}
-                className="flex items-center gap-1.5 rounded-lg bg-muted px-2 py-1 text-xs"
+                className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1.5 text-xs font-medium"
               >
                 <Paperclip className="h-3 w-3" />
                 <span className="max-w-[160px] truncate">{f.name}</span>
@@ -72,15 +72,15 @@ export function Composer({ onSend, busy, onStop }: Props) {
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2 px-3 py-2.5">
+        <div className="flex items-end gap-2 px-2 py-2 sm:px-3">
           <button
             onClick={() => fileRef.current?.click()}
             disabled={busy}
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
             aria-label="Attach files"
             type="button"
           >
-            <Paperclip className="h-4 w-4" />
+            <Plus className="h-5 w-5" />
           </button>
           <input
             ref={fileRef}
@@ -105,29 +105,39 @@ export function Composer({ onSend, busy, onStop }: Props) {
               }
             }}
             disabled={busy}
-            placeholder={busy ? "Agent is working…" : "Message agent — try “Download my Aadhaar”"}
-            className="max-h-[200px] flex-1 resize-none bg-transparent py-1.5 text-sm leading-6 placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            placeholder={busy ? "Agent is working…" : "Message agent"}
+            className="max-h-[200px] flex-1 resize-none bg-transparent py-2.5 text-base leading-6 placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
           />
-          {busy ? (
-            <button
-              onClick={onStop}
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-destructive text-destructive-foreground transition-all hover:opacity-90 active:scale-90 cursor-pointer"
-              aria-label="Stop"
-              type="button"
-            >
-              <Square className="h-3.5 w-3.5" />
-            </button>
-          ) : (
-            <button
-              onClick={submit}
-              disabled={!text.trim() && files.length === 0}
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground transition-all hover:opacity-90 active:scale-90 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-              aria-label="Send"
-              type="button"
-            >
-              <Send className="h-4 w-4" />
-            </button>
-          )}
+          <div className="flex shrink-0 items-center gap-1.5 pb-0.5 pr-0.5">
+            {busy ? (
+              <button
+                onClick={onStop}
+                className="grid h-9 w-9 place-items-center rounded-full bg-destructive text-destructive-foreground transition-all hover:opacity-90 active:scale-90 cursor-pointer"
+                aria-label="Stop"
+                type="button"
+              >
+                <Square className="h-4 w-4" />
+              </button>
+            ) : !text.trim() && files.length === 0 ? (
+              <button
+                type="button"
+                className="flex h-9 items-center gap-1.5 rounded-full bg-secondary px-3.5 text-sm font-medium text-secondary-foreground transition-all hover:bg-muted"
+              >
+                <Mic className="h-4 w-4" />
+                Speak
+              </button>
+            ) : (
+              <button
+                onClick={submit}
+                disabled={!text.trim() && files.length === 0}
+                className="grid h-9 w-9 place-items-center rounded-full bg-primary text-primary-foreground transition-all hover:opacity-90 active:scale-90 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+                aria-label="Send"
+                type="button"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
       <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground">
@@ -136,3 +146,4 @@ export function Composer({ onSend, busy, onStop }: Props) {
     </div>
   );
 }
+

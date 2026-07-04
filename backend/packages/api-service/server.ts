@@ -63,7 +63,11 @@ function isAllowedOrigin(origin: string | undefined, allowedOrigins: string[]): 
 
 async function authMiddleware(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const key = req.headers['x-api-key'];
-  const expectedKey = process.env.API_KEY ?? 'dev-key-change-in-prod';
+  const expectedKey = process.env.API_KEY;
+  if (!expectedKey) {
+    reply.status(401).send({ error: 'Unauthorized' });
+    return;
+  }
   if (!key || key !== expectedKey) {
     reply.status(401).send({ error: 'Unauthorized' });
   }
@@ -798,16 +802,27 @@ async function main() {
     io.adapter(createAdapter(pubClient, subClient));
 
     const adminNs = io.of('/admin');
-    adminNs.use((socket, next) => {
+    adminNs.use(async (socket, next) => {
       const auth = socket.handshake.auth as { adminKey?: string } | undefined;
       const headerKey = socket.handshake.headers['x-admin-key'];
       const key = (typeof headerKey === 'string' ? headerKey : undefined) ?? auth?.adminKey;
-      const expected = process.env.ADMIN_API_KEY ?? process.env.API_KEY ?? 'dev-key-change-in-prod';
-      if (!key || key !== expected) {
+      
+      if (!key) {
         next(new Error('Unauthorized'));
         return;
       }
-      next();
+
+      try {
+        const pool = getPgPool();
+        const { rows } = await pool.query('SELECT id FROM admins WHERE api_key = $1', [key]);
+        if (!rows.length) {
+          next(new Error('Unauthorized'));
+          return;
+        }
+        next();
+      } catch (err) {
+        next(new Error('Internal Server Error'));
+      }
     });
     adminNs.on('connection', (socket) => {
       logger.info('admin-socket:connected', { socketId: socket.id });

@@ -32,7 +32,11 @@
     "clean": "rm -rf packages/*/dist tsconfig.tsbuildinfo"
   },
   "devDependencies": {
+    "@types/aws-lambda": "^8.10.162",
+    "@types/bunyan": "^1.8.11",
+    "@types/mysql": "^2.15.27",
     "@types/node": "^20.14.0",
+    "@types/pg-pool": "^2.0.7",
     "@types/pidusage": "^2.0.5",
     "concurrently": "^9.2.1",
     "tsx": "^4.21.0",

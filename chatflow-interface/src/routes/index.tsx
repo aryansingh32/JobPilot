@@ -282,80 +282,75 @@ function Index() {
           className="scroll-thin flex-1 overflow-y-auto"
         >
           {showEmpty ? (
-            <EmptyState onPick={(s) => send(s, [])} backendAvailable={backendAvailable} />
+            <div className="flex h-full flex-col">
+              <EmptyState backendAvailable={backendAvailable} />
+              {liveOpen && (
+                <div className="mx-auto w-full max-w-3xl pb-4">
+                  <LiveScreenPanel
+                    frame={liveFrame}
+                    hot={liveHot}
+                    onClose={() => setLiveOpen(false)}
+                    connected={connected}
+                  />
+                </div>
+              )}
+            </div>
           ) : (
             <div className="py-3">
               {messages.map((m) => (
                 <MessageItem key={m.id} msg={m} />
               ))}
               {typing && <TypingIndicator />}
+              {liveOpen && (
+                <div className="mx-auto w-full max-w-3xl pb-2">
+                  <LiveScreenPanel
+                    frame={liveFrame}
+                    hot={liveHot}
+                    onClose={() => setLiveOpen(false)}
+                    connected={connected}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>
 
+        {showEmpty && (
+          <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-center gap-2 px-4 pb-4">
+            {SUGGESTIONS.map((s) => (
+              <button
+                key={s}
+                onClick={() => send(s, [])}
+                className="rounded-full border border-border bg-transparent px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
         <Composer onSend={send} busy={busy} onStop={() => setBusy(false)} />
       </main>
-
-      {liveOpen && (
-        <LiveScreenPanel
-          frame={liveFrame}
-          hot={liveHot}
-          onClose={() => setLiveOpen(false)}
-          connected={connected}
-        />
-      )}
     </div>
   );
 }
 
 function EmptyState({
-  onPick,
   backendAvailable,
 }: {
-  onPick: (text: string) => void;
   backendAvailable: boolean | null;
 }) {
   return (
     <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-6 text-center">
-      <div className="mb-5 grid h-14 w-14 place-items-center rounded-2xl bg-primary/15 text-primary">
-        <Sparkles className="h-6 w-6" />
-      </div>
-      <h1 className="text-2xl font-semibold tracking-tight">
-        Your AI assistant for government tasks
+      <h1 className="text-3xl font-semibold tracking-tight">
+        How can I help you today?
       </h1>
-      <p className="mt-2 text-sm text-muted-foreground max-w-md">
-        Chat naturally — I can download your Aadhaar, fill job applications, check PAN status, and
-        more. I'll handle the websites and ask you only when I need an OTP or confirmation.
-      </p>
-
+      
       {backendAvailable === false && (
-        <div className="mt-4 flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-4 py-2.5 text-sm text-warning">
-          <WifiOff className="h-4 w-4 shrink-0" />
-          <span>
-            Backend not available. Start it with{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">npm run dev:full</code>
-          </span>
+        <div className="mt-4 text-sm text-warning">
+          Backend not available. Start it with{" "}
+          <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">npm run dev:full</code>
         </div>
       )}
-
-      {backendAvailable === true && (
-        <div className="mt-4 flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-primary">
-          <Wifi className="h-4 w-4 shrink-0" />
-          <span>Connected to backend — ready to automate!</span>
-        </div>
-      )}
-
-      <div className="mt-6 grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {SUGGESTIONS.map((s) => (
-          <button
-            key={s}
-            onClick={() => onPick(s)}
-            className="rounded-xl border border-border bg-card/60 px-4 py-3 text-left text-sm hover:bg-accent transition-colors"
-          >
-            {s}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
