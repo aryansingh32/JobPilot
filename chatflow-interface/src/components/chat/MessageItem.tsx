@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   ChevronDown,
@@ -25,7 +25,10 @@ import type {
 import { InputCard } from "./InputCard";
 import { config } from "@/lib/config";
 
-export function MessageItem({ msg }: { msg: ChatMessage }) {
+// ⚡ Bolt: Wrapped MessageItem in React.memo to prevent unnecessary re-renders of the chat history.
+// Since chat state is managed immutably (e.g. in chat-store.ts), a message's reference won't change
+// unless it's updated, making React.memo highly effective here.
+export const MessageItem = memo(function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
@@ -59,7 +62,7 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
       </div>
     </div>
   );
-}
+});
 
 function BotText({ msg }: { msg: TextMessage }) {
   const [displayed, setDisplayed] = useState("");
