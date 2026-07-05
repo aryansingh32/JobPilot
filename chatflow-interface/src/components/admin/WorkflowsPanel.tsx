@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Plus, Pencil, Trash2, X, Save, Search, ToggleLeft, ToggleRight, Video } from "lucide-react";
 import { adminApi, type AdminWorkflow } from "@/lib/admin-api";
+import { toast } from "sonner";
 import { StatusBadge } from "./StatusBadge";
 import { RecordWorkflowModal } from "./RecordWorkflowModal";
 
@@ -98,7 +99,9 @@ export function WorkflowsPanel() {
         } as any);
       }
       setEditing(null); setShowCreate(false); setShowRecord(false); load();
-    } catch {}
+    } catch (e: any) {
+      toast.error(e.message || "Failed to save workflow");
+    }
   };
 
   const handleDelete = async (id: string) => {

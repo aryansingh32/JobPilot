@@ -45,6 +45,8 @@ function mapPauseToCardKind(type: string): InputCardKind | null {
       return "paymentPending";
     case "upi_id":
       return "upi";
+    case "credentialFill":
+      return "credentialFill";
     case "confirmation":
       return "confirm";
     case "text":

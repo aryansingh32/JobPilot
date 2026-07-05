@@ -520,6 +520,8 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
     }
 
     let captchaUrl = '';
+    let rect: { x: number, y: number, w: number, h: number } | undefined = undefined;
+
     if (step.expectedInput === 'captcha' && step.target) {
       try {
         const locator = await resolveLocator(step, ctx);
@@ -535,6 +537,23 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
       } catch (err) {
         // Ignore if we can't capture the specific captcha image
       }
+    } else if (step.target) {
+      try {
+        const locator = await resolveLocator(step, ctx);
+        if (locator) {
+          const box = await locator.first().boundingBox();
+          const pageW = await ctx.page.evaluate(() => window.innerWidth);
+          const pageH = await ctx.page.evaluate(() => window.innerHeight);
+          if (box && pageW && pageH) {
+            rect = {
+              x: (box.x / pageW) * 100,
+              y: (box.y / pageH) * 100,
+              w: (box.width / pageW) * 100,
+              h: (box.height / pageH) * 100
+            };
+          }
+        }
+      } catch (err) {}
     }
 
     await updateJobRuntimeState(ctx, {
@@ -550,7 +569,7 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
       stepId: step.id,
       type: step.expectedInput || 'text',
       contextMessage: step.contextMessage ?? step.description,
-      data: { captchaUrl }
+      data: { captchaUrl, rect }
     }));
 
     return new Promise<void>((resolve, reject) => {
@@ -814,14 +833,14 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
       await updateJobRuntimeState(ctx, {
         status: 'paused',
         activeStepId: step.id,
-        lastInputType: 'direct_input',
+        lastInputType: 'credentialFill',
       });
       await redis.publish('chat:pause', JSON.stringify({
         jobId: ctx.jobId,
         userId: ctx.userId,
         sessionId: ctx.sessionId,
         stepId: step.id,
-        type: 'direct_input',
+        type: 'credentialFill',
         contextMessage: step.contextMessage || 'Please provide your credential.',
       }));
 

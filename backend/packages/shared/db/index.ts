@@ -481,7 +481,10 @@ export async function seedAdmins(): Promise<void> {
   try {
     const res = await pool.query(`SELECT COUNT(*) FROM admins`);
     if (parseInt(res.rows[0].count) === 0) {
-      const defaultKey = process.env.ADMIN_API_KEY || 'default-super-admin-key-change-me';
+      const defaultKey = process.env.ADMIN_API_KEY;
+      if (!defaultKey) {
+        throw new Error('FATAL: ADMIN_API_KEY environment variable is missing.');
+      }
       await pool.query(
         `INSERT INTO admins (api_key, role) VALUES ($1, 'super-admin')`,
         [defaultKey]

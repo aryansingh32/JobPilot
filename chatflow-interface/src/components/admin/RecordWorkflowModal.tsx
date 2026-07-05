@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { X, Play, Square, Save, ArrowRight, ShieldAlert } from "lucide-react";
+import { X, Play, Square, Save, ArrowRight, ShieldAlert, FlaskConical } from "lucide-react";
 import { socketService } from "@/lib/socket-service";
 import { config } from "@/lib/config";
 import type { AdminWorkflow } from "@/lib/admin-api";
+import { toast } from "sonner";
 
 export function RecordWorkflowModal({ onClose, onPublish }: { onClose: () => void; onPublish: (wf: Partial<AdminWorkflow>) => void; }) {
   const [recording, setRecording] = useState(false);
@@ -68,10 +69,46 @@ export function RecordWorkflowModal({ onClose, onPublish }: { onClose: () => voi
     ]);
   };
 
+  const [isDryRunning, setIsDryRunning] = useState(false);
+
+  const handleDryRun = async () => {
+    if (!form.entry_url && !form.page_url) {
+      toast.error("Please provide an Entry URL or Page URL to dry-run");
+      return;
+    }
+    setIsDryRunning(true);
+    try {
+      const ADMIN_KEY = (import.meta as any).env?.VITE_ADMIN_KEY ?? config.apiKey;
+      const res = await fetch(`${config.apiBaseUrl}/admin/record/dry-run`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-key": ADMIN_KEY
+        },
+        body: JSON.stringify({
+          url: form.entry_url || form.page_url,
+          steps: generalizedSteps
+        })
+      });
+      if (!res.ok) throw new Error("Dry-run failed");
+      const data = await res.json();
+      if (data.success) {
+        toast.success(`Dry-run passed! (${data.durationMs}ms)`);
+      } else {
+        toast.error(`Dry-run failed at step ${data.failedStepId}: ${data.error}`);
+      }
+    } catch (e: any) {
+      toast.error(e.message || "Failed to run dry-run");
+    } finally {
+      setIsDryRunning(false);
+    }
+  };
+
   const handlePublish = () => {
     onPublish({
       ...form,
-      instructions: JSON.stringify(generalizedSteps, null, 2)
+      instructions: JSON.stringify(generalizedSteps, null, 2),
+      starterActionPlan: generalizedSteps
     });
   };
 
@@ -87,6 +124,9 @@ export function RecordWorkflowModal({ onClose, onPublish }: { onClose: () => voi
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Workflow Name" className="rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none flex-1 min-h-[16px]" />
           <input value={form.site_id} onChange={(e) => setForm({ ...form, site_id: e.target.value })} placeholder="Site ID" className="rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none flex-1 min-h-[16px]" />
           <input value={form.trigger} onChange={(e) => setForm({ ...form, trigger: e.target.value })} placeholder="Trigger Phrase" className="rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none flex-1 min-h-[16px]" />
+        </div>
+        <div className="flex gap-4 mb-3">
+          <input value={form.entry_url || ""} onChange={(e) => setForm({ ...form, entry_url: e.target.value })} placeholder="Entry URL (for Dry Run)" className="rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none flex-1 min-h-[16px]" />
         </div>
         
         <div className="mb-4">
@@ -113,9 +153,14 @@ export function RecordWorkflowModal({ onClose, onPublish }: { onClose: () => voi
             <ShieldAlert className="h-3.5 w-3.5" /> Mark as Captcha
           </button>
 
-          <button onClick={handleGeneralize} disabled={rawSteps.length === 0 || isGeneralizing} className="flex items-center gap-1.5 rounded-xl bg-primary/20 text-primary px-4 py-2 text-xs font-medium hover:bg-primary/30 transition disabled:opacity-50 ml-auto">
-            <ArrowRight className="h-3.5 w-3.5" /> {isGeneralizing ? "Generalizing..." : "Generalize"}
-          </button>
+          <div className="ml-auto flex gap-2">
+            <button onClick={handleDryRun} disabled={generalizedSteps.length === 0 || isDryRunning} className="flex items-center gap-1.5 rounded-xl bg-amber-500/20 text-amber-500 px-4 py-2 text-xs font-medium hover:bg-amber-500/30 transition disabled:opacity-50">
+              <FlaskConical className="h-3.5 w-3.5" /> {isDryRunning ? "Testing..." : "Dry Run"}
+            </button>
+            <button onClick={handleGeneralize} disabled={rawSteps.length === 0 || isGeneralizing} className="flex items-center gap-1.5 rounded-xl bg-primary/20 text-primary px-4 py-2 text-xs font-medium hover:bg-primary/30 transition disabled:opacity-50">
+              <ArrowRight className="h-3.5 w-3.5" /> {isGeneralizing ? "Generalizing..." : "Generalize"}
+            </button>
+          </div>
         </div>
         
         <div className="flex-1 grid grid-cols-2 gap-4 min-h-[250px] overflow-hidden">

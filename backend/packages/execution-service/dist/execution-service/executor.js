@@ -429,6 +429,7 @@ const ACTION_HANDLERS = {
             stream.setFps(3);
         }
         let captchaUrl = '';
+        let rect = undefined;
         if (step.expectedInput === 'captcha' && step.target) {
             try {
                 const locator = await resolveLocator(step, ctx);
@@ -447,6 +448,25 @@ const ACTION_HANDLERS = {
                 // Ignore if we can't capture the specific captcha image
             }
         }
+        else if (step.target) {
+            try {
+                const locator = await resolveLocator(step, ctx);
+                if (locator) {
+                    const box = await locator.first().boundingBox();
+                    const pageW = await ctx.page.evaluate(() => window.innerWidth);
+                    const pageH = await ctx.page.evaluate(() => window.innerHeight);
+                    if (box && pageW && pageH) {
+                        rect = {
+                            x: (box.x / pageW) * 100,
+                            y: (box.y / pageH) * 100,
+                            w: (box.width / pageW) * 100,
+                            h: (box.height / pageH) * 100
+                        };
+                    }
+                }
+            }
+            catch (err) { }
+        }
         await updateJobRuntimeState(ctx, {
             status: 'paused',
             activeStepId: step.id,
@@ -459,7 +479,7 @@ const ACTION_HANDLERS = {
             stepId: step.id,
             type: step.expectedInput || 'text',
             contextMessage: step.contextMessage ?? step.description,
-            data: { captchaUrl }
+            data: { captchaUrl, rect }
         }));
         return new Promise((resolve, reject) => {
             const subRedis = redis.duplicate();

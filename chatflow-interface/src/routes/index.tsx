@@ -129,8 +129,19 @@ function Index() {
       setConnected(socketService.connected);
     }, 2000);
 
+    const handleResolve = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (store.activeId) {
+        store.updateMessage(store.activeId, detail.id, {
+          resolved: { value: detail.value, at: Date.now() }
+        });
+      }
+    };
+    window.addEventListener("agent-card-resolve", handleResolve);
+
     return () => {
       clearInterval(interval);
+      window.removeEventListener("agent-card-resolve", handleResolve);
     };
   }, [store.hydrated, getEmitter]);
 

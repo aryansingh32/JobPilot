@@ -3,7 +3,10 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 const ALGORITHM = 'aes-256-gcm';
 
 function getSecretKey() {
-  const key = process.env.APP_SECRET_KEY || 'default_secret_key_32_bytes_long.';
+  const key = process.env.APP_SECRET_KEY;
+  if (!key) {
+    throw new Error('FATAL: APP_SECRET_KEY environment variable is missing.');
+  }
   if (key.length !== 32) {
     return Buffer.from(key.padEnd(32, '0').slice(0, 32));
   }

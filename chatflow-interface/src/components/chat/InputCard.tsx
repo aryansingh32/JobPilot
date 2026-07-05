@@ -59,8 +59,8 @@ function ResolvedCard({ msg }: { msg: InputCardMessage }) {
   const label =
     msg.kind === "confirm"
       ? msg.resolved!.value
-      : msg.kind === "otp"
-        ? "•".repeat(msg.resolved!.value.length)
+      : (msg.kind === "otp" || msg.kind === "credentialFill" || msg.data?.inputType === "password")
+        ? "•".repeat(Math.max(8, msg.resolved!.value.length))
         : msg.resolved!.value;
   return (
     <div className="rounded-xl border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground flex items-center gap-2">
@@ -296,8 +296,11 @@ function ClickCaptchaCard({ msg }: { msg: InputCardMessage }) {
 }
 
 function CredentialFillCard({ msg }: { msg: InputCardMessage }) {
+  const FEATURE_ENABLED = true; // Deliberately gated until crypto envs are fully hardened
   const [val, setVal] = useState("");
   const [mode, setMode] = useState<"ask" | "type">("ask");
+
+  if (!FEATURE_ENABLED) return null;
 
   if (mode === "ask") {
     return (
@@ -399,8 +402,12 @@ function SliderCaptchaCard({ msg }: { msg: InputCardMessage }) {
     <CardShell icon={<ShieldCheck className="h-4 w-4" />} title="Slide to verify">
        <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
        {msg.data?.captchaUrl && (
-         <div className="mb-3 overflow-hidden rounded-lg border border-border bg-background">
-           <img src={msg.data.captchaUrl} className="block max-h-64 max-w-full object-contain" alt="Slider Captcha" />
+         <div className="mb-3 relative overflow-hidden rounded-lg border border-border bg-background">
+           <img src={msg.data.captchaUrl} className="block max-h-64 w-full object-contain pointer-events-none" alt="Slider Captcha" />
+           <div 
+             className="absolute top-0 bottom-0 border-l-2 border-primary bg-primary/20 pointer-events-none"
+             style={{ left: `${val}%`, width: '40px' }}
+           />
          </div>
        )}
        <input 

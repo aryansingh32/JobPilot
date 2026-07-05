@@ -48,17 +48,15 @@ export class CaptchaService {
       return this.solveWithHumanInTheLoop(challenge);
     }
 
-    await redis.incrByFloat(spendKey, CAPTCHA_COST);
-    if (currentSpend === 0) {
-      await redis.expire(spendKey, 31 * 24 * 60 * 60);
-    }
-
-    // Placeholder for 2Captcha / Anti-Captcha / CapSolver integration
-    // For now, we'll log and fallback to human if API key is missing
     const apiKey = process.env.CAPTCHA_SOLVER_API_KEY;
     if (!apiKey) {
       logger.warn('captcha:premium-api-key-missing', { id: challenge.id });
       return this.solveWithHumanInTheLoop(challenge);
+    }
+
+    await redis.incrByFloat(spendKey, CAPTCHA_COST);
+    if (currentSpend === 0) {
+      await redis.expire(spendKey, 31 * 24 * 60 * 60);
     }
 
     // Actual API call logic would go here

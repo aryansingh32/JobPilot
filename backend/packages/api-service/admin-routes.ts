@@ -8,6 +8,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { getPgPool, getRedisClient, CacheKeys } from '../shared/db/index.js';
 import { getBrowserPool } from '../execution-service/browser-pool.js';
 import { recorderService } from '../execution-service/recorder.js';
+import { dryRunService } from '../execution-service/dry-run-service.js';
 import { generalizeSteps } from '../execution-service/llm-generalizer.js';
 import { getAllQueueStats } from '../shared/queue/index.js';
 import { register as promRegister } from 'prom-client';
@@ -525,6 +526,16 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     try {
       const generalized = await generalizeSteps(steps);
       return reply.send({ success: true, generalized });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  app.post('/admin/record/dry-run', { preHandler: adminAuth }, async (req, reply) => {
+    const { url, steps } = req.body as { url: string; steps: any[] };
+    try {
+      const result = await dryRunService.runDryRun(url, steps);
+      return reply.send(result);
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
     }
