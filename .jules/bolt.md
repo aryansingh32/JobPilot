@@ -1,0 +1,3 @@
+## 2024-05-19 - React.memo with Immutable Chat State
+**Learning:** The chat interface manages its chat state immutably, meaning messages that have already been rendered do not change their reference unless modified. This architectural decision makes wrapping individual chat message components (`MessageItem`) in `React.memo` highly effective for optimizing the rendering performance of dynamic lists, such as the main chat message history view. Without it, adding a new message to the list would trigger re-renders for all prior messages.
+**Action:** When working on interfaces displaying dynamic lists fed by immutable state within this codebase, prioritize wrapping the individual item components with `React.memo`.
