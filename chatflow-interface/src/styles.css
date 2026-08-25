@@ -43,8 +43,8 @@
 
 :root {
   --radius: 0.875rem;
-  /* Dark mode by default per spec */
-  --background: oklch(0.10 0.002 260);
+  /* Dark mode by default per spec — true black, zero chroma, single blue accent */
+  --background: oklch(0.09 0 0);
   --foreground: oklch(0.98 0 0);
   --card: oklch(0.14 0 0);
   --card-foreground: oklch(0.98 0 0);

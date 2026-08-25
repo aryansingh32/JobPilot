@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   LayoutDashboard,
@@ -19,7 +19,9 @@ import {
   Orbit,
   Fingerprint,
   Sparkles,
+  Menu,
 } from "lucide-react";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
 interface NavItem {
   id: string;
@@ -45,6 +47,55 @@ const NAV_ITEMS: NavItem[] = [
   { id: "security", label: "Security", icon: <ShieldCheck className="h-4 w-4" /> },
 ];
 
+function Brand({ collapsed }: { collapsed?: boolean }) {
+  return (
+    <div className="flex items-center gap-2.5 border-b border-border/40 px-4 py-4">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground text-xs font-bold">
+        CF
+      </div>
+      {!collapsed && (
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-foreground tracking-tight">ChatFlow</div>
+          <div className="text-[10px] text-muted-foreground">Admin Panel</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NavList({
+  activeTab,
+  onTabChange,
+  collapsed,
+}: {
+  activeTab: string;
+  onTabChange: (tab: string) => void;
+  collapsed?: boolean;
+}) {
+  return (
+    <nav className="flex-1 overflow-y-auto py-2 scroll-thin">
+      {NAV_ITEMS.map((item) => (
+        <button
+          key={item.id}
+          onClick={() => onTabChange(item.id)}
+          className={`group flex w-full items-center gap-2.5 px-4 py-2 text-sm transition-all duration-150 ${
+            activeTab === item.id
+              ? "bg-primary/15 text-primary border-l-2 border-primary"
+              : "text-muted-foreground hover:bg-accent/60 hover:text-foreground border-l-2 border-transparent"
+          }`}
+        >
+          <span
+            className={`shrink-0 ${activeTab === item.id ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
+          >
+            {item.icon}
+          </span>
+          {!collapsed && <span className="truncate">{item.label}</span>}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 export function AdminLayout({
   activeTab,
   onTabChange,
@@ -59,49 +110,23 @@ export function AdminLayout({
   lastUpdated?: string;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  const selectTab = (tab: string) => {
+    onTabChange(tab);
+    setMobileNavOpen(false);
+  };
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">
-      {/* ── Sidebar ─────────────────────────────────── */}
+      {/* ── Sidebar (desktop) ──────────────────────── */}
       <aside
-        className={`flex flex-col border-r border-border/50 bg-background transition-all duration-300 ${
+        className={`hidden flex-col border-r border-border/50 bg-background transition-all duration-300 md:flex ${
           collapsed ? "w-16" : "w-60"
         }`}
       >
-        {/* Brand */}
-        <div className="flex items-center gap-2.5 border-b border-border/40 px-4 py-4">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-fuchsia-500 text-white text-xs font-bold shadow-lg shadow-primary/25">
-            CF
-          </div>
-          {!collapsed && (
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-foreground tracking-tight">ChatFlow</div>
-              <div className="text-[10px] text-muted-foreground">Admin Panel</div>
-            </div>
-          )}
-        </div>
-
-        {/* Nav Items */}
-        <nav className="flex-1 overflow-y-auto py-2 scroll-thin">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => onTabChange(item.id)}
-              className={`group flex w-full items-center gap-2.5 px-4 py-2 text-sm transition-all duration-150 ${
-                activeTab === item.id
-                  ? "bg-gradient-to-r from-primary/15 to-fuchsia-500/10 text-primary border-l-2 border-primary"
-                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground border-l-2 border-transparent"
-              }`}
-            >
-              <span className={`shrink-0 ${activeTab === item.id ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}>
-                {item.icon}
-              </span>
-              {!collapsed && <span className="truncate">{item.label}</span>}
-            </button>
-          ))}
-        </nav>
-
-        {/* Collapse toggle */}
+        <Brand collapsed={collapsed} />
+        <NavList activeTab={activeTab} onTabChange={onTabChange} collapsed={collapsed} />
         <button
           onClick={() => setCollapsed((c) => !c)}
           className="flex items-center justify-center border-t border-border/40 py-3 text-muted-foreground hover:text-foreground transition"
@@ -110,24 +135,40 @@ export function AdminLayout({
         </button>
       </aside>
 
+      {/* ── Sidebar (mobile, Sheet drawer) ─────────── */}
+      <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+        <SheetContent side="left" className="flex w-72 flex-col p-0">
+          <SheetTitle className="sr-only">Admin navigation</SheetTitle>
+          <Brand />
+          <NavList activeTab={activeTab} onTabChange={selectTab} />
+        </SheetContent>
+      </Sheet>
+
       {/* ── Main Content ────────────────────────────── */}
       <main className="flex flex-1 flex-col min-w-0 overflow-hidden">
         {/* Top bar */}
-        <header className="flex items-center justify-between border-b border-border/40 bg-background px-6 py-3">
-          <div className="flex items-center gap-3">
-            <h1 className="text-lg font-semibold tracking-tight text-foreground">
+        <header className="flex items-center justify-between border-b border-border/40 bg-background px-3 py-3 sm:px-6">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <button
+              onClick={() => setMobileNavOpen(true)}
+              className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+              aria-label="Open admin navigation"
+            >
+              <Menu className="h-4 w-4" />
+            </button>
+            <h1 className="truncate text-base font-semibold tracking-tight text-foreground sm:text-lg">
               {NAV_ITEMS.find((n) => n.id === activeTab)?.label ?? "Admin"}
             </h1>
             <Link
               to="/"
-              className="ml-2 rounded-md px-2 py-1 text-[11px] text-muted-foreground border border-border/50 hover:bg-accent/50 transition"
+              className="ml-1 hidden shrink-0 rounded-md border border-border/50 px-2 py-1 text-[11px] text-muted-foreground transition hover:bg-accent/50 sm:ml-2 sm:inline-block"
             >
               ← Back to Chat
             </Link>
           </div>
           <div className="flex items-center gap-3">
             {lastUpdated && (
-              <span className="text-[10px] text-muted-foreground">
+              <span className="hidden text-[10px] text-muted-foreground sm:inline">
                 Updated {lastUpdated}
               </span>
             )}
@@ -137,14 +178,16 @@ export function AdminLayout({
                 className="flex items-center gap-1.5 rounded-md bg-primary/15 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/25 transition"
               >
                 <RefreshCw className="h-3 w-3" />
-                Refresh
+                <span className="hidden sm:inline">Refresh</span>
               </button>
             )}
           </div>
         </header>
 
         {/* Page content */}
-        <div className="flex-1 overflow-y-auto p-6 scroll-thin">{children}</div>
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 scroll-thin sm:p-6">
+          {children}
+        </div>
       </main>
     </div>
   );

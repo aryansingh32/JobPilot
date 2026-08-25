@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
-import { X, Play, Square, Save, ArrowRight, ShieldAlert, FlaskConical } from "lucide-react";
+import { Play, Square, Save, ArrowRight, ShieldAlert, FlaskConical } from "lucide-react";
 import { socketService } from "@/lib/socket-service";
 import { config } from "@/lib/config";
 import type { AdminWorkflow } from "@/lib/admin-api";
 import { toast } from "sonner";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
 export function RecordWorkflowModal({
   onClose,
@@ -123,19 +130,13 @@ export function RecordWorkflowModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col rounded-2xl border border-border bg-background p-6 shadow-2xl">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-foreground">Record New Workflow</h3>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent transition"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle>Record New Workflow</DialogTitle>
+        </DialogHeader>
 
-        <div className="flex gap-4 mb-3">
+        <div className="flex flex-col gap-3 mb-3 sm:flex-row sm:gap-4 sm:mb-0">
           <input
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -173,7 +174,7 @@ export function RecordWorkflowModal({
           />
         </div>
 
-        <div className="flex gap-2 mb-4">
+        <div className="flex flex-wrap gap-2 mb-4">
           {!recording ? (
             <button
               onClick={() => setRecording(true)}
@@ -197,7 +198,7 @@ export function RecordWorkflowModal({
             <ShieldAlert className="h-3.5 w-3.5" /> Mark as Captcha
           </button>
 
-          <div className="ml-auto flex gap-2">
+          <div className="flex gap-2 sm:ml-auto">
             <button
               onClick={handleDryRun}
               disabled={generalizedSteps.length === 0 || isDryRunning}
@@ -216,7 +217,7 @@ export function RecordWorkflowModal({
           </div>
         </div>
 
-        <div className="flex-1 grid grid-cols-2 gap-4 min-h-[250px] overflow-hidden">
+        <div className="flex-1 grid grid-cols-1 gap-4 min-h-[250px] overflow-y-auto sm:grid-cols-2 sm:overflow-hidden">
           <div className="flex flex-col border border-border rounded-xl overflow-hidden bg-card/40">
             <div className="bg-muted px-3 py-2 text-xs font-semibold border-b border-border">
               Raw Recorded Steps ({rawSteps.length})
@@ -237,7 +238,7 @@ export function RecordWorkflowModal({
           </div>
         </div>
 
-        <div className="mt-5 flex justify-end gap-2">
+        <DialogFooter className="mt-5">
           <button
             onClick={onClose}
             className="rounded-xl border border-border px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition"
@@ -247,12 +248,12 @@ export function RecordWorkflowModal({
           <button
             onClick={handlePublish}
             disabled={generalizedSteps.length === 0}
-            className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition disabled:opacity-50"
+            className="flex items-center justify-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition disabled:opacity-50"
           >
             <Save className="h-3.5 w-3.5" /> Publish
           </button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -143,7 +143,7 @@ export function ChatSidebar({
                   e.stopPropagation();
                   onDelete(t.id);
                 }}
-                className="rounded p-1 text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:bg-destructive/20 hover:text-destructive"
+                className="rounded p-1 text-muted-foreground opacity-100 transition hover:bg-destructive/20 hover:text-destructive md:opacity-0 md:group-hover:opacity-100"
                 aria-label="Delete chat"
               >
                 <Trash2 className="h-3.5 w-3.5" />
