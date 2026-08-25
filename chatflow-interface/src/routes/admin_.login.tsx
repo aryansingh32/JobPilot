@@ -8,7 +8,7 @@ import { createLogger } from "@/lib/logger";
 
 const logger = createLogger("admin-login-route");
 
-export const Route = createFileRoute("/admin/login")({
+export const Route = createFileRoute("/admin_/login")({
   head: () => ({ meta: [{ title: "Admin sign in — Agent" }] }),
   component: AdminLoginPage,
 });
