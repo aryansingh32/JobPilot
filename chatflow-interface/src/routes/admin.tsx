@@ -1,5 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useState, useCallback } from "react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useState, useCallback, useEffect } from "react";
+import { authClient } from "@/lib/auth-client";
 import { AdminLayout } from "@/components/admin/AdminLayout";
 import { Dashboard } from "@/components/admin/Dashboard";
 import { JobsPanel } from "@/components/admin/JobsPanel";
@@ -22,7 +23,8 @@ export const Route = createFileRoute("/admin")({
       { title: "ChatFlow Admin — System Control Panel" },
       {
         name: "description",
-        content: "SaaS-level admin panel for full system control, user management, workflow CRUD, captcha solving, and monitoring.",
+        content:
+          "SaaS-level admin panel for full system control, user management, workflow CRUD, captcha solving, and monitoring.",
       },
     ],
   }),
@@ -33,6 +35,20 @@ function AdminPage() {
   const [tab, setTab] = useState("observability");
   const [refreshKey, setRefreshKey] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<string>(new Date().toLocaleTimeString());
+  const [authorized, setAuthorized] = useState<boolean | null>(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let cancelled = false;
+    authClient.adminSession().then((session) => {
+      if (cancelled) return;
+      setAuthorized(!!session);
+      if (!session) navigate({ to: "/admin/login" });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
 
   const handleRefresh = useCallback(() => {
     setRefreshKey((k) => k + 1);
@@ -41,24 +57,44 @@ function AdminPage() {
 
   const renderTab = () => {
     switch (tab) {
-      case "observability": return <ObservabilityCommandCenter key={refreshKey} />;
-      case "sessions": return <SessionIntelPanel key={refreshKey} />;
-      case "copilot": return <DebugCopilotPanel key={refreshKey} />;
-      case "dashboard": return <Dashboard key={refreshKey} />;
-      case "jobs": return <JobsPanel key={refreshKey} />;
-      case "users": return <UsersPanel key={refreshKey} />;
-      case "workflows": return <WorkflowsPanel key={refreshKey} />;
-      case "sites": return <SitesPanel key={refreshKey} />;
-      case "captcha": return <CaptchaPanel key={refreshKey} />;
-      case "browsers": return <BrowsersPanel key={refreshKey} />;
-      case "logs": return <LogsPanel key={refreshKey} />;
-      case "errors": return <ErrorsPanel key={refreshKey} />;
-      case "network": return <NetworkPanel key={refreshKey} />;
-      case "metrics": return <MetricsPanel key={refreshKey} />;
-      case "security": return <SecurityPanel />;
-      default: return <Dashboard key={refreshKey} />;
+      case "observability":
+        return <ObservabilityCommandCenter key={refreshKey} />;
+      case "sessions":
+        return <SessionIntelPanel key={refreshKey} />;
+      case "copilot":
+        return <DebugCopilotPanel key={refreshKey} />;
+      case "dashboard":
+        return <Dashboard key={refreshKey} />;
+      case "jobs":
+        return <JobsPanel key={refreshKey} />;
+      case "users":
+        return <UsersPanel key={refreshKey} />;
+      case "workflows":
+        return <WorkflowsPanel key={refreshKey} />;
+      case "sites":
+        return <SitesPanel key={refreshKey} />;
+      case "captcha":
+        return <CaptchaPanel key={refreshKey} />;
+      case "browsers":
+        return <BrowsersPanel key={refreshKey} />;
+      case "logs":
+        return <LogsPanel key={refreshKey} />;
+      case "errors":
+        return <ErrorsPanel key={refreshKey} />;
+      case "network":
+        return <NetworkPanel key={refreshKey} />;
+      case "metrics":
+        return <MetricsPanel key={refreshKey} />;
+      case "security":
+        return <SecurityPanel />;
+      default:
+        return <Dashboard key={refreshKey} />;
     }
   };
+
+  if (!authorized) {
+    return <div className="h-screen w-screen bg-background" />;
+  }
 
   return (
     <AdminLayout

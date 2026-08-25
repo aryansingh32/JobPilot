@@ -430,13 +430,34 @@ CREATE INDEX IF NOT EXISTS idx_error_reports_fingerprint ON error_reports(finger
 CREATE INDEX IF NOT EXISTS idx_error_reports_user ON error_reports(user_id, ts DESC);
 
 
+-- ── Users (real end-user accounts — Google / email OTP / mobile OTP) ──
+CREATE TABLE IF NOT EXISTS users (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  email           TEXT UNIQUE,
+  email_verified  BOOLEAN DEFAULT false,
+  mobile_number   TEXT UNIQUE,
+  mobile_verified BOOLEAN DEFAULT false,
+  google_id       TEXT UNIQUE,
+  display_name    TEXT,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  last_login_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_mobile ON users(mobile_number);
+CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
+
 -- ── Admins ───────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS admins (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  api_key TEXT NOT NULL UNIQUE,
+  api_key TEXT UNIQUE,
+  username TEXT UNIQUE,
+  password_hash TEXT,
   role TEXT NOT NULL CHECK (role IN ('viewer', 'editor', 'super-admin')),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE admins ALTER COLUMN api_key DROP NOT NULL;
+ALTER TABLE admins ADD COLUMN IF NOT EXISTS username TEXT UNIQUE;
+ALTER TABLE admins ADD COLUMN IF NOT EXISTS password_hash TEXT;
 
 -- ── Workflow Audit Log ───────────────────────────────────────
 CREATE TABLE IF NOT EXISTS workflow_audit_log (
@@ -481,18 +502,32 @@ export async function seedAdmins(): Promise<void> {
   try {
     const res = await pool.query(`SELECT COUNT(*) FROM admins`);
     if (parseInt(res.rows[0].count) === 0) {
+      const username = process.env.ADMIN_USERNAME;
+      const password = process.env.ADMIN_PASSWORD;
       const defaultKey = process.env.ADMIN_API_KEY;
-      if (!defaultKey) {
-        throw new Error('FATAL: ADMIN_API_KEY environment variable is missing.');
+
+      if (!username && !password && !defaultKey) {
+        throw new Error(
+          'FATAL: no admin credentials configured — set ADMIN_USERNAME + ADMIN_PASSWORD (for the admin login screen) and/or ADMIN_API_KEY (for scripted/CI access).'
+        );
       }
-      await pool.query(
-        `INSERT INTO admins (api_key, role) VALUES ($1, 'super-admin')`,
-        [defaultKey]
-      );
-      logger.info('migrations:seeded-default-admin');
+
+      if (username && password) {
+        const { hashPassword } = await import('../auth/index.js');
+        const passwordHash = await hashPassword(password);
+        await pool.query(
+          `INSERT INTO admins (username, password_hash, api_key, role) VALUES ($1, $2, $3, 'super-admin')`,
+          [username, passwordHash, defaultKey ?? null]
+        );
+        logger.info('migrations:seeded-default-admin', { username });
+      } else if (defaultKey) {
+        await pool.query(`INSERT INTO admins (api_key, role) VALUES ($1, 'super-admin')`, [defaultKey]);
+        logger.info('migrations:seeded-default-admin-key-only');
+      }
     }
   } catch (err) {
     logger.error('migrations:seed-admins-failed', err);
+    throw err;
   }
 }
 

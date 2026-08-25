@@ -1,9 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { PanelLeft, Monitor, Sparkles, Wifi, WifiOff, ShieldCheck } from "lucide-react";
 import { useChatStore, uid } from "@/lib/chat-store";
 import { PROFILES } from "@/lib/chat-types";
-import type { ChatMessage, FileAttachment } from "@/lib/chat-types";
+import type { ChatMessage, FileAttachment, InputCardMessage } from "@/lib/chat-types";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { LiveScreenPanel } from "@/components/chat/LiveScreenPanel";
 import { Composer } from "@/components/chat/Composer";
@@ -16,6 +16,7 @@ import {
 } from "@/lib/backend-connector";
 import { api } from "@/lib/api-client";
 import { socketService } from "@/lib/socket-service";
+import { authClient, type AuthUser } from "@/lib/auth-client";
 import { createLogger } from "@/lib/logger";
 
 const logger = createLogger("frontend-index-route");
@@ -54,6 +55,25 @@ function Index() {
   const [profileId, setProfileId] = useState("personal");
   const [connected, setConnected] = useState(false);
   const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const navigate = useNavigate();
+
+  // Require a signed-in session — chat, memory, and files are all scoped to
+  // the authenticated user server-side, so there is nothing useful to show
+  // before this resolves.
+  useEffect(() => {
+    let cancelled = false;
+    authClient.me().then((user) => {
+      if (cancelled) return;
+      setAuthUser(user);
+      setAuthChecked(true);
+      if (!user) navigate({ to: "/login" });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
 
   // "New chat" handler — resets the backend session and creates a fresh UI thread
   const handleNewChat = useCallback(() => {
@@ -133,7 +153,7 @@ function Index() {
       const detail = (e as CustomEvent).detail;
       if (store.activeId) {
         store.updateMessage(store.activeId, detail.id, {
-          resolved: { value: detail.value, at: Date.now() }
+          resolved: { value: detail.value, at: Date.now() },
         });
       }
     };
@@ -216,6 +236,12 @@ function Index() {
 
   const showEmpty = messages.length === 0;
 
+  if (!authChecked || !authUser) {
+    // Either still checking the session, or the redirect to /login is in
+    // flight — render nothing rather than a flash of an unauthenticated chat.
+    return <div className="h-[100dvh] w-screen bg-background" />;
+  }
+
   return (
     <div className="flex h-[100dvh] w-screen overflow-hidden bg-background text-foreground pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] relative">
       <ChatSidebar
@@ -231,7 +257,10 @@ function Index() {
         onProfileChange={setProfileId}
       />
       {sidebarOpen && (
-        <div onClick={() => setSidebarOpen(false)} className="absolute inset-0 z-30 bg-black/50 md:hidden" />
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="absolute inset-0 z-30 bg-black/50 md:hidden"
+        />
       )}
 
       <main className="flex h-full min-w-0 flex-1 flex-col">
@@ -287,6 +316,15 @@ function Index() {
             <ShieldCheck className="h-3.5 w-3.5" />
             Admin
           </a>
+          {authUser && (
+            <button
+              onClick={() => authClient.logout().then(() => navigate({ to: "/login" }))}
+              className="ml-1 hidden text-xs font-medium text-muted-foreground hover:text-foreground transition sm:inline"
+              title={authUser.email ?? authUser.mobileNumber ?? "Signed in"}
+            >
+              Sign out
+            </button>
+          )}
         </header>
 
         <div
@@ -314,20 +352,23 @@ function Index() {
                 <MessageItem key={m.id} msg={m} />
               ))}
               {typing && <TypingIndicator />}
-              {liveOpen && (() => {
-                 const activePause = messages.find((m) => m.type === "input-card" && !m.resolved) as InputCardMessage | undefined;
-                 return (
-                  <div className="mx-auto w-full max-w-3xl pb-2">
-                    <LiveScreenPanel
-                      frame={liveFrame}
-                      hot={liveHot}
-                      onClose={() => setLiveOpen(false)}
-                      connected={connected}
-                      activePause={activePause}
-                    />
-                  </div>
-                 );
-              })()}
+              {liveOpen &&
+                (() => {
+                  const activePause = messages.find(
+                    (m) => m.type === "input-card" && !m.resolved,
+                  ) as InputCardMessage | undefined;
+                  return (
+                    <div className="mx-auto w-full max-w-3xl pb-2">
+                      <LiveScreenPanel
+                        frame={liveFrame}
+                        hot={liveHot}
+                        onClose={() => setLiveOpen(false)}
+                        connected={connected}
+                        activePause={activePause}
+                      />
+                    </div>
+                  );
+                })()}
             </div>
           )}
         </div>
@@ -351,17 +392,11 @@ function Index() {
   );
 }
 
-function EmptyState({
-  backendAvailable,
-}: {
-  backendAvailable: boolean | null;
-}) {
+function EmptyState({ backendAvailable }: { backendAvailable: boolean | null }) {
   return (
     <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-6 text-center">
-      <h1 className="text-3xl font-semibold tracking-tight">
-        How can I help you today?
-      </h1>
-      
+      <h1 className="text-3xl font-semibold tracking-tight">How can I help you today?</h1>
+
       {backendAvailable === false && (
         <div className="mt-4 text-sm text-warning">
           Backend not available. Start it with{" "}

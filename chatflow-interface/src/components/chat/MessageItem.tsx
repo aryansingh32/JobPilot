@@ -178,9 +178,7 @@ function DownloadCard({ msg }: { msg: DownloadMessage }) {
   const downloadFile = () => {
     // Use backend download URL if fileId is available
     if (msg.fileId || msg.downloadUrl) {
-      const url =
-        msg.downloadUrl ||
-        `${config.apiBaseUrl}/files/${msg.fileId}/download?userId=${config.userId}`;
+      const url = msg.downloadUrl || `${config.apiBaseUrl}/files/${msg.fileId}/download`;
 
       // Open in a new tab / trigger download with auth header
       // For simple downloads, we use a hidden anchor
@@ -191,6 +189,7 @@ function DownloadCard({ msg }: { msg: DownloadMessage }) {
       // we'd need to use fetch + blob. For now, try direct:
       fetch(url, {
         headers: { "x-api-key": config.apiKey },
+        credentials: "include", // sends the jp_session cookie so the backend can authorize this file
       })
         .then((res) => res.blob())
         .then((blob) => {

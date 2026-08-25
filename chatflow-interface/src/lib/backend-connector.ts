@@ -5,7 +5,6 @@
 // ============================================================
 
 import { uid } from "./chat-store";
-import { config } from "./config";
 import { api, type UserFile } from "./api-client";
 import {
   socketService,
@@ -197,7 +196,7 @@ function buildCallbacks(emitter: BotEmitter) {
 
       if (event.type === "invisibleCaptcha") {
         toast.info("Invisible Captcha Detected", {
-          description: "Agent is handling security checks in the background."
+          description: "Agent is handling security checks in the background.",
         });
         resolveCard(`pause-${event.stepId}`, "auto-solved", event.jobId);
         return;
@@ -218,9 +217,13 @@ function buildCallbacks(emitter: BotEmitter) {
           stepId: event.stepId,
           data: {
             ...((event as any).data || {}),
-            ...(event.type === "confirmation" ? { confirmLabel: "Confirm", cancelLabel: "Cancel" } : {}),
-            ...(["text", "password", "email", "mobile"].includes(event.type) ? { inputType: event.type } : {})
-          }
+            ...(event.type === "confirmation"
+              ? { confirmLabel: "Confirm", cancelLabel: "Cancel" }
+              : {}),
+            ...(["text", "password", "email", "mobile"].includes(event.type)
+              ? { inputType: event.type }
+              : {}),
+          },
         });
       } else {
         // For text/email/mobile/password/file — show a text prompt
@@ -247,7 +250,7 @@ function buildCallbacks(emitter: BotEmitter) {
         mime: "application/octet-stream",
         sizeLabel: "",
         fileId: event.fileId,
-        downloadUrl: event.fileId ? api.getFileDownloadUrl(event.fileId, config.userId) : undefined,
+        downloadUrl: event.fileId ? api.getFileDownloadUrl(event.fileId) : undefined,
       });
     },
 
@@ -334,7 +337,6 @@ export async function sendChatMessage(
           mimeType: file.type,
           base64Data,
           category,
-          userId: config.userId,
         });
       } catch (err) {
         logger.error("file:upload-failed", err, { fileName: file.name, mimeType: file.type });
@@ -377,7 +379,6 @@ export async function uploadFiles(files: File[], profileName?: string): Promise<
       base64Data,
       category,
       profileName,
-      userId: config.userId,
     });
     results.push(uploaded);
   }

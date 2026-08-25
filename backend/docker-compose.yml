@@ -12,7 +12,25 @@ x-common-env: &common-env
   REDIS_HOST: redis
   REDIS_PORT: 6379
   REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-  API_KEY: ${API_KEY:-dev-key-change-in-prod}
+  # No insecure fallback on purpose — the API refuses to start without a real
+  # value (set API_KEY, SESSION_JWT_SECRET, APP_SECRET_KEY in your .env before
+  # running compose).
+  API_KEY: ${API_KEY:?API_KEY must be set — see backend/.env.example}
+  SESSION_JWT_SECRET: ${SESSION_JWT_SECRET:?SESSION_JWT_SECRET must be set — see backend/.env.example}
+  APP_SECRET_KEY: ${APP_SECRET_KEY:?APP_SECRET_KEY must be set — see backend/.env.example}
+  ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+  ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_FROM: ${SMTP_FROM:-no-reply@jobpilot.app}
+  TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+  TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+  TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
   OPENROUTER_ENABLE_REASONING: ${OPENROUTER_ENABLE_REASONING:-true}

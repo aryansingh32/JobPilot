@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import type { Profile, Thread } from "@/lib/chat-types";
 import { api, type UserProfile, type SiteWorkflow } from "@/lib/api-client";
-import { config } from "@/lib/config";
 import { createLogger } from "@/lib/logger";
 
 const logger = createLogger("frontend-chat-sidebar");
@@ -56,10 +55,10 @@ export function ChatSidebar({
   const loadProfiles = async () => {
     setLoadingProfiles(true);
     try {
-      const { profiles: p } = await api.getProfiles(config.userId);
+      const { profiles: p } = await api.getProfiles();
       setBackendProfiles(p);
     } catch (err) {
-      logger.error("profiles:load-failed", err, { userId: config.userId });
+      logger.error("profiles:load-failed", err);
     } finally {
       setLoadingProfiles(false);
     }
@@ -90,8 +89,8 @@ export function ChatSidebar({
   ];
 
   return (
-    <aside 
-      data-state={isOpen ? 'open' : 'closed'}
+    <aside
+      data-state={isOpen ? "open" : "closed"}
       className="absolute z-40 flex h-full w-72 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:relative md:translate-x-0 transition-transform -translate-x-full data-[state=open]:translate-x-0 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
     >
       <div className="flex items-center justify-between px-3 py-3">

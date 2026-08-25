@@ -105,6 +105,7 @@ class SocketService {
 
     this.socket = io(socketUrl, {
       path: config.socketPath,
+      withCredentials: true, // sends the httpOnly jp_session cookie — the server derives userId from it
       transports: ["websocket", "polling"],
       reconnection: true,
       reconnectionAttempts: 10,
@@ -187,7 +188,6 @@ class SocketService {
     }
 
     this.socket.emit("chat:send", {
-      userId: config.userId,
       sessionId: this._sessionId,
       message,
     });
@@ -201,7 +201,6 @@ class SocketService {
     if (!this.socket || !this._sessionId) return;
 
     this.socket.emit("join", {
-      userId: config.userId,
       sessionId: this._sessionId,
       activeJobId: jobId,
     });

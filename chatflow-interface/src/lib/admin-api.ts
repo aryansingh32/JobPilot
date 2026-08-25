@@ -1,7 +1,8 @@
 // ============================================================
 // ADMIN API CLIENT
 // Typed wrapper for all /admin/* backend endpoints.
-// Uses x-admin-key header for authentication.
+// Authenticated via the httpOnly jp_admin_session cookie set by
+// POST /auth/admin/login — no key is ever held in browser JS.
 // ============================================================
 
 import { config } from "./config";
@@ -9,21 +10,16 @@ import { createLogger } from "./logger";
 
 const logger = createLogger("admin-api");
 
-const ADMIN_KEY =
-  (typeof import.meta !== "undefined" ? (import.meta as any).env?.VITE_ADMIN_KEY : undefined) ??
-  config.apiKey;
-
 async function adminRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${config.apiBaseUrl}${path}`;
   const headers: Record<string, string> = {
-    "x-admin-key": ADMIN_KEY,
     ...((options.headers as Record<string, string>) || {}),
   };
   if (options.body && typeof options.body === "string") {
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(url, { ...options, headers });
+  const res = await fetch(url, { ...options, headers, credentials: "include" });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     let msg = `Admin API ${res.status}: ${res.statusText}`;
@@ -219,8 +215,10 @@ export const adminApi = {
     return aGet<{ jobs: AdminJob[]; total: number }>(`/admin/jobs?${q}`);
   },
   getJob: (jobId: string) => aGet<{ job: AdminJob; runtime: unknown }>(`/admin/jobs/${jobId}`),
-  cancelJob: (jobId: string) => aPost<{ jobId: string; cancelled: boolean }>(`/admin/jobs/${jobId}/cancel`),
-  retryJob: (jobId: string) => aPost<{ jobId: string; retrying: boolean }>(`/admin/jobs/${jobId}/retry`),
+  cancelJob: (jobId: string) =>
+    aPost<{ jobId: string; cancelled: boolean }>(`/admin/jobs/${jobId}/cancel`),
+  retryJob: (jobId: string) =>
+    aPost<{ jobId: string; retrying: boolean }>(`/admin/jobs/${jobId}/retry`),
 
   // Users
   listUsers: (params?: { limit?: number; offset?: number }) => {
@@ -229,14 +227,22 @@ export const adminApi = {
     if (params?.offset) q.set("offset", String(params.offset));
     return aGet<{ users: AdminUser[]; total: number }>(`/admin/users?${q}`);
   },
-  getUser: (userId: string) => aGet<{ userId: string; jobs: AdminJob[]; profiles: unknown[]; files: unknown[] }>(`/admin/users/${userId}`),
+  getUser: (userId: string) =>
+    aGet<{ userId: string; jobs: AdminJob[]; profiles: unknown[]; files: unknown[] }>(
+      `/admin/users/${userId}`,
+    ),
   getUserPrompts: (userId: string, limit = 50) =>
     aGet<{ prompts: { job_id: string; prompt: string; status: string; started_at: string }[] }>(
-      `/admin/users/${userId}/prompts?limit=${limit}`
+      `/admin/users/${userId}/prompts?limit=${limit}`,
     ),
 
   // Workflows
-  listWorkflows: (params?: { siteId?: string; isActive?: string; limit?: number; offset?: number }) => {
+  listWorkflows: (params?: {
+    siteId?: string;
+    isActive?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
     const q = new URLSearchParams();
     if (params?.siteId) q.set("siteId", params.siteId);
     if (params?.isActive) q.set("isActive", params.isActive);
@@ -244,8 +250,10 @@ export const adminApi = {
     if (params?.offset) q.set("offset", String(params.offset));
     return aGet<{ workflows: AdminWorkflow[]; total: number }>(`/admin/workflows?${q}`);
   },
-  createWorkflow: (data: Partial<AdminWorkflow>) => aPost<{ workflow: AdminWorkflow }>("/admin/workflows", data),
-  updateWorkflow: (id: string, data: Partial<AdminWorkflow>) => aPut<{ workflow: AdminWorkflow }>(`/admin/workflows/${id}`, data),
+  createWorkflow: (data: Partial<AdminWorkflow>) =>
+    aPost<{ workflow: AdminWorkflow }>("/admin/workflows", data),
+  updateWorkflow: (id: string, data: Partial<AdminWorkflow>) =>
+    aPut<{ workflow: AdminWorkflow }>(`/admin/workflows/${id}`, data),
   deleteWorkflow: (id: string) => aDel<{ deleted: boolean }>(`/admin/workflows/${id}`),
 
   // Zero-Shot Runs
@@ -255,7 +263,7 @@ export const adminApi = {
     if (params?.offset) q.set("offset", String(params.offset));
     return aGet<{ runs: AdminZeroShotRun[]; total: number }>(`/admin/zero-shot-runs?${q}`);
   },
-  promoteToWorkflow: (runId: string, data: Partial<AdminWorkflow>) => 
+  promoteToWorkflow: (runId: string, data: Partial<AdminWorkflow>) =>
     aPost<{ workflow: AdminWorkflow }>(`/admin/zero-shot-runs/${runId}/promote`, data),
 
   // Browsers
@@ -268,7 +276,9 @@ export const adminApi = {
   // Captcha
   pendingCaptchas: () => aGet<{ captchas: CaptchaItem[] }>("/admin/captcha/pending"),
   solveCaptcha: (captchaId: string, solution: string) =>
-    aPost<{ captchaId: string; solved: boolean }>(`/admin/captcha/${captchaId}/solve`, { solution }),
+    aPost<{ captchaId: string; solved: boolean }>(`/admin/captcha/${captchaId}/solve`, {
+      solution,
+    }),
 
   // Logs
   getLogs: (service = "api", limit = 200) =>
@@ -276,7 +286,12 @@ export const adminApi = {
 
   // Network
   networkStats: () =>
-    aGet<{ requestsTotal: number; requestsFailed: number; avgLatencyMs: number; timestamp: string }>("/admin/network/stats"),
+    aGet<{
+      requestsTotal: number;
+      requestsFailed: number;
+      avgLatencyMs: number;
+      timestamp: string;
+    }>("/admin/network/stats"),
 
   // Errors
   getErrors: (limit = 100) => aGet<{ errors: LogEntry[] }>(`/admin/errors?limit=${limit}`),
@@ -291,16 +306,26 @@ export const adminApi = {
 
   // Observability
   observabilitySummary: () =>
-    aGet<{ events24h: number; errors24h: number; sessions24h: number }>("/admin/observability/summary"),
+    aGet<{ events24h: number; errors24h: number; sessions24h: number }>(
+      "/admin/observability/summary",
+    ),
   listObsSessions: (limit = 50) =>
     aGet<{ sessions: ObsSessionRow[] }>(`/admin/observability/sessions?limit=${limit}`),
   sessionTimeline: (sessionId: string, limit = 500) =>
     aGet<{ sessionId: string; events: ObsTimelineEvent[] }>(
-      `/admin/observability/sessions/${encodeURIComponent(sessionId)}/timeline?limit=${limit}`
+      `/admin/observability/sessions/${encodeURIComponent(sessionId)}/timeline?limit=${limit}`,
     ),
   listObsErrors: (limit = 100) =>
     aGet<{ errors: ErrorReportRow[] }>(`/admin/observability/errors?limit=${limit}`),
-  observabilityCopilot: (body: { question: string; errorReportId?: string; context?: Record<string, unknown> }) =>
-    aPost<{ answer: string; model?: string; structured?: unknown }>("/admin/observability/copilot", body),
-  generalizeSteps: (body: { steps: any[]; starterActionPlan?: any }) => aPost<{ generalized: any[] }>("/admin/record/generalize", body),
+  observabilityCopilot: (body: {
+    question: string;
+    errorReportId?: string;
+    context?: Record<string, unknown>;
+  }) =>
+    aPost<{ answer: string; model?: string; structured?: unknown }>(
+      "/admin/observability/copilot",
+      body,
+    ),
+  generalizeSteps: (body: { steps: any[]; starterActionPlan?: any }) =>
+    aPost<{ generalized: any[] }>("/admin/record/generalize", body),
 } as const;
