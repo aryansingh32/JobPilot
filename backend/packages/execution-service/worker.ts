@@ -140,8 +140,8 @@ async function logUnhandledExecutionFailure(job: ExecuteJob, error: string) {
   await pool.query(`
     INSERT INTO job_logs (
       job_id, user_id, session_id, type, site_id, status, completed_at, duration_ms,
-      success, ai_call_count, selector_fallback_cnt, retry_count, result, error
-    ) VALUES ($1, $2, $3, 'execute', $4, 'failed', NOW(), 0, false, 0, 0, 0, $5, $6)
+      success, ai_call_count, selector_fallback_cnt, retry_count, result, error, task
+    ) VALUES ($1, $2, $3, 'execute', $4, 'failed', NOW(), 0, false, 0, 0, 0, $5, $6, $7)
   `, [
     job.id,
     job.userId,
@@ -149,6 +149,7 @@ async function logUnhandledExecutionFailure(job: ExecuteJob, error: string) {
     job.payload.siteId,
     JSON.stringify({ steps: [], source: 'worker-catch' }),
     error,
+    job.payload.task,
   ]);
 }
 
@@ -157,8 +158,8 @@ async function logDryRunResult(job: ExecuteJob, pauseSteps: Array<{ id: string; 
   await pool.query(`
     INSERT INTO job_logs (
       job_id, user_id, session_id, type, site_id, status, completed_at, duration_ms,
-      success, ai_call_count, selector_fallback_cnt, retry_count, result
-    ) VALUES ($1, $2, $3, 'execute', $4, 'completed', NOW(), 0, true, 0, 0, 0, $5)
+      success, ai_call_count, selector_fallback_cnt, retry_count, result, task
+    ) VALUES ($1, $2, $3, 'execute', $4, 'completed', NOW(), 0, true, 0, 0, 0, $5, $6)
   `, [
     job.id,
     job.userId,
@@ -172,6 +173,7 @@ async function logDryRunResult(job: ExecuteJob, pauseSteps: Array<{ id: string; 
       actionPlanLength: job.payload.actionPlan?.length ?? 0,
       pauseSteps,
     }),
+    job.payload.task,
   ]);
 }
 

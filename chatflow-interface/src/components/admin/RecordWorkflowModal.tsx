@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Play, Square, Save, ArrowRight, ShieldAlert, FlaskConical } from "lucide-react";
-import { socketService } from "@/lib/socket-service";
-import { config } from "@/lib/config";
+import { io, type Socket } from "socket.io-client";
+import { config, apiOriginForSockets } from "@/lib/config";
 import type { AdminWorkflow } from "@/lib/admin-api";
 import { toast } from "sonner";
 import {
@@ -20,6 +20,7 @@ export function RecordWorkflowModal({
   onPublish: (wf: Partial<AdminWorkflow>) => void;
 }) {
   const [recording, setRecording] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
   const [rawSteps, setRawSteps] = useState<any[]>([]);
   const [generalizedSteps, setGeneralizedSteps] = useState<any[]>([]);
   const [isGeneralizing, setIsGeneralizing] = useState(false);
@@ -30,18 +31,86 @@ export function RecordWorkflowModal({
     site_id: "site_id",
   });
 
+  const sessionIdRef = useRef<string | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+
   useEffect(() => {
-    if (recording) {
-      socketService.updateCallbacks({
-        onRecordStep: (step) => {
-          setRawSteps((prev) => [...prev, step]);
-        },
-      });
-    }
     return () => {
-      socketService.updateCallbacks({ onRecordStep: undefined });
+      socketRef.current?.disconnect();
     };
-  }, [recording]);
+  }, []);
+
+  const handleStartRecording = async () => {
+    if (!form.entry_url) {
+      toast.error("Enter an Entry URL to start recording");
+      return;
+    }
+    setIsStarting(true);
+    try {
+      const sessionId = crypto.randomUUID();
+      const res = await fetch(`${config.apiBaseUrl}/admin/record/start`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: form.entry_url, sessionId }),
+      });
+      if (!res.ok) {
+        throw new Error((await res.json().catch(() => null))?.error || "Failed to start recording");
+      }
+
+      sessionIdRef.current = sessionId;
+      setRawSteps([]);
+
+      const socket = io(`${apiOriginForSockets()}/admin`, {
+        path: config.socketPath,
+        withCredentials: true,
+        transports: ["websocket", "polling"],
+      });
+      socket.on(
+        "workflow:record-step",
+        (payload: { sessionId: string; step: Record<string, unknown> }) => {
+          if (payload.sessionId === sessionId) {
+            setRawSteps((prev) => [...prev, payload.step]);
+          }
+        },
+      );
+      socketRef.current = socket;
+
+      setRecording(true);
+      toast.success("Recording started — interact with the site in its own browser context.");
+    } catch (e: any) {
+      toast.error(e.message || "Failed to start recording");
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
+  const handleStopRecording = async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) {
+      setRecording(false);
+      return;
+    }
+    try {
+      const res = await fetch(`${config.apiBaseUrl}/admin/record/stop`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.steps)) setRawSteps(data.steps);
+      }
+    } catch (e) {
+      console.error("Stop recording error:", e);
+    } finally {
+      socketRef.current?.disconnect();
+      socketRef.current = null;
+      sessionIdRef.current = null;
+      setRecording(false);
+    }
+  };
 
   const handleGeneralize = async () => {
     setIsGeneralizing(true);
@@ -129,8 +198,13 @@ export function RecordWorkflowModal({
     });
   };
 
+  const handleClose = () => {
+    if (recording) handleStopRecording();
+    onClose();
+  };
+
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <Dialog open onOpenChange={(open) => !open && handleClose()}>
       <DialogContent className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>Record New Workflow</DialogTitle>
@@ -160,7 +234,7 @@ export function RecordWorkflowModal({
           <input
             value={form.entry_url || ""}
             onChange={(e) => setForm({ ...form, entry_url: e.target.value })}
-            placeholder="Entry URL (for Dry Run)"
+            placeholder="Entry URL (recording start page + dry-run target)"
             className="rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none flex-1 min-h-[16px]"
           />
         </div>
@@ -177,14 +251,15 @@ export function RecordWorkflowModal({
         <div className="flex flex-wrap gap-2 mb-4">
           {!recording ? (
             <button
-              onClick={() => setRecording(true)}
-              className="flex items-center gap-1.5 rounded-xl bg-red-500/20 text-red-400 px-4 py-2 text-xs font-medium hover:bg-red-500/30 transition"
+              onClick={handleStartRecording}
+              disabled={isStarting}
+              className="flex items-center gap-1.5 rounded-xl bg-red-500/20 text-red-400 px-4 py-2 text-xs font-medium hover:bg-red-500/30 transition disabled:opacity-50"
             >
-              <Play className="h-3.5 w-3.5" /> Start Recording
+              <Play className="h-3.5 w-3.5" /> {isStarting ? "Starting…" : "Start Recording"}
             </button>
           ) : (
             <button
-              onClick={() => setRecording(false)}
+              onClick={handleStopRecording}
               className="flex items-center gap-1.5 rounded-xl bg-zinc-500/20 text-zinc-400 px-4 py-2 text-xs font-medium hover:bg-zinc-500/30 transition"
             >
               <Square className="h-3.5 w-3.5" /> Stop Recording
@@ -240,7 +315,7 @@ export function RecordWorkflowModal({
 
         <DialogFooter className="mt-5">
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="rounded-xl border border-border px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition"
           >
             Cancel

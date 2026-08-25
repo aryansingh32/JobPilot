@@ -22,6 +22,20 @@ export const config = {
   socketPath: env?.VITE_SOCKET_PATH || "/socket.io",
 } as const;
 
+/** Origin (scheme+host+port, no path) to open a Socket.IO connection against. */
+export function apiOriginForSockets(): string {
+  const base = String(config.apiBaseUrl ?? "").trim();
+  try {
+    if (base.startsWith("http://") || base.startsWith("https://")) {
+      return new URL(base).origin;
+    }
+  } catch {
+    /* fall through */
+  }
+  if (typeof window !== "undefined") return window.location.origin;
+  return "http://localhost:3000";
+}
+
 // There is no VITE_ADMIN_KEY and no VITE_USER_ID anymore: the admin panel
 // authenticates via an httpOnly session cookie issued by POST /auth/admin/login,
 // and end-user identity comes from the session cookie issued by /auth/google,

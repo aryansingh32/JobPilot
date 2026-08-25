@@ -239,11 +239,37 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     try {
       const { rows } = await pool.query(`SELECT * FROM job_logs WHERE job_id = $1`, [jobId]);
       if (!rows.length) return reply.status(404).send({ error: 'Job not found' });
-      // Mark it as retrying
+      const row = rows[0];
+      if (!row.task) {
+        return reply.status(422).send({
+          error: 'This job predates task tracking and cannot be automatically retried. Ask the user to send the request again.',
+        });
+      }
+
+      const { enqueueJob } = await import('../shared/queue/index.js');
+      const { randomUUID } = await import('crypto');
+      const newJobId = randomUUID();
+      await enqueueJob({
+        id: newJobId,
+        type: 'execute',
+        priority: 'high',
+        createdAt: new Date(),
+        userId: row.user_id,
+        sessionId: row.session_id,
+        metadata: { retryOf: jobId },
+        payload: {
+          siteId: row.site_id,
+          task: row.task,
+          sessionId: row.session_id,
+          useCache: false,
+        },
+      });
+
       await pool.query(`UPDATE job_logs SET status = 'retrying', updated_at = NOW() WHERE job_id = $1`, [jobId]);
-      logger.info('admin:job-retry', { jobId });
-      return reply.send({ jobId, retrying: true });
-    } catch {
+      logger.info('admin:job-retry', { jobId, newJobId });
+      return reply.send({ jobId: newJobId, retrying: true });
+    } catch (e) {
+      logger.error('admin:job-retry-failed', e as Error, { jobId });
       return reply.status(500).send({ error: 'Failed to retry job' });
     }
   });
@@ -486,9 +512,9 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/admin/record/generalize', { preHandler: adminAuth }, async (req, reply) => {
-    const { steps } = req.body as { steps: any[] };
+    const { steps, starterActionPlan } = req.body as { steps: any[]; starterActionPlan?: string };
     try {
-      const generalized = await generalizeSteps(steps);
+      const generalized = await generalizeSteps(steps, starterActionPlan);
       return reply.send({ success: true, generalized });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });

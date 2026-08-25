@@ -107,7 +107,7 @@ export class SiteWorkflowService {
     name: string;
     trigger: string;
     triggerPhrases?: string[];
-    portalType?: 'government' | 'jobs' | 'education' | 'banking' | 'general' | 'aadhaar';
+    portalType?: SiteWorkflow['portalType'];
     siteSection?: string;
     entryUrl?: string;
     pageUrl?: string;

@@ -32,6 +32,7 @@ interface ContextLease {
   userId: string;
   acquiredAt: Date;
   page?: Page;
+  fingerprint: ReturnType<typeof createFingerprintProfile>;
 }
 
 interface BrowserPoolConfig {
@@ -60,9 +61,51 @@ const STEALTH_ARGS = [
   '--disable-gpu',
   '--disable-features=IsolateOrigins,site-per-process',
   '--webrtc-ip-handling-policy=disable_non_proxied_udp',
-  '--lang=en-IN,en-GB,en-US,en',
+  '--lang=en-US,en',
   '--window-size=1280,800',
 ];
+
+// ─── Locale inference ───────────────────────────────────────
+// Workflows run against sites all over the world now, not just Indian
+// government portals — a fixed en-IN/Asia/Kolkata fingerprint on a
+// non-Indian site is itself a bot signal. Derive a locale/timezone from
+// the target site's TLD instead, falling back to a neutral US default.
+
+export interface LocaleHint {
+  locale: string;
+  timezoneId: string;
+}
+
+const DEFAULT_LOCALE_HINT: LocaleHint = { locale: 'en-US', timezoneId: 'America/New_York' };
+
+const TLD_LOCALE_MAP: Record<string, LocaleHint> = {
+  in: { locale: 'en-IN', timezoneId: 'Asia/Kolkata' },
+  uk: { locale: 'en-GB', timezoneId: 'Europe/London' },
+  gb: { locale: 'en-GB', timezoneId: 'Europe/London' },
+  ca: { locale: 'en-CA', timezoneId: 'America/Toronto' },
+  au: { locale: 'en-AU', timezoneId: 'Australia/Sydney' },
+  nz: { locale: 'en-NZ', timezoneId: 'Pacific/Auckland' },
+  sg: { locale: 'en-SG', timezoneId: 'Asia/Singapore' },
+  ae: { locale: 'en-AE', timezoneId: 'Asia/Dubai' },
+  de: { locale: 'de-DE', timezoneId: 'Europe/Berlin' },
+  fr: { locale: 'fr-FR', timezoneId: 'Europe/Paris' },
+  es: { locale: 'es-ES', timezoneId: 'Europe/Madrid' },
+  it: { locale: 'it-IT', timezoneId: 'Europe/Rome' },
+  br: { locale: 'pt-BR', timezoneId: 'America/Sao_Paulo' },
+  jp: { locale: 'ja-JP', timezoneId: 'Asia/Tokyo' },
+};
+
+/** Best-effort locale/timezone guess from a URL's TLD; used to seed the browser fingerprint. */
+export function localeForUrl(url: string | undefined): LocaleHint {
+  if (!url) return DEFAULT_LOCALE_HINT;
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    const tld = hostname.split('.').pop() ?? '';
+    return TLD_LOCALE_MAP[tld] ?? DEFAULT_LOCALE_HINT;
+  } catch {
+    return DEFAULT_LOCALE_HINT;
+  }
+}
 
 // ─── Browser Pool ────────────────────────────────────────────
 
@@ -107,7 +150,8 @@ export class BrowserPool extends EventEmitter {
     userId: string,
     session?: Partial<Session>,
     proxy?: ProxyConfig,
-    lightweight?: boolean
+    lightweight?: boolean,
+    localeHint?: LocaleHint
   ): Promise<ContextLease> {
     // Reuse existing context if available
     const existing = [...this.contexts.values()].find(
@@ -120,7 +164,8 @@ export class BrowserPool extends EventEmitter {
 
     // Find browser with capacity
     const browser = await this.findOrSpawnBrowser();
-    const context = await this.createContext(browser.browser, session, proxy);
+    const fingerprint = createFingerprintProfile(localeHint);
+    const context = await this.createContext(browser.browser, fingerprint, session, proxy);
     (context as any)._isLightweight = lightweight;
 
     const lease: ContextLease = {
@@ -130,6 +175,7 @@ export class BrowserPool extends EventEmitter {
       sessionId,
       userId,
       acquiredAt: new Date(),
+      fingerprint,
     };
 
     browser.contextCount++;
@@ -184,7 +230,7 @@ export class BrowserPool extends EventEmitter {
 
     const page = await lease.context.newPage();
     if (!(lease.context as any)._isLightweight) {
-      await this.applyStealthSettings(page);
+      await this.applyStealthSettings(page, lease.fingerprint);
     }
     lease.page = page;
     return page;
@@ -244,10 +290,10 @@ export class BrowserPool extends EventEmitter {
 
   private async createContext(
     browser: Browser,
+    fingerprint: ReturnType<typeof createFingerprintProfile>,
     session?: Partial<Session>,
     proxy?: ProxyConfig
   ): Promise<BrowserContext> {
-    const fingerprint = createFingerprintProfile();
     const contextOptions: Parameters<Browser['newContext']>[0] = {
       viewport: fingerprint.viewport,
       userAgent: fingerprint.userAgent,
@@ -293,9 +339,7 @@ export class BrowserPool extends EventEmitter {
     return context;
   }
 
-  private async applyStealthSettings(page: Page): Promise<void> {
-    const fingerprint = createFingerprintProfile();
-
+  private async applyStealthSettings(page: Page, fingerprint: ReturnType<typeof createFingerprintProfile>): Promise<void> {
     // playwright-extra-plugin-stealth handles most basic evasions.
     // We add advanced fingerprinting spoofing here to strengthen it further.
 
@@ -508,11 +552,9 @@ function pickOne<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)];
 }
 
-function createFingerprintProfile() {
-  // India-focused defaults (Asia/Kolkata, en-IN) as requested
-  const locale = 'en-IN';
-  const timezoneId = 'Asia/Kolkata';
-  
+function createFingerprintProfile(localeHint?: LocaleHint) {
+  const { locale, timezoneId } = localeHint ?? DEFAULT_LOCALE_HINT;
+
   const viewport = {
     width: 1280 + randInt(0, 220),
     height: 780 + randInt(0, 140),

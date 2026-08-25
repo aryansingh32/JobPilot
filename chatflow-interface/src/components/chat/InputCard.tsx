@@ -444,7 +444,7 @@ function PaymentPendingCard({ msg }: { msg: InputCardMessage }) {
       )}
       <div className="rounded-lg bg-warning/10 p-3 mb-3 border border-warning/20">
         <p className="text-sm text-warning">
-          Please complete the payment in your UPI app. Do not refresh.
+          Don't refresh or close this window until it's confirmed.
         </p>
       </div>
       <button
