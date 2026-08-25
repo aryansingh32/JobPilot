@@ -28,23 +28,28 @@ export function DebugCopilotPanel() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4">
-      <div className="rounded-2xl border border-primary/25 bg-gradient-to-br from-violet-950/40 to-slate-950/60 p-5 backdrop-blur-lg">
-        <div className="mb-3 flex items-center gap-2 text-sm font-medium text-violet-200">
-          <Sparkles className="h-4 w-4" />
+      <div className="rounded-2xl border border-border/60 bg-card/40 p-5">
+        <div className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground">
+          <Sparkles className="h-4 w-4 text-primary" />
           AI debugging copilot
         </div>
         <p className="mb-4 text-xs text-muted-foreground">
-          Correlates persisted <span className="font-mono text-zinc-400">error_reports</span> with heuristics; enable{" "}
-          <span className="font-mono">OPENAI_API_KEY</span> on the API for deep multi-signal reasoning.
+          Correlates persisted <span className="font-mono text-zinc-400">error_reports</span> with
+          heuristics; enable <span className="font-mono">OPENAI_API_KEY</span> on the API for deep
+          multi-signal reasoning.
         </p>
-        <label className="mb-2 block text-[11px] uppercase tracking-wide text-muted-foreground">Optional error report id</label>
+        <label className="mb-2 block text-[11px] uppercase tracking-wide text-muted-foreground">
+          Optional error report id
+        </label>
         <input
           value={errorId}
           onChange={(e) => setErrorId(e.target.value)}
           placeholder="uuid from Error intelligence…"
           className="mb-3 w-full rounded-xl border border-border/50 bg-black/30 px-3 py-2 font-mono text-xs text-foreground"
         />
-        <label className="mb-2 block text-[11px] uppercase tracking-wide text-muted-foreground">Question</label>
+        <label className="mb-2 block text-[11px] uppercase tracking-wide text-muted-foreground">
+          Question
+        </label>
         <textarea
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
