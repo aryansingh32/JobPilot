@@ -8,7 +8,10 @@ function MaskedKey({ label, value }: { label: string; value: string }) {
   const masked = value ? "•".repeat(Math.min(value.length, 24)) : "not set";
 
   const copy = () => {
-    navigator.clipboard.writeText(value).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   };
 
   return (
@@ -18,13 +21,22 @@ function MaskedKey({ label, value }: { label: string; value: string }) {
         <code className="flex-1 text-xs font-mono text-foreground truncate">
           {visible ? value || "not set" : masked}
         </code>
-        <button onClick={() => setVisible((v) => !v)}
-          className="rounded p-1 text-muted-foreground hover:text-foreground transition">
+        <button
+          onClick={() => setVisible((v) => !v)}
+          className="rounded p-1 text-muted-foreground hover:text-foreground transition"
+        >
           {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
         </button>
         {value && (
-          <button onClick={copy} className="rounded p-1 text-muted-foreground hover:text-foreground transition">
-            {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+          <button
+            onClick={copy}
+            className="rounded p-1 text-muted-foreground hover:text-foreground transition"
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-emerald-400" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
           </button>
         )}
       </div>
@@ -44,11 +56,15 @@ export function SecurityPanel() {
         <div className="grid grid-cols-2 gap-2 mt-3 lg:grid-cols-4">
           {[
             ["API Auth", "Active — x-api-key"],
-            ["Admin Auth", "Active — x-admin-key"],
+            ["User Auth", "Session cookie (Google / email / mobile)"],
+            ["Admin Auth", "Session cookie — login required"],
             ["CORS", "Configured"],
             ["Rate Limiting", "100 req/min"],
           ].map(([label, val]) => (
-            <div key={label} className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2">
+            <div
+              key={label}
+              className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2"
+            >
               <p className="text-[10px] text-emerald-400/70 uppercase tracking-wider">{label}</p>
               <p className="text-xs text-emerald-300 font-medium mt-0.5">{val}</p>
             </div>
@@ -63,8 +79,11 @@ export function SecurityPanel() {
         </p>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <MaskedKey label="API Key (x-api-key)" value={config.apiKey} />
-          <MaskedKey label="Admin Key (x-admin-key)" value={config.apiKey} />
         </div>
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          There is no admin key in the browser anymore — the admin panel authenticates via an
+          httpOnly session cookie issued at login, which client-side JS can never read.
+        </p>
       </div>
 
       {/* Security checklist */}
@@ -85,8 +104,13 @@ export function SecurityPanel() {
             { ok: true, msg: "File uploads scanned for MIME type" },
             { ok: true, msg: "SQL injection protected via parameterized queries" },
           ].map(({ ok, msg }, i) => (
-            <div key={i} className={`flex items-center gap-3 rounded-xl border px-4 py-2.5 ${ok ? "border-emerald-500/20 bg-emerald-500/5" : "border-amber-500/20 bg-amber-500/5"}`}>
-              <span className={`text-sm ${ok ? "text-emerald-400" : "text-amber-400"}`}>{ok ? "✓" : "⚠"}</span>
+            <div
+              key={i}
+              className={`flex items-center gap-3 rounded-xl border px-4 py-2.5 ${ok ? "border-emerald-500/20 bg-emerald-500/5" : "border-amber-500/20 bg-amber-500/5"}`}
+            >
+              <span className={`text-sm ${ok ? "text-emerald-400" : "text-amber-400"}`}>
+                {ok ? "✓" : "⚠"}
+              </span>
               <span className="text-xs text-foreground">{msg}</span>
             </div>
           ))}

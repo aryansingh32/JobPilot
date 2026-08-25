@@ -43,14 +43,14 @@
 
 :root {
   --radius: 0.875rem;
-  /* Dark mode by default per spec */
-  --background: oklch(0.10 0.002 260);
+  /* Dark mode by default per spec — true black, zero chroma, single blue accent */
+  --background: oklch(0.09 0 0);
   --foreground: oklch(0.98 0 0);
   --card: oklch(0.14 0 0);
   --card-foreground: oklch(0.98 0 0);
   --popover: oklch(0.14 0 0);
   --popover-foreground: oklch(0.98 0 0);
-  --primary: oklch(0.62 0.19 258);
+  --primary: oklch(0.56 0.09 258);
   --primary-foreground: oklch(0.98 0 0);
   --secondary: oklch(0.18 0 0);
   --secondary-foreground: oklch(0.98 0 0);
@@ -60,13 +60,13 @@
   --accent-foreground: oklch(0.98 0 0);
   --destructive: oklch(0.62 0.22 25);
   --destructive-foreground: oklch(0.98 0 0);
-  --success: oklch(0.62 0.19 258);
+  --success: oklch(0.56 0.09 258);
   --success-foreground: oklch(0.98 0 0);
   --warning: oklch(0.78 0.16 75);
   --warning-foreground: oklch(0.2 0.04 75);
   --border: oklch(0.20 0 0);
   --input: oklch(0.20 0 0);
-  --ring: oklch(0.62 0.19 258);
+  --ring: oklch(0.56 0.09 258);
   --sidebar: oklch(0.12 0 0);
   --sidebar-foreground: oklch(0.98 0 0);
   --sidebar-accent: oklch(0.18 0 0);

@@ -1,9 +1,23 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { PanelLeft, Monitor, Sparkles, Wifi, WifiOff, ShieldCheck } from "lucide-react";
+import {
+  PanelLeft,
+  Monitor,
+  Sparkles,
+  Wifi,
+  WifiOff,
+  ShieldCheck,
+  MoreVertical,
+} from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { useChatStore, uid } from "@/lib/chat-store";
 import { PROFILES } from "@/lib/chat-types";
-import type { ChatMessage, FileAttachment } from "@/lib/chat-types";
+import type { ChatMessage, FileAttachment, InputCardMessage } from "@/lib/chat-types";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { LiveScreenPanel } from "@/components/chat/LiveScreenPanel";
 import { Composer } from "@/components/chat/Composer";
@@ -16,6 +30,7 @@ import {
 } from "@/lib/backend-connector";
 import { api } from "@/lib/api-client";
 import { socketService } from "@/lib/socket-service";
+import { authClient, type AuthUser } from "@/lib/auth-client";
 import { createLogger } from "@/lib/logger";
 
 const logger = createLogger("frontend-index-route");
@@ -46,14 +61,37 @@ const SUGGESTIONS = [
 function Index() {
   const store = useChatStore();
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [liveOpen, setLiveOpen] = useState(true);
+  // Hidden by default — the panel opens itself when there's something worth
+  // watching (a live frame streaming, or a captcha that needs the picture)
+  // and folds away again once that's no longer true. See the effect below.
+  const [liveOpen, setLiveOpen] = useState(false);
   const [liveFrame, setLiveFrame] = useState<string | null>(null);
   const [liveHot, setLiveHot] = useState(false);
+  const liveCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [typing, setTyping] = useState(false);
   const [busy, setBusy] = useState(false);
   const [profileId, setProfileId] = useState("personal");
   const [connected, setConnected] = useState(false);
   const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const navigate = useNavigate();
+
+  // Require a signed-in session — chat, memory, and files are all scoped to
+  // the authenticated user server-side, so there is nothing useful to show
+  // before this resolves.
+  useEffect(() => {
+    let cancelled = false;
+    authClient.me().then((user) => {
+      if (cancelled) return;
+      setAuthUser(user);
+      setAuthChecked(true);
+      if (!user) navigate({ to: "/login" });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
 
   // "New chat" handler — resets the backend session and creates a fresh UI thread
   const handleNewChat = useCallback(() => {
@@ -69,6 +107,9 @@ function Index() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const messages = store.activeThread?.messages ?? [];
+  const activePause = messages.find((m) => m.type === "input-card" && !m.resolved) as
+    | InputCardMessage
+    | undefined;
   const emitterRef = useRef<BotEmitter | null>(null);
 
   // Build the emitter for backend-connector
@@ -103,6 +144,34 @@ function Index() {
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages.length, typing]);
 
+  // Live view visibility is automatic: open the moment there's a real frame
+  // streaming or a captcha that genuinely benefits from the picture, fold it
+  // back away a few seconds after that's no longer true. A manual toggle
+  // (the header button) can always override this in either direction.
+  useEffect(() => {
+    const visualPauseKinds = new Set(["captcha", "clickCaptcha", "gridCaptcha", "sliderCaptcha"]);
+    const needsLiveView = liveHot || (!!activePause && visualPauseKinds.has(activePause.kind));
+
+    if (liveCollapseTimer.current) {
+      clearTimeout(liveCollapseTimer.current);
+      liveCollapseTimer.current = null;
+    }
+
+    if (needsLiveView) {
+      setLiveOpen(true);
+      return;
+    }
+
+    if (liveOpen) {
+      liveCollapseTimer.current = setTimeout(() => setLiveOpen(false), 4000);
+    }
+
+    return () => {
+      if (liveCollapseTimer.current) clearTimeout(liveCollapseTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveHot, activePause?.id, activePause?.kind]);
+
   // Initialize backend connection
   useEffect(() => {
     if (!store.hydrated) return;
@@ -133,7 +202,7 @@ function Index() {
       const detail = (e as CustomEvent).detail;
       if (store.activeId) {
         store.updateMessage(store.activeId, detail.id, {
-          resolved: { value: detail.value, at: Date.now() }
+          resolved: { value: detail.value, at: Date.now() },
         });
       }
     };
@@ -193,7 +262,8 @@ function Index() {
     }
 
     setBusy(true);
-    if (!liveOpen) setLiveOpen(true);
+    // Live view opens itself once a real frame or captcha shows up — see the
+    // effect above — rather than eagerly here before there's anything to show.
 
     try {
       await sendChatMessage(text || "Process my upload", files, getEmitter());
@@ -216,6 +286,12 @@ function Index() {
 
   const showEmpty = messages.length === 0;
 
+  if (!authChecked || !authUser) {
+    // Either still checking the session, or the redirect to /login is in
+    // flight — render nothing rather than a flash of an unauthenticated chat.
+    return <div className="h-[100dvh] w-screen bg-background" />;
+  }
+
   return (
     <div className="flex h-[100dvh] w-screen overflow-hidden bg-background text-foreground pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] relative">
       <ChatSidebar
@@ -231,7 +307,10 @@ function Index() {
         onProfileChange={setProfileId}
       />
       {sidebarOpen && (
-        <div onClick={() => setSidebarOpen(false)} className="absolute inset-0 z-30 bg-black/50 md:hidden" />
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="absolute inset-0 z-30 bg-black/50 md:hidden"
+        />
       )}
 
       <main className="flex h-full min-w-0 flex-1 flex-col">
@@ -271,22 +350,59 @@ function Index() {
           </div>
           <button
             onClick={() => setLiveOpen((v) => !v)}
-            className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition ${
+            aria-label="Toggle live screen"
+            className={`relative flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition ${
               liveOpen
                 ? "bg-primary/15 text-primary"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground"
             }`}
           >
             <Monitor className="h-3.5 w-3.5" />
-            Live screen
+            <span className="hidden sm:inline">Live screen</span>
+            {liveHot && <span className="live-dot absolute -right-0.5 -top-0.5 h-1.5 w-1.5" />}
           </button>
+
+          {/* Desktop: inline links. Mobile: collapsed into an overflow menu below. */}
           <a
             href="/admin"
-            className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition"
+            className="hidden items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground sm:flex"
           >
             <ShieldCheck className="h-3.5 w-3.5" />
             Admin
           </a>
+          {authUser && (
+            <button
+              onClick={() => authClient.logout().then(() => navigate({ to: "/login" }))}
+              className="ml-1 hidden text-xs font-medium text-muted-foreground transition hover:text-foreground sm:inline"
+              title={authUser.email ?? authUser.mobileNumber ?? "Signed in"}
+            >
+              Sign out
+            </button>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                aria-label="More options"
+                className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground sm:hidden"
+              >
+                <MoreVertical className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="sm:hidden">
+              <DropdownMenuItem asChild>
+                <a href="/admin" className="flex items-center gap-2">
+                  <ShieldCheck className="h-3.5 w-3.5" /> Admin
+                </a>
+              </DropdownMenuItem>
+              {authUser && (
+                <DropdownMenuItem
+                  onClick={() => authClient.logout().then(() => navigate({ to: "/login" }))}
+                >
+                  Sign out
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </header>
 
         <div
@@ -314,20 +430,17 @@ function Index() {
                 <MessageItem key={m.id} msg={m} />
               ))}
               {typing && <TypingIndicator />}
-              {liveOpen && (() => {
-                 const activePause = messages.find((m) => m.type === "input-card" && !m.resolved) as InputCardMessage | undefined;
-                 return (
-                  <div className="mx-auto w-full max-w-3xl pb-2">
-                    <LiveScreenPanel
-                      frame={liveFrame}
-                      hot={liveHot}
-                      onClose={() => setLiveOpen(false)}
-                      connected={connected}
-                      activePause={activePause}
-                    />
-                  </div>
-                 );
-              })()}
+              {liveOpen && (
+                <div className="mx-auto w-full max-w-3xl pb-2">
+                  <LiveScreenPanel
+                    frame={liveFrame}
+                    hot={liveHot}
+                    onClose={() => setLiveOpen(false)}
+                    connected={connected}
+                    activePause={activePause}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -351,17 +464,11 @@ function Index() {
   );
 }
 
-function EmptyState({
-  backendAvailable,
-}: {
-  backendAvailable: boolean | null;
-}) {
+function EmptyState({ backendAvailable }: { backendAvailable: boolean | null }) {
   return (
     <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-6 text-center">
-      <h1 className="text-3xl font-semibold tracking-tight">
-        How can I help you today?
-      </h1>
-      
+      <h1 className="text-3xl font-semibold tracking-tight">How can I help you today?</h1>
+
       {backendAvailable === false && (
         <div className="mt-4 text-sm text-warning">
           Backend not available. Start it with{" "}

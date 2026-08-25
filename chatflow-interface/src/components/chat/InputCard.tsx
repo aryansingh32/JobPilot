@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from "react";
-import { Check, X, ShieldCheck, KeyRound, Wallet, AlertCircle, Type } from "lucide-react";
+import { useState } from "react";
+import { Check, X, ShieldCheck, KeyRound, Wallet, AlertCircle, Type, ZoomIn } from "lucide-react";
 import type { InputCardMessage } from "@/lib/chat-types";
 import { resolveCard } from "@/lib/backend-connector";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 interface Props {
   msg: InputCardMessage;
@@ -55,11 +57,42 @@ function CardShell({
   );
 }
 
+/**
+ * Every captcha type surfaces its image directly in the chat card — never
+ * only in the (now auto-hidden) Live Screen panel, since that can be small,
+ * scrolled away, or collapsed. This adds a tap-to-zoom affordance for the
+ * read-only text/image captcha; click/grid/slider captchas stay at their own
+ * generous inline size since the user interacts with them directly.
+ */
+function ZoomableCaptchaImage({ src, className = "" }: { src: string; className?: string }) {
+  const [zoomed, setZoomed] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setZoomed(true)}
+        className={`group relative block w-full overflow-hidden rounded-lg border border-border bg-background p-2 ${className}`}
+      >
+        <img src={src} alt="captcha" className="mx-auto h-auto max-h-56 w-full object-contain" />
+        <span className="absolute bottom-2 right-2 flex items-center gap-1 rounded-full bg-black/60 px-2 py-1 text-[10px] text-white opacity-90 transition group-hover:opacity-100">
+          <ZoomIn className="h-3 w-3" /> Tap to zoom
+        </span>
+      </button>
+      <Dialog open={zoomed} onOpenChange={setZoomed}>
+        <DialogContent className="max-w-2xl bg-background p-4">
+          <DialogTitle className="sr-only">CAPTCHA image</DialogTitle>
+          <img src={src} alt="captcha, zoomed" className="h-auto w-full object-contain" />
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function ResolvedCard({ msg }: { msg: InputCardMessage }) {
   const label =
     msg.kind === "confirm"
       ? msg.resolved!.value
-      : (msg.kind === "otp" || msg.kind === "credentialFill" || msg.data?.inputType === "password")
+      : msg.kind === "otp" || msg.kind === "credentialFill" || msg.data?.inputType === "password"
         ? "•".repeat(Math.max(8, msg.resolved!.value.length))
         : msg.resolved!.value;
   return (
@@ -73,63 +106,34 @@ function ResolvedCard({ msg }: { msg: InputCardMessage }) {
 }
 
 function OtpCard({ msg }: { msg: InputCardMessage }) {
-  const [vals, setVals] = useState<string[]>(Array(6).fill(""));
-  const refs = useRef<Array<HTMLInputElement | null>>([]);
-  useEffect(() => {
-    refs.current[0]?.focus();
-  }, []);
+  const [value, setValue] = useState("");
 
-  const setAt = (i: number, v: string) => {
-    const c = v.replace(/\D/g, "").slice(-1);
-    const next = [...vals];
-    next[i] = c;
-    setVals(next);
-    if (c && i < 5) refs.current[i + 1]?.focus();
-  };
-  const onKey = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Backspace" && !vals[i] && i > 0) refs.current[i - 1]?.focus();
-  };
-  const onPaste = (e: React.ClipboardEvent) => {
-    const txt = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
-    if (!txt) return;
-    e.preventDefault();
-    const arr = Array(6)
-      .fill("")
-      .map((_, i) => txt[i] ?? "");
-    setVals(arr);
-    refs.current[Math.min(txt.length, 5)]?.focus();
-  };
-  const submit = () => {
-    const v = vals.join("");
+  const submit = (v: string) => {
     if (v.length === 6) resolveCard(msg.id, v, msg.jobId);
   };
+
   return (
     <CardShell icon={<KeyRound className="h-4 w-4" />} title="Enter OTP">
       <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
-      <div className="mb-3 flex gap-2" onPaste={onPaste}>
-        {vals.map((v, i) => (
-          <input
-            key={i}
-            ref={(el) => {
-              refs.current[i] = el;
-            }}
-            value={v}
-            onChange={(e) => setAt(i, e.target.value)}
-            onKeyDown={(e) => onKey(i, e)}
-            inputMode="numeric"
-            maxLength={1}
-            className="h-12 w-10 rounded-lg border border-input bg-background text-center text-lg font-semibold focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
-          />
-        ))}
+      <div className="mb-3">
+        <InputOTP
+          maxLength={6}
+          value={value}
+          onChange={setValue}
+          onComplete={submit}
+          autoFocus
+          containerClassName="justify-start"
+        >
+          <InputOTPGroup>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <InputOTPSlot key={i} index={i} className="h-12 w-10 text-lg" />
+            ))}
+          </InputOTPGroup>
+        </InputOTP>
       </div>
       <button
-        onClick={() => {
-          const v = vals.join("");
-          if (v.length === 6) {
-            resolveCard(msg.id, v, msg.jobId);
-          }
-        }}
-        disabled={vals.join("").length < 6}
+        onClick={() => submit(value)}
+        disabled={value.length < 6}
         className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 flex items-center justify-center min-w-[80px]"
       >
         Verify
@@ -143,18 +147,7 @@ function CaptchaCard({ msg }: { msg: InputCardMessage }) {
   return (
     <CardShell icon={<ShieldCheck className="h-4 w-4" />} title="Solve CAPTCHA">
       <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
-      {msg.data?.captchaUrl && (
-        <div className="mb-3 overflow-hidden rounded-lg border border-border bg-background p-2">
-          <img
-            src={msg.data.captchaUrl}
-            alt="captcha"
-            className="block h-20 w-full object-contain"
-          />
-        </div>
-      )}
-      <p className="mb-2 text-xs text-muted-foreground">
-        💡 Look at the <strong>Live Screen</strong> panel to see the CAPTCHA image
-      </p>
+      {msg.data?.captchaUrl && <ZoomableCaptchaImage src={msg.data.captchaUrl} className="mb-3" />}
       <div className="flex gap-2">
         <input
           autoFocus
@@ -278,18 +271,16 @@ function ClickCaptchaCard({ msg }: { msg: InputCardMessage }) {
     <CardShell icon={<ShieldCheck className="h-4 w-4" />} title="Solve CAPTCHA">
       <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
       {msg.data?.captchaUrl ? (
-        <div className="relative mb-3 inline-block overflow-hidden rounded-lg border border-border bg-background cursor-crosshair">
+        <div className="relative mb-3 w-full overflow-hidden rounded-lg border border-border bg-background cursor-crosshair">
           <img
             src={msg.data.captchaUrl}
             alt="captcha"
             onClick={handleImageClick}
-            className="block max-h-64 max-w-full object-contain"
+            className="block max-h-64 w-full object-contain"
           />
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">
-          Click the CAPTCHA image on the live screen to solve.
-        </p>
+        <p className="text-xs text-muted-foreground">Waiting for the CAPTCHA image…</p>
       )}
     </CardShell>
   );
@@ -331,8 +322,10 @@ function CredentialFillCard({ msg }: { msg: InputCardMessage }) {
 
   return (
     <CardShell icon={<KeyRound className="h-4 w-4" />} title="Enter Value Securely">
-       <p className="mb-3 text-sm text-muted-foreground">Your input is sent directly to the site and is not seen by the AI.</p>
-       <div className="flex gap-2">
+      <p className="mb-3 text-sm text-muted-foreground">
+        Your input is sent directly to the site and is not seen by the AI.
+      </p>
+      <div className="flex gap-2">
         <input
           autoFocus
           type="password"
@@ -358,34 +351,41 @@ function CredentialFillCard({ msg }: { msg: InputCardMessage }) {
 
 function GridCaptchaCard({ msg }: { msg: InputCardMessage }) {
   const [selected, setSelected] = useState<number[]>([]);
-  
+
   const toggle = (i: number) => {
-    setSelected(p => p.includes(i) ? p.filter(x => x !== i) : [...p, i]);
+    setSelected((p) => (p.includes(i) ? p.filter((x) => x !== i) : [...p, i]));
   };
-  
+
   return (
     <CardShell icon={<ShieldCheck className="h-4 w-4" />} title="Select Images">
       <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
       {msg.data?.captchaUrl ? (
-        <div className="mb-3 relative inline-block overflow-hidden rounded-lg border border-border bg-background">
-          <img src={msg.data.captchaUrl} className="block max-h-64 max-w-full object-contain pointer-events-none" alt="Grid Captcha" />
+        <div className="mb-3 relative w-full overflow-hidden rounded-lg border border-border bg-background">
+          <img
+            src={msg.data.captchaUrl}
+            className="block max-h-64 w-full object-contain pointer-events-none"
+            alt="Grid Captcha"
+          />
           <div className="absolute inset-0 grid grid-cols-3 grid-rows-3">
-            {Array.from({length: 9}).map((_, i) => (
-              <div 
-                key={i} 
+            {Array.from({ length: 9 }).map((_, i) => (
+              <div
+                key={i}
                 onClick={() => toggle(i)}
-                onTouchEnd={(e) => { e.preventDefault(); toggle(i); }}
-                className={`border border-white/20 cursor-pointer transition-all ${selected.includes(i) ? 'bg-primary/40' : 'hover:bg-primary/10'}`} 
+                onTouchEnd={(e) => {
+                  e.preventDefault();
+                  toggle(i);
+                }}
+                className={`border border-white/20 cursor-pointer transition-all ${selected.includes(i) ? "bg-primary/40" : "hover:bg-primary/10"}`}
               />
             ))}
           </div>
         </div>
       ) : (
-         <p className="text-xs text-muted-foreground">See live screen.</p>
+        <p className="text-xs text-muted-foreground">Waiting for the CAPTCHA image…</p>
       )}
       <div className="flex justify-end">
         <button
-          onClick={() => resolveCard(msg.id, selected.join(','), msg.jobId)}
+          onClick={() => resolveCard(msg.id, selected.join(","), msg.jobId)}
           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer"
         >
           Verify
@@ -397,35 +397,40 @@ function GridCaptchaCard({ msg }: { msg: InputCardMessage }) {
 
 function SliderCaptchaCard({ msg }: { msg: InputCardMessage }) {
   const [val, setVal] = useState(0);
-  
+
   return (
     <CardShell icon={<ShieldCheck className="h-4 w-4" />} title="Slide to verify">
-       <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
-       {msg.data?.captchaUrl && (
-         <div className="mb-3 relative overflow-hidden rounded-lg border border-border bg-background">
-           <img src={msg.data.captchaUrl} className="block max-h-64 w-full object-contain pointer-events-none" alt="Slider Captcha" />
-           <div 
-             className="absolute top-0 bottom-0 border-l-2 border-primary bg-primary/20 pointer-events-none"
-             style={{ left: `${val}%`, width: '40px' }}
-           />
-         </div>
-       )}
-       <input 
-         type="range" 
-         min="0" max="100" 
-         value={val} 
-         onChange={e => setVal(parseInt(e.target.value))} 
-         onTouchMove={e => e.stopPropagation()}
-         className="w-full mb-3 accent-primary" 
-       />
-       <div className="flex justify-end">
-         <button
-           onClick={() => resolveCard(msg.id, val.toString(), msg.jobId)}
-           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer"
-         >
-           Submit
-         </button>
-       </div>
+      <p className="mb-3 text-sm text-muted-foreground">{msg.prompt}</p>
+      {msg.data?.captchaUrl && (
+        <div className="mb-3 relative overflow-hidden rounded-lg border border-border bg-background">
+          <img
+            src={msg.data.captchaUrl}
+            className="block max-h-64 w-full object-contain pointer-events-none"
+            alt="Slider Captcha"
+          />
+          <div
+            className="absolute top-0 bottom-0 border-l-2 border-primary bg-primary/20 pointer-events-none"
+            style={{ left: `${val}%`, width: "40px" }}
+          />
+        </div>
+      )}
+      <input
+        type="range"
+        min="0"
+        max="100"
+        value={val}
+        onChange={(e) => setVal(parseInt(e.target.value))}
+        onTouchMove={(e) => e.stopPropagation()}
+        className="w-full mb-3 accent-primary"
+      />
+      <div className="flex justify-end">
+        <button
+          onClick={() => resolveCard(msg.id, val.toString(), msg.jobId)}
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95 cursor-pointer"
+        >
+          Submit
+        </button>
+      </div>
     </CardShell>
   );
 }
@@ -438,7 +443,9 @@ function PaymentPendingCard({ msg }: { msg: InputCardMessage }) {
         <div className="my-3 text-2xl font-semibold tracking-tight">{msg.data.amount}</div>
       )}
       <div className="rounded-lg bg-warning/10 p-3 mb-3 border border-warning/20">
-         <p className="text-sm text-warning">Please complete the payment in your UPI app. Do not refresh.</p>
+        <p className="text-sm text-warning">
+          Please complete the payment in your UPI app. Do not refresh.
+        </p>
       </div>
       <button
         onClick={() => resolveCard(msg.id, "Paid", msg.jobId)}

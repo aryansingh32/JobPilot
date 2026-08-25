@@ -5,6 +5,7 @@
 import { createHash } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createLogger } from '../shared/logger/index.js';
+import { adminAuth } from './admin-auth.js';
 import {
   ingestClientEvents,
   listRecentSessions,
@@ -15,30 +16,6 @@ import {
 } from './observability.service.js';
 
 const logger = createLogger('observability-routes');
-
-async function adminAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-  const key = req.headers['x-admin-key'] as string;
-  if (!key) {
-    logger.warn('observability:admin-auth-failed', { ip: req.ip });
-    await reply.status(401).send({ error: 'Unauthorized — admin key required' });
-    return;
-  }
-  
-  try {
-    const { getPgPool } = await import('../shared/db/index.js');
-    const pool = getPgPool();
-    const { rows } = await pool.query('SELECT id, role FROM admins WHERE api_key = $1', [key]);
-    if (!rows.length) {
-      logger.warn('observability:admin-auth-failed', { ip: req.ip });
-      await reply.status(401).send({ error: 'Unauthorized — invalid admin key' });
-      return;
-    }
-  } catch (err) {
-    logger.error('observability:admin-auth-error', err);
-    await reply.status(500).send({ error: 'Internal Server Error' });
-    return;
-  }
-}
 
 async function apiAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const key = req.headers['x-api-key'];

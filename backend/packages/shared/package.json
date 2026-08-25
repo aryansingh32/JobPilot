@@ -8,15 +8,22 @@
     "./queue": "./queue/index.ts",
     "./db": "./db/index.ts",
     "./llm": "./llm/index.ts",
-    "./logger": "./logger/index.ts"
+    "./logger": "./logger/index.ts",
+    "./auth": "./auth/index.ts",
+    "./email": "./email/index.ts",
+    "./sms": "./sms/index.ts"
   },
   "dependencies": {
-    "pg": "^8.12.0",
+    "@fastify/cookie": "^11.1.2",
     "bullmq": "^5.12.0",
-    "redis": "^4.7.0",
-    "openai": "^6.36.0"
+    "jose": "^6.2.10",
+    "nodemailer": "^9.0.5",
+    "openai": "^6.36.0",
+    "pg": "^8.12.0",
+    "redis": "^4.7.0"
   },
   "devDependencies": {
+    "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.11.6"
   }
 }

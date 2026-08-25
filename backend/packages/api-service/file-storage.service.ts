@@ -6,11 +6,21 @@ import type { UserFile } from '../shared/types/index.js';
 
 type FileCategory = UserFile['category'];
 
+const VALID_CATEGORIES: readonly FileCategory[] = ['resume', 'signature', 'photo', 'document', 'receipt', 'other'];
+
 const STORAGE_ROOT = process.env.USER_FILE_STORAGE_ROOT
   ?? path.resolve(process.cwd(), 'mnt/user-data/outputs/automation-platform/uploads');
 
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+// Defense in depth: category ultimately becomes a path segment (see uploadBase64
+// below), so it must never be trusted past this whitelist even though the API
+// layer already validates it — this is what closes the hole if a future caller
+// forgets to validate at the boundary.
+function sanitizeCategory(category: FileCategory | undefined): FileCategory {
+  return category && VALID_CATEGORIES.includes(category) ? category : 'other';
 }
 
 export class FileStorageService {
@@ -32,7 +42,7 @@ export class FileStorageService {
     metadata?: Record<string, unknown>;
   }): Promise<UserFile> {
     const fileId = randomUUID();
-    const category = input.category ?? 'other';
+    const category = sanitizeCategory(input.category);
     const safeOriginal = sanitizeFileName(input.originalName || 'file.bin');
     const extension = path.extname(safeOriginal);
     const storedName = `${fileId}${extension}`;

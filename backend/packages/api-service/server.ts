@@ -25,6 +25,8 @@ import { registerAdminRoutes } from './admin-routes.js';
 import { registerObservabilityAdminRoutes, registerClientTelemetryRoutes } from './observability-routes.js';
 import { persistErrorReport } from './observability.service.js';
 import { initNodeTelemetry } from './telemetry.js';
+import { registerAuthRoutes, requireUser, SESSION_COOKIE, ADMIN_SESSION_COOKIE } from './auth-routes.js';
+import { verifySession, verifyAdminSession } from '../shared/auth/index.js';
 
 // ============================================================
 // API SERVICE — Fastify gateway
@@ -57,6 +59,18 @@ function normalizeAllowedOrigins(): string[] {
 function isAllowedOrigin(origin: string | undefined, allowedOrigins: string[]): boolean {
   if (!origin) return true;
   return allowedOrigins.includes(origin);
+}
+
+function parseCookie(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    }
+  }
+  return null;
 }
 
 // ─── Auth Middleware (simple API key) ─────────────────────────
@@ -99,7 +113,10 @@ async function buildApp(): Promise<FastifyInstance> {
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-api-key', 'x-admin-key', 'Authorization'],
     exposedHeaders: ['Content-Type', 'Content-Disposition'],
+    credentials: true, // session cookies (jp_session / jp_admin_session) are cross-origin
   });
+
+  await app.register(import('@fastify/cookie'));
 
   await app.register(import('@fastify/rate-limit'), {
     max: parseInt(process.env.RATE_LIMIT ?? '100'),
@@ -260,17 +277,17 @@ async function buildApp(): Promise<FastifyInstance> {
 
   // ── Execute Task ──────────────────────────────────────────────
 
-  app.post('/execute', { preHandler: authMiddleware }, async (req, reply) => {
+  app.post('/execute', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
     const {
       siteId, task,
       sessionId = randomUUID(),
-      userId = 'anonymous',
       priority = 'normal',
       useCache = true,
       dryRun = false,
     } = req.body as {
       siteId: string; task: string;
-      sessionId?: string; userId?: string; priority?: JobPriority;
+      sessionId?: string; priority?: JobPriority;
       useCache?: boolean;
       dryRun?: boolean;
     };
@@ -444,28 +461,28 @@ async function buildApp(): Promise<FastifyInstance> {
 
   // ── User Memory ──────────────────────────────────────────────
 
-  app.get('/memory/profiles', { preHandler: authMiddleware }, async (req) => {
-    const { userId } = req.query as { userId: string };
+  app.get('/memory/profiles', { preHandler: [authMiddleware, requireUser] }, async (req) => {
+    const userId = (req as typeof req & { userId: string }).userId;
     return { profiles: await memoryService.getProfiles(userId) };
   });
 
-  app.get('/memory/profiles/:profileName', { preHandler: authMiddleware }, async (req, reply) => {
+  app.get('/memory/profiles/:profileName', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { profileName } = req.params as { profileName: string };
-    const { userId } = req.query as { userId: string };
+    const userId = (req as typeof req & { userId: string }).userId;
     const profile = await memoryService.getProfileByName(userId, profileName);
     if (!profile) return reply.status(404).send({ error: 'Profile not found' });
     return { profile };
   });
 
-  app.post('/memory/profiles', { preHandler: authMiddleware }, async (req, reply) => {
-    const { userId, profileName, data } = req.body as {
-      userId: string;
+  app.post('/memory/profiles', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { profileName, data } = req.body as {
       profileName: string;
       data: Record<string, string>;
     };
 
-    if (!userId || !profileName || !data) {
-      return reply.status(400).send({ error: 'userId, profileName, and data are required' });
+    if (!profileName || !data) {
+      return reply.status(400).send({ error: 'profileName and data are required' });
     }
 
     await memoryService.saveProfile(userId, profileName, data);
@@ -476,33 +493,30 @@ async function buildApp(): Promise<FastifyInstance> {
     };
   });
 
-  app.put('/memory/profiles/:profileName', { preHandler: authMiddleware }, async (req, reply) => {
+  app.put('/memory/profiles/:profileName', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { profileName } = req.params as { profileName: string };
+    const userId = (req as typeof req & { userId: string }).userId;
     const body = req.body as {
-      userId: string;
       data?: Record<string, string>;
       newProfileName?: string;
     };
 
-    if (!body.userId) return reply.status(400).send({ error: 'userId is required' });
-
     if (body.newProfileName && body.newProfileName !== profileName) {
-      const renamed = await memoryService.renameProfile(body.userId, profileName, body.newProfileName);
+      const renamed = await memoryService.renameProfile(userId, profileName, body.newProfileName);
       if (!renamed) return reply.status(404).send({ error: 'Profile not found' });
     }
 
     if (body.data) {
-      await memoryService.saveProfile(body.userId, body.newProfileName ?? profileName, body.data);
+      await memoryService.saveProfile(userId, body.newProfileName ?? profileName, body.data);
     }
 
-    const updated = await memoryService.getProfileByName(body.userId, body.newProfileName ?? profileName);
+    const updated = await memoryService.getProfileByName(userId, body.newProfileName ?? profileName);
     return { profile: updated };
   });
 
-  app.delete('/memory/profiles/:profileName', { preHandler: authMiddleware }, async (req, reply) => {
+  app.delete('/memory/profiles/:profileName', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { profileName } = req.params as { profileName: string };
-    const { userId } = req.query as { userId?: string };
-    if (!userId) return reply.status(400).send({ error: 'userId is required' });
+    const userId = (req as typeof req & { userId: string }).userId;
     const deleted = await memoryService.deleteProfile(userId, profileName);
     if (!deleted) return reply.status(404).send({ error: 'Profile not found' });
     return { deleted: true, profileName };
@@ -510,32 +524,37 @@ async function buildApp(): Promise<FastifyInstance> {
 
   // ── File Upload / Download ───────────────────────────────────
 
-  app.post('/files/upload', { preHandler: authMiddleware }, async (req, reply) => {
+  const FILE_CATEGORIES = ['resume', 'signature', 'photo', 'document', 'receipt', 'other'] as const;
+  type FileCategory = (typeof FILE_CATEGORIES)[number];
+
+  app.post('/files/upload', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
     const body = req.body as {
-      userId: string;
       originalName: string;
       mimeType: string;
       base64Data: string;
-      category?: 'resume' | 'signature' | 'photo' | 'document' | 'receipt' | 'other';
+      category?: FileCategory;
       profileName?: string;
       metadata?: Record<string, unknown>;
     };
 
-    if (!body.userId || !body.originalName || !body.mimeType || !body.base64Data) {
-      return reply.status(400).send({ error: 'userId, originalName, mimeType, and base64Data are required' });
+    if (!body.originalName || !body.mimeType || !body.base64Data) {
+      return reply.status(400).send({ error: 'originalName, mimeType, and base64Data are required' });
+    }
+    if (body.category && !FILE_CATEGORIES.includes(body.category)) {
+      return reply.status(400).send({ error: `category must be one of: ${FILE_CATEGORIES.join(', ')}` });
     }
 
-    const file = await fileStorageService.uploadBase64(body);
+    const file = await fileStorageService.uploadBase64({ ...body, userId });
     return { file, references: fileStorageService.buildAutomationReferences(file) };
   });
 
-  app.get('/files', { preHandler: authMiddleware }, async (req, reply) => {
-    const { userId, category } = req.query as {
-      userId?: string;
-      category?: 'resume' | 'signature' | 'photo' | 'document' | 'receipt' | 'other';
-    };
-
-    if (!userId) return reply.status(400).send({ error: 'userId is required' });
+  app.get('/files', { preHandler: [authMiddleware, requireUser] }, async (req) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { category } = req.query as { category?: FileCategory };
+    if (category && !FILE_CATEGORIES.includes(category)) {
+      return { files: [] };
+    }
     const files = await fileStorageService.listFiles(userId, category);
     return {
       files: files.map((file) => ({
@@ -545,33 +564,33 @@ async function buildApp(): Promise<FastifyInstance> {
     };
   });
 
-  app.get('/files/:fileId', { preHandler: authMiddleware }, async (req, reply) => {
+  app.get('/files/:fileId', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { fileId } = req.params as { fileId: string };
-    const { userId } = req.query as { userId?: string };
+    const userId = (req as typeof req & { userId: string }).userId;
     const file = await fileStorageService.getFile(fileId, userId);
     if (!file) return reply.status(404).send({ error: 'File not found' });
     return { file, references: fileStorageService.buildAutomationReferences(file) };
   });
 
-  app.get('/files/:fileId/download', { preHandler: authMiddleware }, async (req, reply) => {
+  app.get('/files/:fileId/download', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { fileId } = req.params as { fileId: string };
-    const { userId } = req.query as { userId?: string };
+    const userId = (req as typeof req & { userId: string }).userId;
     const fileData = await fileStorageService.getFileContent(fileId, userId);
     if (!fileData) return reply.status(404).send({ error: 'File not found' });
 
     reply
       .header('Content-Type', fileData.file.mimeType)
       .header('Content-Disposition', `attachment; filename="${fileData.file.originalName}"`);
-    
+
     // Auto-delete after download (Cost reduction)
     fileStorageService.deleteFile(fileId, userId).catch(() => {});
-    
+
     return reply.send(fileData.buffer);
   });
 
-  app.delete('/files/:fileId', { preHandler: authMiddleware }, async (req, reply) => {
+  app.delete('/files/:fileId', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { fileId } = req.params as { fileId: string };
-    const { userId } = req.query as { userId?: string };
+    const userId = (req as typeof req & { userId: string }).userId;
     const deleted = await fileStorageService.deleteFile(fileId, userId);
     if (!deleted) return reply.status(404).send({ error: 'File not found' });
     return { deleted: true, fileId };
@@ -751,6 +770,9 @@ async function buildApp(): Promise<FastifyInstance> {
     };
   });
 
+  // ── Auth Routes (Google / email OTP / mobile OTP / admin login) ──
+  registerAuthRoutes(app);
+
   // ── Admin Panel Routes ─────────────────────────────────────
   await registerAdminRoutes(app);
   await registerObservabilityAdminRoutes(app);
@@ -793,7 +815,27 @@ async function main() {
         },
         methods: ['GET', 'POST'],
         allowedHeaders: ['x-api-key', 'x-admin-key'],
+        credentials: true, // required for the jp_session cookie to be sent cross-origin
       }
+    });
+
+    // Chat is the primary product surface, so it must never trust a
+    // client-supplied userId — every connection is tied to the verified
+    // session cookie instead, and `join`/`chat:send` use that resolved id.
+    io.use(async (socket, next) => {
+      const cookieHeader = socket.handshake.headers.cookie;
+      const token = parseCookie(cookieHeader, SESSION_COOKIE);
+      if (!token) {
+        next(new Error('Unauthorized — please sign in'));
+        return;
+      }
+      const claims = await verifySession(token);
+      if (!claims) {
+        next(new Error('Unauthorized — please sign in'));
+        return;
+      }
+      (socket.data as { userId: string }).userId = claims.sub;
+      next();
     });
 
     const pubClient = await getRedisClient();
@@ -803,10 +845,24 @@ async function main() {
 
     const adminNs = io.of('/admin');
     adminNs.use(async (socket, next) => {
+      // Prefer the admin session cookie (what the browser now uses — no key
+      // ever touches client JS); fall back to the legacy x-admin-key header
+      // for scripted/CI callers.
+      const cookieToken = parseCookie(socket.handshake.headers.cookie, ADMIN_SESSION_COOKIE);
+      if (cookieToken) {
+        const claims = await verifyAdminSession(cookieToken);
+        if (!claims) {
+          next(new Error('Unauthorized'));
+          return;
+        }
+        next();
+        return;
+      }
+
       const auth = socket.handshake.auth as { adminKey?: string } | undefined;
       const headerKey = socket.handshake.headers['x-admin-key'];
       const key = (typeof headerKey === 'string' ? headerKey : undefined) ?? auth?.adminKey;
-      
+
       if (!key) {
         next(new Error('Unauthorized'));
         return;
@@ -948,19 +1004,21 @@ setInterval(() => {
     io.on('connection', (socket) => {
       logger.info('socket:connected', { socketId: socket.id });
       
-      socket.on('join', (data: { userId: string, sessionId: string, activeJobId?: string }) => {
+      const userId = (socket.data as { userId: string }).userId;
+
+      socket.on('join', (data: { sessionId: string, activeJobId?: string }) => {
         logger.info('socket:join', {
           socketId: socket.id,
-          userId: data.userId,
+          userId,
           sessionId: data.sessionId,
           activeJobId: data.activeJobId,
         });
-        socket.join(`user:${data.userId}`);
+        socket.join(`user:${userId}`);
         socket.join(`session:${data.sessionId}`);
 
         // Track this socket's user/session
         if (!socketJobMap.has(socket.id)) {
-          socketJobMap.set(socket.id, { userId: data.userId, sessionId: data.sessionId, jobIds: new Set() });
+          socketJobMap.set(socket.id, { userId, sessionId: data.sessionId, jobIds: new Set() });
         }
 
         if (data.activeJobId) {
@@ -999,17 +1057,17 @@ setInterval(() => {
         }
       });
 
-      socket.on('chat:send', async (data: { userId: string, sessionId: string, message: string }) => {
+      socket.on('chat:send', async (data: { sessionId: string, message: string }) => {
         logger.info('socket:chat-send', {
           socketId: socket.id,
-          userId: data.userId,
+          userId,
           sessionId: data.sessionId,
           messagePreview: data.message.slice(0, 120),
         });
         await chatOrchestrator.handleMessage(
-          data.userId, 
-          data.sessionId, 
-          data.message, 
+          userId,
+          data.sessionId,
+          data.message,
           (reply) => socket.emit('chat:receive', reply),
           (job) => {
             // Track the newly started job for this socket

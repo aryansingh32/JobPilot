@@ -117,7 +117,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   let res: Response;
   try {
-    res = await fetch(url, { ...options, headers });
+    res = await fetch(url, { ...options, headers, credentials: "include" });
   } catch (error) {
     logger.error("request:network-error", error, {
       url,
@@ -186,9 +186,8 @@ export const api = {
     siteId: string;
     task: string;
     sessionId?: string;
-    userId?: string;
     priority?: "critical" | "high" | "normal" | "low";
-  }) => post<JobResponse>("/execute", { ...payload, userId: payload.userId || config.userId }),
+  }) => post<JobResponse>("/execute", payload),
 
   // Jobs
   getJob: (jobId: string) => get<{ job: Record<string, unknown> }>(`/jobs/${jobId}`),
@@ -198,38 +197,26 @@ export const api = {
   cancelJob: (jobId: string) =>
     post<{ jobId: string; cancelled: boolean }>(`/jobs/${jobId}/cancel`, {}),
 
-  // Profiles
-  getProfiles: (userId?: string) =>
-    get<{ profiles: UserProfile[] }>(`/memory/profiles?userId=${userId || config.userId}`),
+  // Profiles — identity comes from the session cookie now, never from the caller
+  getProfiles: () => get<{ profiles: UserProfile[] }>(`/memory/profiles`),
 
-  getProfile: (profileName: string, userId?: string) =>
-    get<{ profile: UserProfile }>(
-      `/memory/profiles/${encodeURIComponent(profileName)}?userId=${userId || config.userId}`,
-    ),
+  getProfile: (profileName: string) =>
+    get<{ profile: UserProfile }>(`/memory/profiles/${encodeURIComponent(profileName)}`),
 
-  saveProfile: (profileName: string, data: Record<string, string>, userId?: string) =>
+  saveProfile: (profileName: string, data: Record<string, string>) =>
     post<{ saved: boolean; profileName: string }>("/memory/profiles", {
-      userId: userId || config.userId,
       profileName,
       data,
     }),
 
-  updateProfile: (
-    profileName: string,
-    data: Record<string, string>,
-    newName?: string,
-    userId?: string,
-  ) =>
+  updateProfile: (profileName: string, data: Record<string, string>, newName?: string) =>
     put<{ profile: UserProfile }>(`/memory/profiles/${encodeURIComponent(profileName)}`, {
-      userId: userId || config.userId,
       data,
       newProfileName: newName,
     }),
 
-  deleteProfile: (profileName: string, userId?: string) =>
-    del<{ deleted: boolean }>(
-      `/memory/profiles/${encodeURIComponent(profileName)}?userId=${userId || config.userId}`,
-    ),
+  deleteProfile: (profileName: string) =>
+    del<{ deleted: boolean }>(`/memory/profiles/${encodeURIComponent(profileName)}`),
 
   // Files
   uploadFile: (payload: {
@@ -238,26 +225,16 @@ export const api = {
     base64Data: string;
     category?: UserFile["category"];
     profileName?: string;
-    userId?: string;
-  }) =>
-    post<{ file: UserFile; references: UserFile["references"] }>("/files/upload", {
-      ...payload,
-      userId: payload.userId || config.userId,
-    }),
+  }) => post<{ file: UserFile; references: UserFile["references"] }>("/files/upload", payload),
 
-  listFiles: (category?: string, userId?: string) =>
-    get<{ files: UserFile[] }>(
-      `/files?userId=${userId || config.userId}${category ? `&category=${category}` : ""}`,
-    ),
+  listFiles: (category?: string) =>
+    get<{ files: UserFile[] }>(`/files${category ? `?category=${category}` : ""}`),
 
-  getFile: (fileId: string, userId?: string) =>
-    get<{ file: UserFile }>(`/files/${fileId}?userId=${userId || config.userId}`),
+  getFile: (fileId: string) => get<{ file: UserFile }>(`/files/${fileId}`),
 
-  getFileDownloadUrl: (fileId: string, userId?: string) =>
-    `${config.apiBaseUrl}/files/${fileId}/download?userId=${userId || config.userId}`,
+  getFileDownloadUrl: (fileId: string) => `${config.apiBaseUrl}/files/${fileId}/download`,
 
-  deleteFile: (fileId: string, userId?: string) =>
-    del<{ deleted: boolean }>(`/files/${fileId}?userId=${userId || config.userId}`),
+  deleteFile: (fileId: string) => del<{ deleted: boolean }>(`/files/${fileId}`),
 
   // Workflows
   listWorkflows: (siteId?: string) =>

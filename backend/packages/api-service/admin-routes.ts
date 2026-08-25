@@ -4,7 +4,7 @@
 // All routes require x-admin-key header matching ADMIN_API_KEY.
 // ============================================================
 
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { getPgPool, getRedisClient, CacheKeys } from '../shared/db/index.js';
 import { getBrowserPool } from '../execution-service/browser-pool.js';
 import { recorderService } from '../execution-service/recorder.js';
@@ -13,6 +13,7 @@ import { generalizeSteps } from '../execution-service/llm-generalizer.js';
 import { getAllQueueStats } from '../shared/queue/index.js';
 import { register as promRegister } from 'prom-client';
 import { createLogger } from '../shared/logger/index.js';
+import { adminAuth } from './admin-auth.js';
 import os from 'os';
 import fs from 'fs';
 
@@ -35,43 +36,6 @@ const JOB_ERROR_SQL = `
     )
   ) AS error
 `;
-
-// ── Admin Auth Middleware ──────────────────────────────────
-async function adminAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-  const key = req.headers['x-admin-key'] as string;
-  if (!key) {
-    logger.warn('admin:auth-missing-key', { ip: req.ip, url: req.url });
-    reply.status(401).send({ error: 'Unauthorized — admin key required' });
-    return;
-  }
-
-  const pool = getPgPool();
-  try {
-    const { rows } = await pool.query('SELECT id, role FROM admins WHERE api_key = $1', [key]);
-    if (!rows.length) {
-      logger.warn('admin:auth-failed', { ip: req.ip, url: req.url });
-      reply.status(401).send({ error: 'Unauthorized — invalid admin key' });
-      return;
-    }
-    
-    const admin = rows[0];
-    (req as any).admin = admin;
-
-    const method = req.method.toUpperCase();
-    if (method === 'DELETE' && admin.role !== 'super-admin') {
-      reply.status(403).send({ error: 'Forbidden — super-admin required for DELETE' });
-      return;
-    }
-    if ((method === 'POST' || method === 'PUT') && admin.role === 'viewer') {
-      reply.status(403).send({ error: 'Forbidden — editor or super-admin required for POST/PUT' });
-      return;
-    }
-  } catch (err) {
-    logger.error('admin:auth-error', err);
-    reply.status(500).send({ error: 'Internal Server Error' });
-    return;
-  }
-}
 
 // ── Helpers ────────────────────────────────────────────────
 async function getSystemHealth() {

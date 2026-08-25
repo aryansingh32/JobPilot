@@ -38,7 +38,6 @@ export function enqueueTelemetryEvent(event: TelemetryEvent): void {
     ...event,
     ts: new Date().toISOString(),
     sessionId: getTelemetrySessionId(),
-    userId: config.userId,
   });
   if (queue.length >= 30) void flushTelemetryQueue();
   else scheduleFlush();

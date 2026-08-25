@@ -1,6 +1,7 @@
-import { Monitor, X, Maximize2, Wifi, WifiOff, Minimize2 } from "lucide-react";
+import { Monitor, X, Maximize2, Wifi, WifiOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { InputCardMessage } from "@/lib/chat-types";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 interface Props {
   frame: string | null;
@@ -10,7 +11,13 @@ interface Props {
   activePause?: InputCardMessage | null;
 }
 
-export function LiveScreenPanel({ frame, hot, onClose, connected = false, activePause = null }: Props) {
+export function LiveScreenPanel({
+  frame,
+  hot,
+  onClose,
+  connected = false,
+  activePause = null,
+}: Props) {
   const [fps, setFps] = useState(0);
   const framesRef = useRef(0);
   const [expanded, setExpanded] = useState(false);
@@ -28,29 +35,32 @@ export function LiveScreenPanel({ frame, hot, onClose, connected = false, active
   }, []);
 
   // Use rect from active pause if available
-  const rect = (activePause?.data as any)?.rect;
-  
-  const content = (
-    <div className={`relative overflow-hidden border border-border bg-muted/20 ${expanded ? 'h-full w-full flex items-center justify-center' : 'rounded-lg'}`}>
+  const rect = (activePause?.data as { rect?: { x: number; y: number; w: number; h: number } })
+    ?.rect;
+
+  const frameView = (large: boolean) => (
+    <div
+      className={`relative overflow-hidden border border-border bg-muted/20 ${large ? "flex h-full w-full items-center justify-center border-none bg-transparent" : "rounded-lg"}`}
+    >
       {frame ? (
-        <div className="relative inline-block w-full h-full text-center">
+        <div className="relative inline-block h-full w-full text-center">
           <img
             src={frame}
             alt="Live agent view"
-            className="inline-block object-contain cursor-pointer transition-transform"
-            style={{ maxHeight: expanded ? '90vh' : '100%', maxWidth: '100%' }}
-            onClick={() => setExpanded(!expanded)}
+            className="inline-block cursor-pointer object-contain transition-transform"
+            style={{ maxHeight: large ? "85vh" : "100%", maxWidth: "100%" }}
+            onClick={() => setExpanded(!large)}
           />
           {rect && (
-             <div 
-               className="absolute border-2 border-red-500 bg-red-500/20 animate-pulse pointer-events-none"
-               style={{
-                 left: `${rect.x}%`,
-                 top: `${rect.y}%`,
-                 width: `${rect.w}%`,
-                 height: `${rect.h}%`
-               }}
-             />
+            <div
+              className="pointer-events-none absolute animate-pulse border-2 border-red-500 bg-red-500/20"
+              style={{
+                left: `${rect.x}%`,
+                top: `${rect.y}%`,
+                width: `${rect.w}%`,
+                height: `${rect.h}%`,
+              }}
+            />
           )}
         </div>
       ) : (
@@ -66,21 +76,8 @@ export function LiveScreenPanel({ frame, hot, onClose, connected = false, active
           </div>
         </div>
       )}
-      {expanded && (
-        <button onClick={() => setExpanded(false)} className="absolute top-4 right-4 bg-black/50 p-2 rounded-full text-white hover:bg-black/70 z-50">
-           <Minimize2 className="h-6 w-6" />
-        </button>
-      )}
     </div>
   );
-
-  if (expanded) {
-    return (
-      <div className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center backdrop-blur-sm p-4">
-        {content}
-      </div>
-    );
-  }
 
   return (
     <div className="mx-4 my-4 overflow-hidden rounded-xl border border-border bg-card">
@@ -117,7 +114,7 @@ export function LiveScreenPanel({ frame, hot, onClose, connected = false, active
         </button>
       </div>
       <div className="p-4">
-        {content}
+        {frameView(false)}
 
         <div className="mt-3 space-y-2 text-[11px] leading-relaxed text-muted-foreground">
           <div className="flex gap-2 items-center">
@@ -132,6 +129,13 @@ export function LiveScreenPanel({ frame, hot, onClose, connected = false, active
           )}
         </div>
       </div>
+
+      <Dialog open={expanded} onOpenChange={setExpanded}>
+        <DialogContent className="flex h-[90vh] max-w-5xl items-center justify-center border-none bg-black/95 p-4">
+          <DialogTitle className="sr-only">Live agent view</DialogTitle>
+          {frameView(true)}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

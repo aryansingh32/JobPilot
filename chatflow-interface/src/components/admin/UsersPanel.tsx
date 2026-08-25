@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
-import { Search, Eye, MessageSquare, ChevronLeft, ChevronRight, User } from "lucide-react";
+import { Eye, MessageSquare, ChevronLeft, ChevronRight, User } from "lucide-react";
 import { adminApi, type AdminUser } from "@/lib/admin-api";
 import { StatusBadge } from "./StatusBadge";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 const PAGE_SIZE = 50;
 
@@ -19,37 +20,41 @@ function UserDetailModal({ userId, onClose }: { userId: string; onClose: () => v
   const [tab, setTab] = useState<"jobs" | "prompts" | "files">("jobs");
 
   useEffect(() => {
-    adminApi.getUser(userId).then(setData).catch(() => {});
-    adminApi.getUserPrompts(userId, 30).then((r) => setPrompts(r.prompts)).catch(() => {});
+    adminApi
+      .getUser(userId)
+      .then(setData)
+      .catch(() => {});
+    adminApi
+      .getUserPrompts(userId, 30)
+      .then((r) => setPrompts(r.prompts))
+      .catch(() => {});
   }, [userId]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col rounded-2xl border border-border/60 bg-background shadow-2xl">
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden p-0">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-border/40 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/20 text-primary">
-              <User className="h-4 w-4" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-foreground">User Profile</h3>
-              <p className="text-[11px] font-mono text-muted-foreground">{userId}</p>
-            </div>
+        <div className="flex items-center gap-3 border-b border-border/40 px-6 py-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/20 text-primary">
+            <User className="h-4 w-4" />
           </div>
-          <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition border border-border/40">
-            Close
-          </button>
+          <div className="min-w-0">
+            <DialogTitle className="text-sm font-semibold text-foreground">
+              User Profile
+            </DialogTitle>
+            <p className="truncate text-[11px] font-mono text-muted-foreground">{userId}</p>
+          </div>
         </div>
         {/* Tabs */}
-        <div className="flex gap-1 border-b border-border/40 px-6 pt-3">
+        <div className="flex gap-1 overflow-x-auto border-b border-border/40 px-6 pt-3 scroll-thin">
           {(["jobs", "prompts", "files"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`pb-2 px-3 text-xs font-medium capitalize transition border-b-2 ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+              className={`shrink-0 whitespace-nowrap pb-2 px-3 text-xs font-medium capitalize transition border-b-2 ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
             >
-              {t} {t === "jobs" && data ? `(${data.jobs?.length ?? 0})` : ""} {t === "files" && data ? `(${data.files?.length ?? 0})` : ""}
+              {t} {t === "jobs" && data ? `(${data.jobs?.length ?? 0})` : ""}{" "}
+              {t === "files" && data ? `(${data.files?.length ?? 0})` : ""}
             </button>
           ))}
         </div>
@@ -62,10 +67,15 @@ function UserDetailModal({ userId, onClose }: { userId: string; onClose: () => v
           ) : tab === "jobs" ? (
             <div className="space-y-2">
               {data.jobs?.map((j: any) => (
-                <div key={j.job_id} className="flex items-center justify-between rounded-xl border border-border/40 bg-card/60 px-4 py-2.5">
+                <div
+                  key={j.job_id}
+                  className="flex items-center justify-between rounded-xl border border-border/40 bg-card/60 px-4 py-2.5"
+                >
                   <div>
                     <p className="text-xs font-mono text-primary">{j.job_id?.slice(0, 20)}…</p>
-                    <p className="text-[11px] text-muted-foreground">{j.type} · {ago(j.started_at)}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {j.type} · {ago(j.started_at)}
+                    </p>
                   </div>
                   <StatusBadge status={j.status} />
                 </div>
@@ -74,7 +84,10 @@ function UserDetailModal({ userId, onClose }: { userId: string; onClose: () => v
           ) : tab === "prompts" ? (
             <div className="space-y-2">
               {prompts.map((p) => (
-                <div key={p.job_id} className="rounded-xl border border-border/40 bg-card/60 px-4 py-3">
+                <div
+                  key={p.job_id}
+                  className="rounded-xl border border-border/40 bg-card/60 px-4 py-3"
+                >
                   <div className="flex items-center justify-between mb-1.5">
                     <StatusBadge status={p.status} />
                     <span className="text-[10px] text-muted-foreground">{ago(p.started_at)}</span>
@@ -86,20 +99,29 @@ function UserDetailModal({ userId, onClose }: { userId: string; onClose: () => v
           ) : (
             <div className="space-y-2">
               {data.files?.map((f: any) => (
-                <div key={f.id} className="flex items-center justify-between rounded-xl border border-border/40 bg-card/60 px-4 py-2.5">
+                <div
+                  key={f.id}
+                  className="flex items-center justify-between rounded-xl border border-border/40 bg-card/60 px-4 py-2.5"
+                >
                   <div>
                     <p className="text-xs text-foreground">{f.original_name}</p>
-                    <p className="text-[11px] text-muted-foreground">{f.category} · {ago(f.created_at)}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {f.category} · {ago(f.created_at)}
+                    </p>
                   </div>
-                  <span className="text-[10px] text-muted-foreground">{Math.round((f.file_size_bytes ?? 0) / 1024)} KB</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {Math.round((f.file_size_bytes ?? 0) / 1024)} KB
+                  </span>
                 </div>
               ))}
-              {!data.files?.length && <p className="text-sm text-muted-foreground text-center py-4">No files found</p>}
+              {!data.files?.length && (
+                <p className="text-sm text-muted-foreground text-center py-4">No files found</p>
+              )}
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -116,73 +138,108 @@ export function UsersPanel() {
       const res = await adminApi.listUsers({ limit: PAGE_SIZE, offset: page * PAGE_SIZE });
       setUsers(res.users);
       setTotal(res.total);
-    } catch {}
-    finally { setLoading(false); }
+    } catch {
+    } finally {
+      setLoading(false);
+    }
   }, [page]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
     <div className="space-y-4">
-      {selectedUserId && <UserDetailModal userId={selectedUserId} onClose={() => setSelectedUserId(null)} />}
+      {selectedUserId && (
+        <UserDetailModal userId={selectedUserId} onClose={() => setSelectedUserId(null)} />
+      )}
 
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">{total.toLocaleString()} unique users tracked</p>
+        <p className="text-sm text-muted-foreground">
+          {total.toLocaleString()} unique users tracked
+        </p>
       </div>
 
-      <div className="rounded-2xl border border-border/40 bg-card/30 overflow-hidden">
-        <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1.2fr_auto] text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/30">
-          {["User ID", "Total Jobs", "Completed", "Failed", "Last Active", ""].map((h) => (
-            <div key={h} className="bg-background px-4 py-3">{h}</div>
-          ))}
-        </div>
-        <div className="divide-y divide-border/20">
-          {loading && !users.length ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">Loading users…</div>
-          ) : !users.length ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">No users found</div>
-          ) : users.map((u) => (
-            <div
-              key={u.user_id}
-              className="grid grid-cols-[2fr_1fr_1fr_1fr_1.2fr_auto] hover:bg-accent/20 cursor-pointer transition-colors"
-              onClick={() => setSelectedUserId(u.user_id)}
-            >
-              <div className="px-4 py-3 font-mono text-xs text-primary truncate">{u.user_id}</div>
-              <div className="px-4 py-3 text-xs text-foreground tabular-nums">{Number(u.total_jobs).toLocaleString()}</div>
-              <div className="px-4 py-3 text-xs text-emerald-400 tabular-nums">{Number(u.completed_jobs).toLocaleString()}</div>
-              <div className="px-4 py-3 text-xs text-red-400 tabular-nums">{Number(u.failed_jobs).toLocaleString()}</div>
-              <div className="px-4 py-3 text-xs text-muted-foreground">{ago(u.last_active)}</div>
-              <div className="px-4 py-3 flex items-center gap-1">
-                <button
-                  onClick={(e) => { e.stopPropagation(); setSelectedUserId(u.user_id); }}
-                  className="rounded p-1 text-muted-foreground hover:text-primary transition"
-                >
-                  <Eye className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  onClick={(e) => e.stopPropagation()}
-                  className="rounded p-1 text-muted-foreground hover:text-amber-300 transition"
-                  title="View prompts"
-                >
-                  <MessageSquare className="h-3.5 w-3.5" />
-                </button>
+      <div className="rounded-2xl border border-border/40 bg-card/30 overflow-x-auto">
+        <div className="min-w-[680px]">
+          <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1.2fr_auto] text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/30">
+            {["User ID", "Total Jobs", "Completed", "Failed", "Last Active", ""].map((h) => (
+              <div key={h} className="bg-background px-4 py-3">
+                {h}
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
+          <div className="divide-y divide-border/20">
+            {loading && !users.length ? (
+              <div className="py-10 text-center text-sm text-muted-foreground">Loading users…</div>
+            ) : !users.length ? (
+              <div className="py-10 text-center text-sm text-muted-foreground">No users found</div>
+            ) : (
+              users.map((u) => (
+                <div
+                  key={u.user_id}
+                  className="grid grid-cols-[2fr_1fr_1fr_1fr_1.2fr_auto] hover:bg-accent/20 cursor-pointer transition-colors"
+                  onClick={() => setSelectedUserId(u.user_id)}
+                >
+                  <div className="px-4 py-3 font-mono text-xs text-primary truncate">
+                    {u.user_id}
+                  </div>
+                  <div className="px-4 py-3 text-xs text-foreground tabular-nums">
+                    {Number(u.total_jobs).toLocaleString()}
+                  </div>
+                  <div className="px-4 py-3 text-xs text-emerald-400 tabular-nums">
+                    {Number(u.completed_jobs).toLocaleString()}
+                  </div>
+                  <div className="px-4 py-3 text-xs text-red-400 tabular-nums">
+                    {Number(u.failed_jobs).toLocaleString()}
+                  </div>
+                  <div className="px-4 py-3 text-xs text-muted-foreground">
+                    {ago(u.last_active)}
+                  </div>
+                  <div className="px-4 py-3 flex items-center gap-1">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedUserId(u.user_id);
+                      }}
+                      className="rounded p-1 text-muted-foreground hover:text-primary transition"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={(e) => e.stopPropagation()}
+                      className="rounded p-1 text-muted-foreground hover:text-amber-300 transition"
+                      title="View prompts"
+                    >
+                      <MessageSquare className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
 
       {totalPages > 1 && (
         <div className="flex items-center justify-center gap-3">
-          <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}
-            className="flex items-center gap-1 rounded-lg border border-border/50 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-40">
+          <button
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={page === 0}
+            className="flex items-center gap-1 rounded-lg border border-border/50 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-40"
+          >
             <ChevronLeft className="h-3.5 w-3.5" /> Prev
           </button>
-          <span className="text-xs text-muted-foreground">Page {page + 1} of {totalPages}</span>
-          <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
-            className="flex items-center gap-1 rounded-lg border border-border/50 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-40">
+          <span className="text-xs text-muted-foreground">
+            Page {page + 1} of {totalPages}
+          </span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={page >= totalPages - 1}
+            className="flex items-center gap-1 rounded-lg border border-border/50 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-40"
+          >
             Next <ChevronRight className="h-3.5 w-3.5" />
           </button>
         </div>
