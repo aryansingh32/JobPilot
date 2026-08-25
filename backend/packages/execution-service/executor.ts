@@ -7,7 +7,7 @@ import type {
   ExecuteJob,
   JobRuntimeState,
 } from '../shared/types/index.js';
-import { getBrowserPool } from './browser-pool.js';
+import { getBrowserPool, localeForUrl } from './browser-pool.js';
 import { SelectorEngine, type AIResolver } from './selector-engine.js';
 import { SessionManager } from './session-manager.js';
 import { getPgPool, CacheKeys } from '../shared/db/index.js';
@@ -42,7 +42,7 @@ function getErrorMessage(error: unknown): string {
   }
 }
 
-interface ExecutionContext {
+export interface ExecutionContext {
   page: Page;
   contextId: string;
   selectorEngine: SelectorEngine;
@@ -237,7 +237,7 @@ function buildLocator(step: ActionStep, candidate: string, ctx: ExecutionContext
   }
 }
 
-async function resolveLocator(step: ActionStep, ctx: ExecutionContext): Promise<Locator> {
+export async function resolveLocator(step: ActionStep, ctx: ExecutionContext): Promise<Locator> {
   if (step.target?.value) {
     const candidates = [step.target.value, ...(step.target.fallbackSelectors ?? [])];
     for (const candidate of candidates) {
@@ -318,6 +318,84 @@ async function executeNestedSteps(steps: ActionStep[] | undefined, ctx: Executio
     await handler(step, ctx);
   }
 }
+
+const PAYMENT_COPY: Record<NonNullable<ActionStep['paymentMethod']>, string> = {
+  upi: 'Please complete the payment on your UPI app and confirm when done.',
+  card: 'Please complete the card payment and confirm when done.',
+  generic: 'Please complete the payment and confirm when done.',
+};
+
+/** Shared by the `payment` and `paymentGateway` action types — same click-then-pause-for-confirmation
+ *  flow, differing only in the button/link they click and the message shown to the user. */
+const handlePaymentStep: ActionHandler = async (step, ctx) => {
+  const stream = (ctx as any).activeStream;
+  if (stream) stream.setFps(5); // High FPS for payment screens
+  await ensureNotCancelled(ctx);
+
+  await humanClick(ctx.page, await resolveLocator(step, ctx));
+
+  const redis = await getRedisClient();
+  await updateJobRuntimeState(ctx, {
+    status: 'paused',
+    activeStepId: step.id,
+    lastInputType: 'confirmation',
+  });
+
+  const contextMessage = step.contextMessage || PAYMENT_COPY[step.paymentMethod ?? 'generic'];
+
+  await redis.publish('chat:pause', JSON.stringify({
+    jobId: ctx.jobId,
+    userId: ctx.userId,
+    sessionId: ctx.sessionId,
+    stepId: step.id,
+    type: 'confirmation',
+    contextMessage,
+  }));
+
+  await new Promise<void>((resolve, reject) => {
+    const subRedis = redis.duplicate();
+    const idleTimeoutMs = step.timeout || 5 * 60 * 1000; // 5 minutes for payments
+    let settled = false;
+
+    subRedis.connect().then(() => {
+      const cleanup = async () => {
+        settled = true;
+        clearTimeout(idleTimer);
+        try {
+          await subRedis.unsubscribe(`job:resume:${ctx.jobId}`);
+          await subRedis.unsubscribe(`job:cancel:${ctx.jobId}`);
+        } catch {}
+        await subRedis.quit().catch(() => {});
+      };
+
+      const idleTimer = setTimeout(() => {
+        if (settled) return;
+        console.warn(`[Executor] Payment idle timeout (${idleTimeoutMs / 1000}s) for job ${ctx.jobId}`);
+        ctx.cancellation.cancelled = true;
+        updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
+        if (stream) stream.setFps(1);
+        cleanup().catch(() => {});
+        reject(new JobCancelledError(ctx.jobId));
+      }, idleTimeoutMs);
+
+      subRedis.subscribe(`job:resume:${ctx.jobId}`, () => {
+        if (settled) return;
+        updateJobRuntimeState(ctx, { status: 'running', activeStepId: step.id }).catch(() => {});
+        if (stream) stream.setFps(1); // Reset FPS
+        cleanup().catch(() => {});
+        resolve();
+      });
+      subRedis.subscribe(`job:cancel:${ctx.jobId}`, () => {
+        if (settled) return;
+        ctx.cancellation.cancelled = true;
+        updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
+        if (stream) stream.setFps(1);
+        cleanup().catch(() => {});
+        reject(new JobCancelledError(ctx.jobId));
+      });
+    });
+  });
+};
 
 const ACTION_HANDLERS: Record<string, ActionHandler> = {
   navigate: async (step, ctx) => {
@@ -627,73 +705,7 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
     });
   },
 
-  payment: async (step, ctx) => {
-    const stream = (ctx as any).activeStream;
-    if (stream) stream.setFps(5); // High FPS for payment screens
-    await ensureNotCancelled(ctx);
-
-    await humanClick(ctx.page, await resolveLocator(step, ctx));
-
-    const redis = await getRedisClient();
-    await updateJobRuntimeState(ctx, {
-      status: 'paused',
-      activeStepId: step.id,
-      lastInputType: 'confirmation',
-    });
-
-    await redis.publish('chat:pause', JSON.stringify({
-      jobId: ctx.jobId,
-      userId: ctx.userId,
-      sessionId: ctx.sessionId,
-      stepId: step.id,
-      type: 'confirmation',
-      contextMessage: 'Please complete the payment on your UPI app and confirm when done.',
-    }));
-
-    await new Promise<void>((resolve, reject) => {
-      const subRedis = redis.duplicate();
-      const idleTimeoutMs = step.timeout || 5 * 60 * 1000; // 5 minutes for payments
-      let settled = false;
-
-      subRedis.connect().then(() => {
-        const cleanup = async () => {
-          settled = true;
-          clearTimeout(idleTimer);
-          try {
-            await subRedis.unsubscribe(`job:resume:${ctx.jobId}`);
-            await subRedis.unsubscribe(`job:cancel:${ctx.jobId}`);
-          } catch {}
-          await subRedis.quit().catch(() => {});
-        };
-
-        const idleTimer = setTimeout(() => {
-          if (settled) return;
-          console.warn(`[Executor] Payment idle timeout (${idleTimeoutMs / 1000}s) for job ${ctx.jobId}`);
-          ctx.cancellation.cancelled = true;
-          updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
-          if (stream) stream.setFps(1);
-          cleanup().catch(() => {});
-          reject(new JobCancelledError(ctx.jobId));
-        }, idleTimeoutMs);
-
-        subRedis.subscribe(`job:resume:${ctx.jobId}`, () => {
-          if (settled) return;
-          updateJobRuntimeState(ctx, { status: 'running', activeStepId: step.id }).catch(() => {});
-          if (stream) stream.setFps(1); // Reset FPS
-          cleanup().catch(() => {});
-          resolve();
-        });
-        subRedis.subscribe(`job:cancel:${ctx.jobId}`, () => {
-          if (settled) return;
-          ctx.cancellation.cancelled = true;
-          updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
-          if (stream) stream.setFps(1);
-          cleanup().catch(() => {});
-          reject(new JobCancelledError(ctx.jobId));
-        });
-      });
-    });
-  },
+  payment: handlePaymentStep,
 
   conditional: async (step, ctx) => {
     const branch = (await evaluateCondition(step, ctx)) ? step.trueSteps : step.falseSteps;
@@ -899,73 +911,7 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
     plainText = '********'; 
   },
 
-  paymentGateway: async (step, ctx) => {
-    const stream = (ctx as any).activeStream;
-    if (stream) stream.setFps(5);
-    await ensureNotCancelled(ctx);
-
-    const locator = await resolveLocator(step, ctx);
-    await humanClick(ctx.page, locator);
-
-    const redis = await getRedisClient();
-    await updateJobRuntimeState(ctx, {
-      status: 'paused',
-      activeStepId: step.id,
-      lastInputType: 'confirmation',
-    });
-
-    await redis.publish('chat:pause', JSON.stringify({
-      jobId: ctx.jobId,
-      userId: ctx.userId,
-      sessionId: ctx.sessionId,
-      stepId: step.id,
-      type: 'confirmation',
-      contextMessage: step.contextMessage || 'Please complete the payment on the gateway and confirm when done.',
-    }));
-
-    await new Promise<void>((resolve, reject) => {
-      const subRedis = redis.duplicate();
-      const idleTimeoutMs = step.timeout || 5 * 60 * 1000;
-      let settled = false;
-
-      subRedis.connect().then(() => {
-        const cleanup = async () => {
-          settled = true;
-          clearTimeout(idleTimer);
-          try {
-            await subRedis.unsubscribe(`job:resume:${ctx.jobId}`);
-            await subRedis.unsubscribe(`job:cancel:${ctx.jobId}`);
-          } catch {}
-          await subRedis.quit().catch(() => {});
-        };
-
-        const idleTimer = setTimeout(() => {
-          if (settled) return;
-          ctx.cancellation.cancelled = true;
-          updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
-          if (stream) stream.setFps(1);
-          cleanup().catch(() => {});
-          reject(new JobCancelledError(ctx.jobId));
-        }, idleTimeoutMs);
-
-        subRedis.subscribe(`job:resume:${ctx.jobId}`, () => {
-          if (settled) return;
-          updateJobRuntimeState(ctx, { status: 'running', activeStepId: step.id }).catch(() => {});
-          if (stream) stream.setFps(1);
-          cleanup().catch(() => {});
-          resolve();
-        });
-        subRedis.subscribe(`job:cancel:${ctx.jobId}`, () => {
-          if (settled) return;
-          ctx.cancellation.cancelled = true;
-          updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
-          if (stream) stream.setFps(1);
-          cleanup().catch(() => {});
-          reject(new JobCancelledError(ctx.jobId));
-        });
-      });
-    });
-  },
+  paymentGateway: handlePaymentStep,
 
   pressKey: async (step, ctx) => {
     const key = resolveRuntimeValue(step.value, ctx) || 'Enter';
@@ -1138,7 +1084,9 @@ export class ExecutionEngine {
         job.payload.siteId
       );
 
-      const lease = await pool.acquireContext(sessionId, job.userId, session, session.proxy as any, job.payload.lightweight);
+      const entryUrl = actionPlan?.find((step) => step.action === 'navigate')?.target?.value;
+      const localeHint = localeForUrl(entryUrl);
+      const lease = await pool.acquireContext(sessionId, job.userId, session, session.proxy as any, job.payload.lightweight, localeHint);
       contextId = lease.contextId;
       const page = await pool.getOrCreatePage(contextId);
 
@@ -1218,7 +1166,7 @@ export class ExecutionEngine {
       await this.sessionManager.save(sessionId, page, lease.context);
 
       allSucceeded = stepResults.every((result) => result.success);
-      await this.logResult(job.id, job.userId, job.payload.sessionId, job.payload.siteId, allSucceeded, stepResults, ctx.metrics);
+      await this.logResult(job.id, job.userId, job.payload.sessionId, job.payload.siteId, allSucceeded, stepResults, ctx.metrics, job.payload.task);
       const failedStepError = stepResults.find((result) => result.error)?.error;
       await updateJobRuntimeState(ctx, {
         status: allSucceeded ? 'completed' : 'failed',
@@ -1341,6 +1289,7 @@ export class ExecutionEngine {
         false,
         stepResults,
         { aiCallCount: 0, selectorFallbackCount: 0, retryCount: 0 },
+        job.payload.task,
         error
       ).catch((logError) => {
         logger.error('job:log-result-failed', logError, { jobId: job.id, originalError: error });
@@ -1438,19 +1387,20 @@ export class ExecutionEngine {
     success: boolean,
     steps: StepResult[],
     metrics: ExecutionContext['metrics'],
+    task?: string,
     errorMessage?: string
   ): Promise<void> {
     const pool = getPgPool();
     const totalDuration = steps.reduce((sum, step) => sum + step.duration, 0);
-    
+
     // Find first error from steps if errorMessage isn't provided
     const finalError = errorMessage || steps.find(s => s.error)?.error || null;
-    
+
     await pool.query(
       `INSERT INTO job_logs (
          job_id, user_id, session_id, type, site_id, status, completed_at, duration_ms,
-         success, ai_call_count, selector_fallback_cnt, retry_count, result, error
-       ) VALUES ($1, $2, $3, 'execute', $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12)`,
+         success, ai_call_count, selector_fallback_cnt, retry_count, result, error, task
+       ) VALUES ($1, $2, $3, 'execute', $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         jobId,
         userId,
@@ -1463,7 +1413,8 @@ export class ExecutionEngine {
         metrics.selectorFallbackCount,
         metrics.retryCount,
         JSON.stringify({ steps }),
-        finalError
+        finalError,
+        task ?? null,
       ]
     );
   }

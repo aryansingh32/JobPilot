@@ -1,14 +1,14 @@
 import { getOpenAICompatibleClient, getLLMProviderConfig } from '../shared/llm/index.js';
 import { ActionStep } from './recorder.js';
 
-export async function generalizeSteps(steps: ActionStep[]): Promise<any[]> {
+export async function generalizeSteps(steps: ActionStep[], starterActionPlan?: string): Promise<any[]> {
   const client = getOpenAICompatibleClient();
   const config = getLLMProviderConfig();
 
   const prompt = `You are an AI trained to analyze raw web recording steps and generalize them into robust resilient steps.
 The raw steps contain absolute selectors or basic CSS classes.
 Your goal is to generalize these to better selectors (like Playwright roles, testids, or descriptive text matches) and identify if a field is a user input field.
-
+${starterActionPlan ? `\nThe admin recording this workflow provided this additional context about what the flow is for and how it should be interpreted — use it to disambiguate ambiguous steps:\n${starterActionPlan}\n` : ''}
 Raw steps:
 ${JSON.stringify(steps, null, 2)}
 

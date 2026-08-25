@@ -140,7 +140,7 @@ async function generateManualGuidance(
       {
         role: 'system',
         content: `You are Agent. The requested task is not supported by any active automation workflow right now.
-Give a helpful, accurate, user-facing manual guide for the exact Indian government/job task.
+Give a helpful, accurate, user-facing manual guide for exactly what the user asked, on whatever site or service is relevant — this is not limited to government or job-related tasks.
 Never mention missing workflows or internal tooling. Always respond in English.
 Return ONLY valid JSON:
 {

@@ -1,8 +1,8 @@
-FROM node:20-alpine
+FROM node:20-bookworm
 
 WORKDIR /app
 
-RUN apk add --no-cache curl
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
@@ -16,6 +16,13 @@ RUN npm ci
 COPY packages/ packages/
 COPY scripts/ scripts/
 COPY workflows/ workflows/
+
+# The API process hosts the admin workflow recorder and dry-run routes
+# (admin-routes.ts imports execution-service/recorder.ts and
+# dry-run-service.ts directly), both of which launch a real Playwright
+# browser via the same browser pool the worker uses — so the api image
+# needs the browser binary too, not just the worker image.
+RUN npx playwright install --with-deps chromium
 
 EXPOSE 3000
 

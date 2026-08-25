@@ -15,9 +15,10 @@ import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { chatOrchestrator } from './chat-orchestrator.js';
 import { ADMIN_OBSERVABILITY_CHANNEL } from './observability.service.js';
+import { RECORD_STEP_CHANNEL } from '../execution-service/recorder.js';
 import { memoryService } from './user-memory.service.js';
 import { siteWorkflowService } from './site-workflow.service.js';
-import type { ActionStep, JobRuntimeState } from '../shared/types/index.js';
+import type { ActionStep, JobRuntimeState, SiteWorkflow } from '../shared/types/index.js';
 import { fileStorageService } from './file-storage.service.js';
 import { workflowLoader } from '../shared/workflow-loader.js';
 import { createLogger } from '../shared/logger/index.js';
@@ -634,7 +635,7 @@ async function buildApp(): Promise<FastifyInstance> {
       name: string;
       trigger: string;
       triggerPhrases?: string[];
-      portalType?: 'government' | 'jobs' | 'education' | 'banking' | 'general' | 'aadhaar';
+      portalType?: SiteWorkflow['portalType'];
       siteSection?: string;
       entryUrl?: string;
       pageUrl?: string;
@@ -672,7 +673,7 @@ async function buildApp(): Promise<FastifyInstance> {
       name?: string;
       trigger?: string;
       triggerPhrases?: string[];
-      portalType?: 'government' | 'jobs' | 'education' | 'banking' | 'general' | 'aadhaar';
+      portalType?: SiteWorkflow['portalType'];
       siteSection?: string;
       entryUrl?: string;
       pageUrl?: string;
@@ -891,6 +892,13 @@ async function main() {
         adminNs.emit('feed', JSON.parse(msg));
       } catch {
         adminNs.emit('feed', { raw: msg });
+      }
+    });
+    await adminObsSub.subscribe(RECORD_STEP_CHANNEL, (msg) => {
+      try {
+        adminNs.emit('workflow:record-step', JSON.parse(msg));
+      } catch {
+        /* ignore malformed recorder payloads */
       }
     });
 

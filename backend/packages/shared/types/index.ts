@@ -163,6 +163,8 @@ export interface ActionStep {
   humanType?: boolean;
   expectedInput?: InputCardKind;
   contextMessage?: string;
+  /** Drives the user-facing copy for `payment`/`paymentGateway` steps instead of hardcoding UPI. */
+  paymentMethod?: 'upi' | 'card' | 'generic';
   condition?: {
     type: 'exists' | 'contains_text' | 'url_contains' | 'status';
     target?: string;
@@ -364,7 +366,20 @@ export interface SiteWorkflow {
   name: string;
   trigger: string;
   triggerPhrases?: string[];
-  portalType?: 'government' | 'jobs' | 'education' | 'banking' | 'general' | 'aadhaar';
+  portalType?:
+    | 'government'
+    | 'jobs'
+    | 'education'
+    | 'banking'
+    | 'general'
+    | 'aadhaar'
+    | 'shopping'
+    | 'media'
+    | 'ticketing'
+    | 'subscriptions'
+    | 'healthcare'
+    | 'travel'
+    | 'general-web';
   siteSection?: string;
   entryUrl?: string;
   pageUrl?: string;

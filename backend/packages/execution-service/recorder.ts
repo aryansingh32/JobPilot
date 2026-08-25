@@ -1,5 +1,5 @@
-import { WebSocketServer, WebSocket } from 'ws';
 import { getBrowserPool } from './browser-pool.js';
+import { getRedisClient } from '../shared/db/index.js';
 import { Page } from 'playwright';
 
 export interface ActionStep {
@@ -9,46 +9,30 @@ export interface ActionStep {
   timestamp: number;
 }
 
+// Redis channel a recorded step is published on — bridged to the admin
+// Socket.IO namespace by server.ts (`workflow:record-step`), since the
+// recorder runs inside the api-service process but Socket.IO isn't wired
+// up yet at the point routes are registered.
+export const RECORD_STEP_CHANNEL = 'admin:record-step';
+
 export class RecorderService {
-  private wss: WebSocketServer;
-  private sessions = new Map<string, { contextId: string, page: Page, ws?: WebSocket, steps: ActionStep[] }>();
-
-  constructor(port: number) {
-    this.wss = new WebSocketServer({ port });
-    
-    this.wss.on('connection', (ws, req) => {
-      const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
-      const sessionId = url.searchParams.get('sessionId');
-      
-      if (!sessionId || !this.sessions.has(sessionId)) {
-        ws.close();
-        return;
-      }
-
-      const session = this.sessions.get(sessionId)!;
-      session.ws = ws;
-
-      ws.on('close', () => {
-        session.ws = undefined;
-      });
-    });
-  }
+  private sessions = new Map<string, { contextId: string, page: Page, steps: ActionStep[] }>();
 
   async startRecording(sessionId: string, url: string): Promise<void> {
     const pool = getBrowserPool();
     const lease = await pool.acquireContext(sessionId, 'admin');
     const page = await pool.getOrCreatePage(lease.contextId);
     const contextId = lease.contextId;
-    
+
     this.sessions.set(sessionId, { contextId, page, steps: [] });
 
     await page.exposeFunction('reportAction', (step: ActionStep) => {
       const session = this.sessions.get(sessionId);
       if (session) {
         session.steps.push(step);
-        if (session.ws && session.ws.readyState === WebSocket.OPEN) {
-          session.ws.send(JSON.stringify({ type: 'step', step }));
-        }
+        getRedisClient()
+          .then((r) => r.publish(RECORD_STEP_CHANNEL, JSON.stringify({ sessionId, step })))
+          .catch(() => {});
       }
     });
 
@@ -145,14 +129,9 @@ export class RecorderService {
     
     const steps = session.steps;
     this.sessions.delete(sessionId);
-    
-    if (session.ws) {
-      session.ws.close();
-    }
 
     return steps;
   }
 }
 
-// Ensure the port matches what the frontend / API would use or configure it from env
-export const recorderService = new RecorderService(9092);
+export const recorderService = new RecorderService();

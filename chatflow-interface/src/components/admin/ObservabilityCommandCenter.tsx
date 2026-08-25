@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { io, type Socket } from "socket.io-client";
 import { Activity, Radio, Trash2 } from "lucide-react";
 import { adminApi } from "@/lib/admin-api";
-import { config } from "@/lib/config";
+import { config, apiOriginForSockets } from "@/lib/config";
 import { useAdminObservabilityStore, type ObsFeedItem } from "@/stores/adminObservabilityStore";
 
 /** R3F Canvas requires WebGL — never render during SSR. */
@@ -15,19 +15,6 @@ function useIsClient(): boolean {
     setOk(true);
   }, []);
   return ok;
-}
-
-function apiOriginForSockets(): string {
-  const base = String(config.apiBaseUrl ?? "").trim();
-  try {
-    if (base.startsWith("http://") || base.startsWith("https://")) {
-      return new URL(base).origin;
-    }
-  } catch {
-    /* fall through */
-  }
-  if (typeof window !== "undefined") return window.location.origin;
-  return "http://localhost:3000";
 }
 
 function CoreMesh() {

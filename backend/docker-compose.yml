@@ -111,6 +111,7 @@ services:
         condition: service_healthy
     volumes:
       - user_files_data:/data/user-files
+    shm_size: '1gb'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       <<: *healthcheck-defaults

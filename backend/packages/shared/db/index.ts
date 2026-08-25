@@ -228,7 +228,7 @@ CREATE TABLE IF NOT EXISTS site_workflows (
   name                  TEXT NOT NULL,
   trigger               TEXT NOT NULL,
   trigger_phrases       TEXT[] DEFAULT '{}',
-  portal_type           TEXT CHECK (portal_type IN ('government', 'jobs', 'education', 'banking', 'general', 'aadhaar')),
+  portal_type           TEXT CHECK (portal_type IN ('government', 'jobs', 'education', 'banking', 'general', 'aadhaar', 'shopping', 'media', 'ticketing', 'subscriptions', 'healthcare', 'travel', 'general-web')),
   site_section          TEXT,
   entry_url             TEXT,
   page_url              TEXT,
@@ -266,6 +266,12 @@ ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT tr
 ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS completion_artifact TEXT;
 ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
 ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft';
+-- Widen portal_type beyond the original gov/jobs/education/banking/general/aadhaar
+-- set (additive — existing rows and values are unaffected) so workflows can be
+-- authored for arbitrary site categories, not just Indian government portals.
+ALTER TABLE site_workflows DROP CONSTRAINT IF EXISTS site_workflows_portal_type_check;
+ALTER TABLE site_workflows ADD CONSTRAINT site_workflows_portal_type_check
+  CHECK (portal_type IN ('government', 'jobs', 'education', 'banking', 'general', 'aadhaar', 'shopping', 'media', 'ticketing', 'subscriptions', 'healthcare', 'travel', 'general-web'));
 UPDATE site_workflows
 SET workflow_key = COALESCE(workflow_key, CONCAT(site_id::text, ':', lower(regexp_replace(name, '[^a-zA-Z0-9]+', '-', 'g'))))
 WHERE workflow_key IS NULL;
@@ -355,10 +361,15 @@ CREATE TABLE IF NOT EXISTS job_logs (
   retry_count           INTEGER DEFAULT 0,
   result                JSONB,
   error                 TEXT,
+  task                  TEXT,
   updated_at            TIMESTAMPTZ DEFAULT NOW()
 );
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS session_id TEXT;
+-- Original task text, needed so a failed job can actually be re-enqueued on
+-- retry instead of just flipping a status flag (Redis runtime state has a
+-- 24h TTL and may be long gone by the time an admin retries an old job).
+ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS task TEXT;
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_logs_status ON job_logs(status);
