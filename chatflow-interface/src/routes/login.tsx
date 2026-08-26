@@ -129,7 +129,7 @@ function LoginPage() {
 
   return (
     <div className="flex min-h-[100dvh] items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm space-y-6">
+      <div className="w-full max-w-sm animate-in space-y-6 fade-in-0 zoom-in-95 duration-300">
         <div className="flex flex-col items-center gap-2 text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/15 text-primary">
             <Sparkles className="h-6 w-6" />

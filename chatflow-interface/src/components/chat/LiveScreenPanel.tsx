@@ -9,6 +9,7 @@ interface Props {
   onClose: () => void;
   connected?: boolean;
   activePause?: InputCardMessage | null;
+  showCloseButton?: boolean;
 }
 
 export function LiveScreenPanel({
@@ -17,6 +18,7 @@ export function LiveScreenPanel({
   onClose,
   connected = false,
   activePause = null,
+  showCloseButton = true,
 }: Props) {
   const [fps, setFps] = useState(0);
   const framesRef = useRef(0);
@@ -40,14 +42,14 @@ export function LiveScreenPanel({
 
   const frameView = (large: boolean) => (
     <div
-      className={`relative overflow-hidden border border-border bg-muted/20 ${large ? "flex h-full w-full items-center justify-center border-none bg-transparent" : "rounded-lg"}`}
+      className={`relative flex h-full w-full items-center justify-center overflow-hidden border border-border bg-muted/20 ${large ? "border-none bg-transparent" : "rounded-lg"}`}
     >
       {frame ? (
         <div className="relative inline-block h-full w-full text-center">
           <img
             src={frame}
             alt="Live agent view"
-            className="inline-block cursor-pointer object-contain transition-transform"
+            className="inline-block cursor-pointer rounded-[inherit] object-contain transition-transform hover:brightness-110"
             style={{ maxHeight: large ? "85vh" : "100%", maxWidth: "100%" }}
             onClick={() => setExpanded(!large)}
           />
@@ -80,8 +82,8 @@ export function LiveScreenPanel({
   );
 
   return (
-    <div className="mx-4 my-4 overflow-hidden rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-2">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-medium">
           <Monitor className="h-4 w-4 text-primary" />
           Live screen
@@ -105,18 +107,20 @@ export function LiveScreenPanel({
             </span>
           )}
         </div>
-        <button
-          onClick={onClose}
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label="Close live view"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        {showCloseButton && (
+          <button
+            onClick={onClose}
+            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            aria-label="Close live view"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
       </div>
-      <div className="p-4">
-        {frameView(false)}
+      <div className="flex min-h-0 flex-1 flex-col p-4">
+        <div className="min-h-0 flex-1">{frameView(false)}</div>
 
-        <div className="mt-3 space-y-2 text-[11px] leading-relaxed text-muted-foreground">
+        <div className="mt-3 shrink-0 space-y-2 text-[11px] leading-relaxed text-muted-foreground">
           <div className="flex gap-2 items-center">
             <span className="text-primary">⚡</span>
             <p>Frames stream securely in real time during automation.</p>

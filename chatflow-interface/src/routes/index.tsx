@@ -22,6 +22,8 @@ import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { LiveScreenPanel } from "@/components/chat/LiveScreenPanel";
 import { Composer } from "@/components/chat/Composer";
 import { MessageItem, TypingIndicator } from "@/components/chat/MessageItem";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   sendChatMessage,
   initializeBackend,
@@ -76,6 +78,7 @@ function Index() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
 
   // Require a signed-in session — chat, memory, and files are all scoped to
   // the authenticated user server-side, so there is nothing useful to show
@@ -319,7 +322,7 @@ function Index() {
             {!sidebarOpen && (
               <button
                 onClick={() => setSidebarOpen(true)}
-                className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="rounded-md p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
                 aria-label="Show sidebar"
               >
                 <PanelLeft className="h-4 w-4" />
@@ -351,7 +354,7 @@ function Index() {
           <button
             onClick={() => setLiveOpen((v) => !v)}
             aria-label="Toggle live screen"
-            className={`relative flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition ${
+            className={`relative flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors duration-150 active:scale-95 ${
               liveOpen
                 ? "bg-primary/15 text-primary"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -411,36 +414,13 @@ function Index() {
           className="scroll-thin flex-1 overflow-y-auto"
         >
           {showEmpty ? (
-            <div className="flex h-full flex-col">
-              <EmptyState backendAvailable={backendAvailable} />
-              {liveOpen && (
-                <div className="mx-auto w-full max-w-3xl pb-4">
-                  <LiveScreenPanel
-                    frame={liveFrame}
-                    hot={liveHot}
-                    onClose={() => setLiveOpen(false)}
-                    connected={connected}
-                  />
-                </div>
-              )}
-            </div>
+            <EmptyState backendAvailable={backendAvailable} />
           ) : (
             <div className="py-3">
               {messages.map((m) => (
                 <MessageItem key={m.id} msg={m} />
               ))}
               {typing && <TypingIndicator />}
-              {liveOpen && (
-                <div className="mx-auto w-full max-w-3xl pb-2">
-                  <LiveScreenPanel
-                    frame={liveFrame}
-                    hot={liveHot}
-                    onClose={() => setLiveOpen(false)}
-                    connected={connected}
-                    activePause={activePause}
-                  />
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -451,7 +431,7 @@ function Index() {
               <button
                 key={s}
                 onClick={() => send(s, [])}
-                className="rounded-full border border-border bg-transparent px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="rounded-full border border-border bg-transparent px-3 py-1.5 text-xs text-muted-foreground transition-all duration-150 hover:border-primary/40 hover:bg-muted hover:text-foreground active:scale-95"
               >
                 {s}
               </button>
@@ -460,17 +440,57 @@ function Index() {
         )}
         <Composer onSend={send} busy={busy} onStop={() => setBusy(false)} />
       </main>
+
+      {/* Contextual right panel — persistent, width-collapsible column on
+          desktop; a bottom sheet on mobile. Visibility is driven by liveOpen
+          (see the smart-hide effect above), same state either way. */}
+      <div
+        data-state={liveOpen ? "open" : "closed"}
+        className="hidden shrink-0 overflow-hidden border-l border-border bg-card/20 transition-[width] duration-300 ease-in-out md:flex md:w-0 md:data-[state=open]:w-[380px] lg:data-[state=open]:w-[420px]"
+      >
+        <div className="h-full w-[380px] lg:w-[420px]">
+          <LiveScreenPanel
+            frame={liveFrame}
+            hot={liveHot}
+            onClose={() => setLiveOpen(false)}
+            connected={connected}
+            activePause={activePause}
+          />
+        </div>
+      </div>
+
+      {isMobile && (
+        <Sheet open={liveOpen} onOpenChange={setLiveOpen}>
+          <SheetContent
+            side="bottom"
+            className="flex h-[75vh] flex-col gap-0 rounded-t-2xl border-border bg-card p-0"
+          >
+            <SheetTitle className="sr-only">Live screen</SheetTitle>
+            <LiveScreenPanel
+              frame={liveFrame}
+              hot={liveHot}
+              onClose={() => setLiveOpen(false)}
+              connected={connected}
+              activePause={activePause}
+              showCloseButton={false}
+            />
+          </SheetContent>
+        </Sheet>
+      )}
     </div>
   );
 }
 
 function EmptyState({ backendAvailable }: { backendAvailable: boolean | null }) {
   return (
-    <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-6 text-center">
+    <div className="mx-auto flex h-full max-w-2xl animate-in flex-col items-center justify-center px-6 text-center fade-in-0 duration-500">
+      <span className="mb-4 grid h-11 w-11 place-items-center rounded-2xl bg-primary/15 text-primary">
+        <Sparkles className="h-5 w-5" />
+      </span>
       <h1 className="text-3xl font-semibold tracking-tight">How can I help you today?</h1>
 
       {backendAvailable === false && (
-        <div className="mt-4 text-sm text-warning">
+        <div className="mt-4 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-warning">
           Backend not available. Start it with{" "}
           <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">npm run dev:full</code>
         </div>

@@ -29,7 +29,7 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
-      <div className="flex justify-end px-4 py-2">
+      <div className="flex animate-in justify-end px-4 py-2 fade-in-0 slide-in-from-bottom-1 duration-300">
         <div className="max-w-[78%]">
           {msg.type === "text" && (
             <div className="rounded-2xl rounded-br-md bg-bubble-user px-4 py-2.5 text-sm text-bubble-user-foreground">
@@ -44,7 +44,7 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
 
   // Bot side – no background, full width content
   return (
-    <div className="px-4 py-3">
+    <div className="animate-in px-4 py-3 fade-in-0 slide-in-from-bottom-1 duration-300">
       <div className="mx-auto flex max-w-3xl gap-3">
         <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-primary/15 text-primary text-[11px] font-bold">
           A
@@ -122,10 +122,10 @@ function Timeline({ msg }: { msg: TimelineMessage }) {
   const [open, setOpen] = useState(true);
   const active = msg.steps.find((s) => s.status === "active");
   return (
-    <div className="rounded-2xl border border-border bg-card/60">
+    <div className="rounded-2xl border border-border bg-card/60 transition-colors duration-150 hover:border-border/80">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-2.5 text-sm font-medium"
+        className="flex w-full items-center gap-2 rounded-2xl px-3 py-2.5 text-sm font-medium transition-colors duration-150 hover:bg-accent/30"
       >
         {msg.done ? (
           <Check className="h-4 w-4 text-primary" />
@@ -219,7 +219,7 @@ function DownloadCard({ msg }: { msg: DownloadMessage }) {
     URL.revokeObjectURL(url);
   };
   return (
-    <div className="flex items-center gap-3 rounded-2xl border border-border bg-card p-3 shadow-sm">
+    <div className="flex items-center gap-3 rounded-2xl border border-border bg-card p-3 shadow-sm transition-colors duration-150 hover:border-primary/25">
       <div className="grid h-11 w-11 place-items-center rounded-xl bg-primary/15 text-primary">
         <FileText className="h-5 w-5" />
       </div>
@@ -233,7 +233,7 @@ function DownloadCard({ msg }: { msg: DownloadMessage }) {
       </div>
       <button
         onClick={downloadFile}
-        className="flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:opacity-90"
+        className="flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-all duration-150 hover:opacity-90 active:scale-95"
       >
         <Download className="h-3.5 w-3.5" /> Download
       </button>
