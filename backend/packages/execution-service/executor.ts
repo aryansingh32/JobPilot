@@ -17,8 +17,10 @@ import { userFileStore } from './user-file-store.js';
 import { createLogger } from '../shared/logger/index.js';
 import { captchaService } from './captcha-service.js';
 import { cryptoService } from './crypto-service.js';
+import { CaptchaHandler } from './captcha-handler.js';
 
 const logger = createLogger('execution-engine');
+const captchaHandler = new CaptchaHandler();
 
 class JobCancelledError extends Error {
   constructor(jobId: string) {
@@ -564,6 +566,23 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
   pauseForUserInput: async (step, ctx) => {
     if (step.expectedInput === 'captcha') {
+      // Tier 1: attempt fully-automated, in-browser solve (checkbox+audio for
+      // reCAPTCHA v2, hCaptcha checkbox, slider drag simulation). Cheapest and
+      // fastest path — no external API cost, no human wait.
+      try {
+        const auto = await captchaHandler.handle(ctx.page, ctx.jobId);
+        if (auto.solved) {
+          logger.info('captcha:auto-solved', { jobId: ctx.jobId, stepId: step.id, method: auto.method });
+          if (auto.token) ctx.runtimeInputs[step.id] = auto.token;
+          return;
+        }
+        logger.warn('captcha:auto-solve-failed', { jobId: ctx.jobId, stepId: step.id, error: auto.error });
+      } catch (err) {
+        logger.warn('captcha:auto-solve-threw', { jobId: ctx.jobId, stepId: step.id, error: (err as Error).message });
+      }
+
+      // Tier 2: premium solver API (if configured, budget permitting) or
+      // human-in-the-loop via the admin captcha queue.
       try {
         const locator = await resolveLocator(step, ctx);
         let captchaUrl = '';
@@ -571,14 +590,14 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
           const src = await locator.first().getAttribute('src');
           captchaUrl = src && src.startsWith('data:') ? src : `data:image/jpeg;base64,${(await locator.first().screenshot({ type: 'jpeg' })).toString('base64')}`;
         }
-        
+
         const solution = await captchaService.solve({
           id: `${ctx.jobId}_${step.id}`,
           type: 'text',
           imageUrl: captchaUrl,
           siteId: ctx.siteId,
           userId: ctx.userId,
-          premium: false, // TODO: Check user subscription
+          premium: Boolean(process.env.CAPTCHA_SOLVER_API_KEY),
         });
 
         ctx.runtimeInputs[step.id] = solution;

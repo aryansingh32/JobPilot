@@ -20,6 +20,7 @@ import {
   Fingerprint,
   Sparkles,
   Menu,
+  ShieldAlert,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
@@ -40,6 +41,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "sites", label: "Sites", icon: <Globe className="h-4 w-4" /> },
   { id: "captcha", label: "Captcha Solver", icon: <Puzzle className="h-4 w-4" /> },
   { id: "browsers", label: "Browser Pool", icon: <Server className="h-4 w-4" /> },
+  { id: "reliability", label: "Reliability", icon: <ShieldAlert className="h-4 w-4" /> },
   { id: "logs", label: "Logs", icon: <ScrollText className="h-4 w-4" /> },
   { id: "errors", label: "Errors", icon: <AlertTriangle className="h-4 w-4" /> },
   { id: "network", label: "Network", icon: <Activity className="h-4 w-4" /> },

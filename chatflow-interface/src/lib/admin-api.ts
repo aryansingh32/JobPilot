@@ -146,6 +146,29 @@ export interface LogEntry {
   [key: string]: unknown;
 }
 
+export interface CaptchaSpend {
+  currentMonth: string;
+  currentSpend: number;
+  maxMonthlySpend: number;
+  remaining: number;
+  premiumConfigured: boolean;
+  history: { month: string; spend: number }[];
+}
+
+export interface SelectorHealthRow {
+  type: string;
+  total_selectors: string;
+  avg_confidence: string | null;
+  total_failures: string;
+  broken_selectors: string;
+}
+
+export interface CircuitBreakerRow {
+  siteId: string;
+  open: boolean;
+  resetInSeconds: number;
+}
+
 export interface AdminSite {
   id: string;
   domain: string;
@@ -279,6 +302,14 @@ export const adminApi = {
     aPost<{ captchaId: string; solved: boolean }>(`/admin/captcha/${captchaId}/solve`, {
       solution,
     }),
+
+  // Reliability
+  captchaSpend: () => aGet<CaptchaSpend>("/admin/captcha/spend"),
+  selectorHealth: (siteId: string) =>
+    aGet<{ siteId: string; report: SelectorHealthRow[] }>(
+      `/admin/selectors/health?siteId=${encodeURIComponent(siteId)}`,
+    ),
+  circuitBreakers: () => aGet<{ breakers: CircuitBreakerRow[] }>("/admin/circuit-breakers"),
 
   // Logs
   getLogs: (service = "api", limit = 200) =>

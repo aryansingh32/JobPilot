@@ -11,6 +11,7 @@ import { recorderService } from '../execution-service/recorder.js';
 import { dryRunService } from '../execution-service/dry-run-service.js';
 import { generalizeSteps } from '../execution-service/llm-generalizer.js';
 import { getAllQueueStats } from '../shared/queue/index.js';
+import { getSelectorHealthReport } from '../execution-service/selector-engine.js';
 import { register as promRegister } from 'prom-client';
 import { createLogger } from '../shared/logger/index.js';
 import { adminAuth } from './admin-auth.js';
@@ -609,6 +610,64 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       await redis.publish(`captcha:solved:${captchaId}`, JSON.stringify({ captchaId, solution, source: 'admin' }));
       await redis.del(`captcha:pending:${captchaId}`);
       return reply.send({ captchaId, solved: true });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── Captcha Spend (monthly premium-solver budget) ───────
+  app.get('/admin/captcha/spend', { preHandler: adminAuth }, async (_req, reply) => {
+    try {
+      const redis = await getRedisClient();
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      const maxMonthlySpend = parseFloat(process.env.MAX_CAPTCHA_SPEND ?? '5.0');
+      const keys = await redis.keys('captcha:spend:*');
+      const months = await Promise.all(
+        keys.map(async (k) => ({
+          month: k.replace('captcha:spend:', ''),
+          spend: parseFloat((await redis.get(k)) ?? '0'),
+        }))
+      );
+      months.sort((a, b) => b.month.localeCompare(a.month));
+      const currentSpend = months.find((m) => m.month === currentMonth)?.spend ?? 0;
+      return reply.send({
+        currentMonth,
+        currentSpend,
+        maxMonthlySpend,
+        remaining: Math.max(0, maxMonthlySpend - currentSpend),
+        premiumConfigured: Boolean(process.env.CAPTCHA_SOLVER_API_KEY),
+        history: months,
+      });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── Selector Health Report ──────────────────────────────
+  app.get('/admin/selectors/health', { preHandler: adminAuth }, async (req, reply) => {
+    const { siteId } = req.query as { siteId?: string };
+    if (!siteId) return reply.status(400).send({ error: 'siteId query param is required' });
+    try {
+      const report = await getSelectorHealthReport(siteId);
+      return reply.send({ siteId, report });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── Circuit Breaker State ───────────────────────────────
+  app.get('/admin/circuit-breakers', { preHandler: adminAuth }, async (_req, reply) => {
+    try {
+      const redis = await getRedisClient();
+      const keys = await redis.keys('cb:open:*');
+      const breakers = await Promise.all(
+        keys.map(async (k) => ({
+          siteId: k.replace('cb:open:', ''),
+          open: true,
+          resetInSeconds: await redis.ttl(k).catch(() => -1),
+        }))
+      );
+      return reply.send({ breakers });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
     }
