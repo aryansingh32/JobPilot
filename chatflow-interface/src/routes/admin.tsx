@@ -8,6 +8,7 @@ import { UsersPanel } from "@/components/admin/UsersPanel";
 import { WorkflowsPanel } from "@/components/admin/WorkflowsPanel";
 import { CaptchaPanel } from "@/components/admin/CaptchaPanel";
 import { BrowsersPanel } from "@/components/admin/BrowsersPanel";
+import { ReliabilityPanel } from "@/components/admin/ReliabilityPanel";
 import { LogsPanel, ErrorsPanel } from "@/components/admin/LogsPanel";
 import { NetworkPanel } from "@/components/admin/NetworkPanel";
 import { MetricsPanel } from "@/components/admin/MetricsPanel";
@@ -77,6 +78,8 @@ function AdminPage() {
         return <CaptchaPanel key={refreshKey} />;
       case "browsers":
         return <BrowsersPanel key={refreshKey} />;
+      case "reliability":
+        return <ReliabilityPanel key={refreshKey} />;
       case "logs":
         return <LogsPanel key={refreshKey} />;
       case "errors":

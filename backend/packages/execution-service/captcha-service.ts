@@ -54,17 +54,55 @@ export class CaptchaService {
       return this.solveWithHumanInTheLoop(challenge);
     }
 
-    await redis.incrByFloat(spendKey, CAPTCHA_COST);
-    if (currentSpend === 0) {
-      await redis.expire(spendKey, 31 * 24 * 60 * 60);
+    if (!challenge.imageUrl) {
+      logger.warn('captcha:premium-api-no-image', { id: challenge.id });
+      return this.solveWithHumanInTheLoop(challenge);
     }
 
-    // Actual API call logic would go here
-    // return await premiumProvider.solve(challenge);
-    
-    // For simulation:
-    logger.info('captcha:premium-api-solving-simulated', { id: challenge.id });
-    throw new Error('Premium API solver not fully implemented — falling back to human');
+    try {
+      const solution = await this.solveViaProvider(challenge.imageUrl, apiKey);
+      await redis.incrByFloat(spendKey, CAPTCHA_COST);
+      if (currentSpend === 0) {
+        await redis.expire(spendKey, 31 * 24 * 60 * 60);
+      }
+      logger.info('captcha:premium-api-solved', { id: challenge.id });
+      return solution;
+    } catch (err) {
+      logger.warn('captcha:premium-api-failed-falling-back', { id: challenge.id, error: (err as Error).message });
+      return this.solveWithHumanInTheLoop(challenge);
+    }
+  }
+
+  // 2Captcha-compatible HTTP API (in.php submit / res.php poll). Works
+  // unmodified against 2Captcha and most CapSolver/Anti-Captcha-style
+  // drop-in clones — override CAPTCHA_SOLVER_BASE_URL to point elsewhere.
+  private async solveViaProvider(imageUrl: string, apiKey: string): Promise<string> {
+    const baseUrl = process.env.CAPTCHA_SOLVER_BASE_URL ?? 'https://2captcha.com';
+    const base64 = imageUrl.startsWith('data:') ? imageUrl.slice(imageUrl.indexOf(',') + 1) : imageUrl;
+
+    const submitRes = await fetch(`${baseUrl}/in.php`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ key: apiKey, method: 'base64', body: base64, json: '1' }),
+    });
+    const submitData = (await submitRes.json()) as { status: number; request: string };
+    if (submitData.status !== 1) {
+      throw new Error(`Captcha provider submit failed: ${submitData.request}`);
+    }
+    const providerId = submitData.request;
+
+    const pollUrl = `${baseUrl}/res.php?key=${apiKey}&action=get&id=${providerId}&json=1`;
+    const maxAttempts = 20;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const pollRes = await fetch(pollUrl);
+      const pollData = (await pollRes.json()) as { status: number; request: string };
+      if (pollData.status === 1) return pollData.request;
+      if (pollData.request !== 'CAPCHA_NOT_READY') {
+        throw new Error(`Captcha provider poll failed: ${pollData.request}`);
+      }
+    }
+    throw new Error('Captcha provider solve timed out');
   }
 
   private async solveWithHumanInTheLoop(challenge: CaptchaChallenge): Promise<string> {
