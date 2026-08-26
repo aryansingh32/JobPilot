@@ -36,8 +36,10 @@ x-common-env: &common-env
   OPENROUTER_ENABLE_REASONING: ${OPENROUTER_ENABLE_REASONING:-true}
   CHAT_LLM_MODEL: ${CHAT_LLM_MODEL:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free}
   AI_PLANNER_MODEL: ${AI_PLANNER_MODEL:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free}
-  AI_SELECTOR_MODEL: ${AI_SELECTOR_MODEL:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free}
-  AI_RECOVERY_MODEL: ${AI_RECOVERY_MODEL:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free}
+  # Element-matching/recovery are cheap classification tasks — default to the
+  # non-reasoning sibling model, not the heavier reasoning one used for chat/planning.
+  AI_SELECTOR_MODEL: ${AI_SELECTOR_MODEL:-nvidia/nemotron-3-nano-30b-a3b:free}
+  AI_RECOVERY_MODEL: ${AI_RECOVERY_MODEL:-nvidia/nemotron-3-nano-30b-a3b:free}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
   LLM_MODEL: ${LLM_MODEL:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free}

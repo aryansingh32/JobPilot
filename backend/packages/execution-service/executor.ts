@@ -1185,7 +1185,7 @@ export class ExecutionEngine {
       await this.sessionManager.save(sessionId, page, lease.context);
 
       allSucceeded = stepResults.every((result) => result.success);
-      await this.logResult(job.id, job.userId, job.payload.sessionId, job.payload.siteId, allSucceeded, stepResults, ctx.metrics, job.payload.task);
+      await this.logResult(job.id, job.userId, job.payload.sessionId, job.payload.siteId, allSucceeded, stepResults, ctx.metrics, job.payload.task, undefined, job.payload.workflowKey);
       const failedStepError = stepResults.find((result) => result.error)?.error;
       await updateJobRuntimeState(ctx, {
         status: allSucceeded ? 'completed' : 'failed',
@@ -1309,7 +1309,8 @@ export class ExecutionEngine {
         stepResults,
         { aiCallCount: 0, selectorFallbackCount: 0, retryCount: 0 },
         job.payload.task,
-        error
+        error,
+        job.payload.workflowKey
       ).catch((logError) => {
         logger.error('job:log-result-failed', logError, { jobId: job.id, originalError: error });
       });
@@ -1407,7 +1408,8 @@ export class ExecutionEngine {
     steps: StepResult[],
     metrics: ExecutionContext['metrics'],
     task?: string,
-    errorMessage?: string
+    errorMessage?: string,
+    workflowKey?: string
   ): Promise<void> {
     const pool = getPgPool();
     const totalDuration = steps.reduce((sum, step) => sum + step.duration, 0);
@@ -1418,8 +1420,8 @@ export class ExecutionEngine {
     await pool.query(
       `INSERT INTO job_logs (
          job_id, user_id, session_id, type, site_id, status, completed_at, duration_ms,
-         success, ai_call_count, selector_fallback_cnt, retry_count, result, error, task
-       ) VALUES ($1, $2, $3, 'execute', $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13)`,
+         success, ai_call_count, selector_fallback_cnt, retry_count, result, error, task, workflow_key
+       ) VALUES ($1, $2, $3, 'execute', $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         jobId,
         userId,
@@ -1434,6 +1436,7 @@ export class ExecutionEngine {
         JSON.stringify({ steps }),
         finalError,
         task ?? null,
+        workflowKey ?? null,
       ]
     );
   }

@@ -1,9 +1,20 @@
 import { useEffect, useState, useCallback } from "react";
 import {
-  Activity, Users, Zap, CheckCircle2, XCircle, Server,
-  Globe, Database, Cpu, MemoryStick, Clock, AlertTriangle,
+  Activity,
+  Users,
+  Zap,
+  CheckCircle2,
+  XCircle,
+  Server,
+  Globe,
+  Database,
+  Cpu,
+  MemoryStick,
+  Clock,
+  AlertTriangle,
+  BrainCircuit,
 } from "lucide-react";
-import { adminApi, type OverviewData, type SystemHealth } from "@/lib/admin-api";
+import { adminApi, type OverviewData, type SystemHealth, type LLMUsageData } from "@/lib/admin-api";
 import { StatCard } from "./StatCard";
 import { StatusBadge } from "./StatusBadge";
 
@@ -24,7 +35,9 @@ function HealthBar({ label, status, latency }: { label: string; status: string; 
   return (
     <div className="flex items-center justify-between rounded-xl border border-border/40 bg-card/60 px-4 py-3">
       <div className="flex items-center gap-2.5">
-        <span className={`h-2 w-2 rounded-full ${ok ? "bg-emerald-400" : "bg-red-400"} shadow-lg ${ok ? "shadow-emerald-400/50" : "shadow-red-400/50"}`} />
+        <span
+          className={`h-2 w-2 rounded-full ${ok ? "bg-emerald-400" : "bg-red-400"} shadow-lg ${ok ? "shadow-emerald-400/50" : "shadow-red-400/50"}`}
+        />
         <span className="text-sm font-medium text-foreground">{label}</span>
       </div>
       <div className="flex items-center gap-2">
@@ -41,7 +54,9 @@ function BrowserDonut({ stats }: { stats: Record<string, unknown> }) {
   const idle = total - active;
   return (
     <div className="rounded-2xl border border-border/40 bg-card/60 p-5">
-      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Browser Pool</p>
+      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+        Browser Pool
+      </p>
       <div className="flex items-end gap-6">
         <div className="text-4xl font-bold text-foreground tabular-nums">{total}</div>
         <div className="flex flex-col gap-1 pb-1">
@@ -58,7 +73,9 @@ function QueueTable({ queues }: { queues: Record<string, unknown> }) {
   if (!entries.length) return null;
   return (
     <div className="rounded-2xl border border-border/40 bg-card/60 p-5">
-      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Queue Stats</p>
+      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+        Queue Stats
+      </p>
       <div className="space-y-2">
         {entries.map(([name, stats]: [string, any]) => (
           <div key={name} className="flex items-center justify-between text-sm">
@@ -76,8 +93,41 @@ function QueueTable({ queues }: { queues: Record<string, unknown> }) {
   );
 }
 
+function LLMUsageCard({ usage }: { usage: LLMUsageData | null }) {
+  if (!usage) return null;
+  return (
+    <div className="rounded-2xl border border-border/40 bg-card/60 p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <BrainCircuit className="h-4 w-4 text-primary" />
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          LLM Call Volume — last {usage.days}d
+        </p>
+      </div>
+      <div className="flex items-end gap-6 mb-3">
+        <div className="text-3xl font-bold text-foreground tabular-nums">{usage.totalAiCalls}</div>
+        <div className="flex flex-col gap-0.5 pb-1 text-xs text-muted-foreground">
+          <span>{usage.totalJobs} jobs</span>
+          <span>{usage.avgAiCallsPerJob} calls/job avg</span>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-[11px]">
+        {Object.entries(usage.models).map(([key, model]) => (
+          <div
+            key={key}
+            className="rounded-lg border border-border/30 bg-card/40 px-2.5 py-1.5 truncate"
+          >
+            <span className="text-muted-foreground capitalize">{key.replace("Model", "")}: </span>
+            <span className="text-foreground font-mono">{model ?? "—"}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function Dashboard() {
   const [data, setData] = useState<OverviewData | null>(null);
+  const [llmUsage, setLlmUsage] = useState<LLMUsageData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,6 +140,12 @@ export function Dashboard() {
       setError(e.message);
     } finally {
       setLoading(false);
+    }
+    try {
+      const u = await adminApi.llmUsage(30);
+      setLlmUsage(u);
+    } catch {
+      /* usage card just stays hidden on transient fetch failure */
     }
   }, []);
 
@@ -133,11 +189,17 @@ export function Dashboard() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-2">
-        <div className={`h-2.5 w-2.5 rounded-full ${h?.status === "healthy" ? "bg-emerald-400 shadow-emerald-400/60" : "bg-amber-400 shadow-amber-400/60"} shadow-lg`} />
-        <span className={`text-sm font-semibold ${h?.status === "healthy" ? "text-emerald-300" : "text-amber-300"}`}>
+        <div
+          className={`h-2.5 w-2.5 rounded-full ${h?.status === "healthy" ? "bg-emerald-400 shadow-emerald-400/60" : "bg-amber-400 shadow-amber-400/60"} shadow-lg`}
+        />
+        <span
+          className={`text-sm font-semibold ${h?.status === "healthy" ? "text-emerald-300" : "text-amber-300"}`}
+        >
           System {h?.status === "healthy" ? "Healthy" : "Degraded"}
         </span>
-        <span className="text-xs text-muted-foreground ml-2">• Node {h?.nodeVersion} on {h?.platform}</span>
+        <span className="text-xs text-muted-foreground ml-2">
+          • Node {h?.nodeVersion} on {h?.platform}
+        </span>
       </div>
 
       {/* Stat Cards Row 1 */}
@@ -207,13 +269,25 @@ export function Dashboard() {
       {/* Infrastructure health + queues */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Infrastructure</p>
-          <HealthBar label="PostgreSQL" status={h?.db?.status ?? "unknown"} latency={h?.db?.latencyMs ?? -1} />
-          <HealthBar label="Redis" status={h?.redis?.status ?? "unknown"} latency={h?.redis?.latencyMs ?? -1} />
-          <BrowserDonut stats={h?.browsers as Record<string, unknown> ?? {}} />
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Infrastructure
+          </p>
+          <HealthBar
+            label="PostgreSQL"
+            status={h?.db?.status ?? "unknown"}
+            latency={h?.db?.latencyMs ?? -1}
+          />
+          <HealthBar
+            label="Redis"
+            status={h?.redis?.status ?? "unknown"}
+            latency={h?.redis?.latencyMs ?? -1}
+          />
+          <BrowserDonut stats={(h?.browsers as Record<string, unknown>) ?? {}} />
         </div>
-        <QueueTable queues={data?.queues as Record<string, unknown> ?? {}} />
+        <QueueTable queues={(data?.queues as Record<string, unknown>) ?? {}} />
       </div>
+
+      <LLMUsageCard usage={llmUsage} />
     </div>
   );
 }

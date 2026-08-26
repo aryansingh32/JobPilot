@@ -261,6 +261,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         payload: {
           siteId: row.site_id,
           task: row.task,
+          workflowKey: row.workflow_key ?? undefined,
           sessionId: row.session_id,
           useCache: false,
         },
@@ -610,6 +611,126 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       await redis.publish(`captcha:solved:${captchaId}`, JSON.stringify({ captchaId, solution, source: 'admin' }));
       await redis.del(`captcha:pending:${captchaId}`);
       return reply.send({ captchaId, solved: true });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── Per-Workflow Analytics ──────────────────────────────
+  app.get('/admin/analytics/workflows', { preHandler: adminAuth }, async (req, reply) => {
+    const { days = '30' } = req.query as { days?: string };
+    const sinceDays = Math.max(1, parseInt(days, 10) || 30);
+    const pool = getPgPool();
+    try {
+      const { rows } = await pool.query(
+        `
+        WITH job_stats AS (
+          SELECT
+            workflow_key,
+            COUNT(*) AS total_runs,
+            COUNT(*) FILTER (WHERE success) AS successful_runs,
+            AVG(duration_ms) FILTER (WHERE duration_ms IS NOT NULL) AS avg_duration_ms
+          FROM job_logs
+          WHERE workflow_key IS NOT NULL AND started_at > NOW() - ($1 || ' days')::interval
+          GROUP BY workflow_key
+        ),
+        failure_steps AS (
+          SELECT workflow_key, step_id, COUNT(*) AS failure_count
+          FROM (
+            SELECT jl.workflow_key, step->>'stepId' AS step_id
+            FROM job_logs jl,
+              jsonb_array_elements(
+                CASE WHEN jsonb_typeof(jl.result->'steps') = 'array' THEN jl.result->'steps' ELSE '[]'::jsonb END
+              ) AS step
+            WHERE jl.workflow_key IS NOT NULL
+              AND jl.started_at > NOW() - ($1 || ' days')::interval
+              AND step ? 'error'
+              AND NULLIF(step->>'error', '') IS NOT NULL
+          ) sub
+          GROUP BY workflow_key, step_id
+        ),
+        top_failure_step AS (
+          SELECT DISTINCT ON (workflow_key) workflow_key, step_id, failure_count
+          FROM failure_steps
+          ORDER BY workflow_key, failure_count DESC
+        )
+        SELECT
+          js.workflow_key AS "workflowKey",
+          sw.name,
+          sw.site_id AS "siteId",
+          js.total_runs AS "totalRuns",
+          js.successful_runs AS "successfulRuns",
+          ROUND((js.successful_runs::numeric / NULLIF(js.total_runs, 0)) * 100, 1) AS "successRatePct",
+          ROUND(js.avg_duration_ms::numeric, 0) AS "avgDurationMs",
+          tfs.step_id AS "mostCommonFailureStep",
+          tfs.failure_count AS "mostCommonFailureCount"
+        FROM job_stats js
+        LEFT JOIN site_workflows sw ON sw.workflow_key = js.workflow_key
+        LEFT JOIN top_failure_step tfs ON tfs.workflow_key = js.workflow_key
+        ORDER BY js.total_runs DESC
+        `,
+        [sinceDays]
+      );
+      return reply.send({ days: sinceDays, workflows: rows });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── LLM Call Volume (cost proxy — no per-token pricing tracked) ──
+  app.get('/admin/analytics/llm-usage', { preHandler: adminAuth }, async (req, reply) => {
+    const { days = '30' } = req.query as { days?: string };
+    const sinceDays = Math.max(1, parseInt(days, 10) || 30);
+    const pool = getPgPool();
+    try {
+      const [totalsRes, dailyRes, byWorkflowRes] = await Promise.all([
+        pool.query(
+          `SELECT COUNT(*) AS total_jobs, COALESCE(SUM(ai_call_count), 0) AS total_ai_calls
+           FROM job_logs WHERE started_at > NOW() - ($1 || ' days')::interval`,
+          [sinceDays]
+        ),
+        pool.query(
+          `SELECT DATE_TRUNC('day', started_at) AS day,
+                  COALESCE(SUM(ai_call_count), 0) AS ai_calls,
+                  COUNT(*) AS jobs
+           FROM job_logs
+           WHERE started_at > NOW() - ($1 || ' days')::interval
+           GROUP BY day ORDER BY day ASC`,
+          [sinceDays]
+        ),
+        pool.query(
+          `SELECT
+             COALESCE(jl.workflow_key, jl.site_id::text, 'unknown') AS key,
+             sw.name,
+             COALESCE(SUM(jl.ai_call_count), 0) AS ai_calls,
+             COUNT(*) AS jobs
+           FROM job_logs jl
+           LEFT JOIN site_workflows sw ON sw.workflow_key = jl.workflow_key
+           WHERE jl.started_at > NOW() - ($1 || ' days')::interval
+           GROUP BY key, sw.name
+           ORDER BY ai_calls DESC
+           LIMIT 20`,
+          [sinceDays]
+        ),
+      ]);
+
+      const totalJobs = Number(totalsRes.rows[0]?.total_jobs ?? 0);
+      const totalAiCalls = Number(totalsRes.rows[0]?.total_ai_calls ?? 0);
+
+      return reply.send({
+        days: sinceDays,
+        totalJobs,
+        totalAiCalls,
+        avgAiCallsPerJob: totalJobs ? Number((totalAiCalls / totalJobs).toFixed(2)) : 0,
+        daily: dailyRes.rows,
+        byWorkflow: byWorkflowRes.rows,
+        models: {
+          plannerModel: process.env.AI_PLANNER_MODEL || process.env.LLM_MODEL || null,
+          selectorModel: process.env.AI_SELECTOR_MODEL || process.env.AI_PLANNER_MODEL || process.env.LLM_MODEL || null,
+          recoveryModel: process.env.AI_RECOVERY_MODEL || process.env.AI_PLANNER_MODEL || process.env.LLM_MODEL || null,
+          chatModel: process.env.CHAT_LLM_MODEL || process.env.LLM_MODEL || null,
+        },
+      });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
     }

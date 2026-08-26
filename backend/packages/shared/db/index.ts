@@ -371,11 +371,16 @@ ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS session_id TEXT;
 -- 24h TTL and may be long gone by the time an admin retries an old job).
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS task TEXT;
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+-- Which site_workflows.workflow_key was matched for this job, so analytics
+-- can be broken down per-workflow instead of only per-site (a site can have
+-- several published workflows).
+ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS workflow_key TEXT;
 CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_logs_status ON job_logs(status);
 CREATE INDEX IF NOT EXISTS idx_job_logs_user_id ON job_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_job_logs_session_id ON job_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_job_logs_started_at ON job_logs(started_at);
+CREATE INDEX IF NOT EXISTS idx_job_logs_workflow_key ON job_logs(workflow_key);
 
 -- ── File Indexes ─────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_user_files_created_at ON user_files(created_at);

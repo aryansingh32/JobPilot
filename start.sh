@@ -17,6 +17,9 @@
 #   ./start.sh                 start everything, rebuild images if needed
 #   ./start.sh --no-build      skip the docker image rebuild step
 #   ./start.sh --no-frontend   only bring up Postgres/Redis/API/worker
+#   ./start.sh --no-scheduler  skip the scheduler service (change detection,
+#                              selector-health-triggered remaps, proxy/session
+#                              cleanup — self-healing runs by default)
 #   ./start.sh --observability also start Prometheus + Grafana
 #   ./start.sh -h              show this help
 #
@@ -33,11 +36,13 @@ FRONTEND_DIR="$ROOT_DIR/chatflow-interface"
 BUILD=1
 START_FRONTEND=1
 OBSERVABILITY=0
+SCHEDULER=1
 
 for arg in "$@"; do
   case "$arg" in
     --no-build) BUILD=0 ;;
     --no-frontend) START_FRONTEND=0 ;;
+    --no-scheduler) SCHEDULER=0 ;;
     --observability) OBSERVABILITY=1 ;;
     -h|--help)
       sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -187,8 +192,12 @@ env_fill "$FRONTEND_DIR/.env" "$FRONTEND_UPDATES" '["VITE_API_KEY","VITE_API_BAS
 # ── Bring up Docker services ───────────────────────────────────
 COMPOSE_SERVICES=(postgres redis api worker)
 COMPOSE_PROFILE_ARGS=()
+if [ "$SCHEDULER" = "1" ]; then
+  COMPOSE_PROFILE_ARGS+=(--profile scheduler)
+  COMPOSE_SERVICES+=(scheduler)
+fi
 if [ "$OBSERVABILITY" = "1" ]; then
-  COMPOSE_PROFILE_ARGS=(--profile observability)
+  COMPOSE_PROFILE_ARGS+=(--profile observability)
   COMPOSE_SERVICES+=(prometheus grafana)
 fi
 

@@ -163,6 +163,33 @@ export interface SelectorHealthRow {
   broken_selectors: string;
 }
 
+export interface LLMUsageData {
+  days: number;
+  totalJobs: number;
+  totalAiCalls: number;
+  avgAiCallsPerJob: number;
+  daily: { day: string; ai_calls: string; jobs: string }[];
+  byWorkflow: { key: string; name: string | null; ai_calls: string; jobs: string }[];
+  models: {
+    plannerModel: string | null;
+    selectorModel: string | null;
+    recoveryModel: string | null;
+    chatModel: string | null;
+  };
+}
+
+export interface WorkflowAnalyticsRow {
+  workflowKey: string;
+  name: string | null;
+  siteId: string | null;
+  totalRuns: string;
+  successfulRuns: string;
+  successRatePct: string | null;
+  avgDurationMs: string | null;
+  mostCommonFailureStep: string | null;
+  mostCommonFailureCount: string | null;
+}
+
 export interface CircuitBreakerRow {
   siteId: string;
   open: boolean;
@@ -302,6 +329,13 @@ export const adminApi = {
     aPost<{ captchaId: string; solved: boolean }>(`/admin/captcha/${captchaId}/solve`, {
       solution,
     }),
+
+  // Analytics
+  workflowAnalytics: (days = 30) =>
+    aGet<{ days: number; workflows: WorkflowAnalyticsRow[] }>(
+      `/admin/analytics/workflows?days=${days}`,
+    ),
+  llmUsage: (days = 30) => aGet<LLMUsageData>(`/admin/analytics/llm-usage?days=${days}`),
 
   // Reliability
   captchaSpend: () => aGet<CaptchaSpend>("/admin/captcha/spend"),

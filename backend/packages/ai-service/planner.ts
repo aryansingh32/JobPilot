@@ -429,8 +429,9 @@ export class AIPlanner {
     console.log(`[AI] Attempting recovery for failed step: ${failedStep.description}`);
     const client = getOpenAICompatibleClient();
     const { recoveryModel } = getLLMProviderConfig();
-    const reasoningBody = getReasoningRequestBody();
 
+    // No reasoning trace here — this is bounded structured-JSON generation,
+    // not multi-step reasoning, so skip the extra latency/cost.
     const requestBody: Record<string, unknown> = {
       model: recoveryModel,
       messages: [
@@ -448,9 +449,6 @@ Format: { "recoverable": true/false, "steps": [...] }`,
         },
       ],
     };
-    if (reasoningBody) {
-      requestBody.extra_body = reasoningBody;
-    }
 
     const response = await client.chat.completions.create(requestBody as any);
     const raw = getTextResponse(response.choices[0]?.message?.content);
@@ -474,7 +472,8 @@ Format: { "recoverable": true/false, "steps": [...] }`,
   ): Promise<string | null> {
     const client = getOpenAICompatibleClient();
     const { selectorModel } = getLLMProviderConfig();
-    const reasoningBody = getReasoningRequestBody();
+    // No reasoning trace — this is a one-shot element-matching classification,
+    // not multi-step reasoning, so skip the extra latency/cost.
     const requestBody: Record<string, unknown> = {
       model: selectorModel,
       messages: [
@@ -491,9 +490,6 @@ Return ONLY a CSS selector string, no explanation. If impossible, return null.`,
         },
       ],
     };
-    if (reasoningBody) {
-      requestBody.extra_body = reasoningBody;
-    }
 
     const response = await client.chat.completions.create(requestBody as any);
     const raw = getTextResponse(response.choices[0]?.message?.content).trim();

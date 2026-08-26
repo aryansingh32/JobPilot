@@ -35,6 +35,7 @@ export interface ExecuteJob extends BaseJob {
   payload: {
     siteId: string;
     task: string;           // natural language
+    workflowKey?: string;   // matched site_workflows.workflow_key, for per-workflow analytics
     actionPlan?: ActionStep[];  // pre-computed or AI-generated
     sessionId: string;
     useCache: boolean;

@@ -24,8 +24,16 @@ data:
   REDIS_HOST: "redis"
   REDIS_PORT: "6379"
   MIN_BROWSERS: "2"
-  MAX_BROWSERS: "8"
-  MAX_CONTEXTS_PER_BROWSER: "8"
+  # 8x8=64 concurrent contexts against the worker pod's 4Gi memory limit
+  # below is not sustainable — a Chromium browser process alone runs
+  # ~150-250MB, and each active context on a real (JS-heavy) page adds
+  # another ~100-300MB, so 64 concurrent contexts routinely wants 8-15Gi+.
+  # KEDA's queue-scaler already assumes ~10 concurrent jobs/worker before
+  # adding a replica (see worker-queue-scaler below), so scale out via more
+  # pods rather than cramming more browsers into one — this ceiling only
+  # needs to comfortably cover that per-pod share, not the whole fleet.
+  MAX_BROWSERS: "4"
+  MAX_CONTEXTS_PER_BROWSER: "4"
   LOG_LEVEL: "info"
 
 ---

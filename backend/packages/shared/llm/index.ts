@@ -2,6 +2,11 @@ import OpenAI from 'openai';
 
 const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const DEFAULT_OPENROUTER_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
+// Selector resolution and error recovery are single-shot classification /
+// short structured-JSON tasks, not multi-step reasoning — the reasoning
+// variant above is needless latency/cost for them. This is the same
+// free-tier Nemotron 3 Nano family, just without the reasoning trace.
+const DEFAULT_LIGHTWEIGHT_MODEL = 'nvidia/nemotron-3-nano-30b-a3b:free';
 
 type LLMProviderConfig = {
   apiKey: string;
@@ -32,8 +37,12 @@ export function getLLMProviderConfig(): LLMProviderConfig {
     baseURL,
     chatModel: process.env.CHAT_LLM_MODEL || process.env.LLM_MODEL || DEFAULT_OPENROUTER_MODEL,
     plannerModel: process.env.AI_PLANNER_MODEL || process.env.LLM_MODEL || DEFAULT_OPENROUTER_MODEL,
-    selectorModel: process.env.AI_SELECTOR_MODEL || process.env.AI_PLANNER_MODEL || process.env.LLM_MODEL || DEFAULT_OPENROUTER_MODEL,
-    recoveryModel: process.env.AI_RECOVERY_MODEL || process.env.AI_PLANNER_MODEL || process.env.LLM_MODEL || DEFAULT_OPENROUTER_MODEL,
+    // Deliberately does NOT fall through to the reasoning planner/chat model
+    // chain — element-matching and recovery-step suggestion are cheap
+    // classification tasks, so an unset override should land on the
+    // lightweight non-reasoning model, not silently inherit the expensive one.
+    selectorModel: process.env.AI_SELECTOR_MODEL || DEFAULT_LIGHTWEIGHT_MODEL,
+    recoveryModel: process.env.AI_RECOVERY_MODEL || DEFAULT_LIGHTWEIGHT_MODEL,
     reasoningEnabled: isTruthy(process.env.OPENROUTER_ENABLE_REASONING, true),
   };
 }
