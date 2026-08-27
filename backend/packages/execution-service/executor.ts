@@ -15,12 +15,10 @@ import { humanDelay, humanClick, humanType, humanScroll } from './human-behavior
 import { getRedisClient } from '../shared/db/index.js';
 import { userFileStore } from './user-file-store.js';
 import { createLogger } from '../shared/logger/index.js';
-import { captchaService } from './captcha-service.js';
 import { cryptoService } from './crypto-service.js';
-import { CaptchaHandler } from './captcha-handler.js';
+import { beginChallenge, attemptAutomatedResolution, finalizeResolution } from './captcha/orchestrator.js';
 
 const logger = createLogger('execution-engine');
-const captchaHandler = new CaptchaHandler();
 
 class JobCancelledError extends Error {
   constructor(jobId: string) {
@@ -53,6 +51,7 @@ export interface ExecutionContext {
   userId: string;
   sessionId: string;
   siteId: string;
+  workflowKey?: string;
   task: string;
   runtimeInputs: Record<string, string>;
   extractedData: Record<string, unknown>;
@@ -189,6 +188,28 @@ async function updateJobRuntimeState(ctx: ExecutionContext, patch: Partial<JobRu
       updatedAt: new Date().toISOString(),
     })
   );
+}
+
+/**
+ * `success` only means every step ran without throwing — it says nothing
+ * about whether a step meant to produce something actually did. This is
+ * a bounded, deliberately lightweight check: any extract/extractData step
+ * in the top-level action plan that came back empty flips `verified` to
+ * false even though the job is otherwise "successful". Nested steps
+ * (conditional/retryLoop branches, sub-workflows) aren't walked — this is
+ * a smoke check, not a full semantic result validator.
+ */
+function computeVerified(actionPlan: ActionStep[] | undefined, ctx: ExecutionContext, allSucceeded: boolean): boolean {
+  if (!allSucceeded) return false;
+  if (!actionPlan?.length) return true;
+
+  for (const step of actionPlan) {
+    if (step.action !== 'extract' && step.action !== 'extractData') continue;
+    const key = step.action === 'extractData' ? String(step.metadata?.key ?? step.id) : step.id;
+    const value = ctx.extractedData[key];
+    if (value === null || value === undefined || value === '') return false;
+  }
+  return true;
 }
 
 async function markJobCancelled(jobId: string): Promise<void> {
@@ -565,61 +586,48 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
   },
 
   pauseForUserInput: async (step, ctx) => {
-    if (step.expectedInput === 'captcha') {
-      // Tier 1: attempt fully-automated, in-browser solve (checkbox+audio for
-      // reCAPTCHA v2, hCaptcha checkbox, slider drag simulation). Cheapest and
-      // fastest path — no external API cost, no human wait.
-      try {
-        const auto = await captchaHandler.handle(ctx.page, ctx.jobId);
-        if (auto.solved) {
-          logger.info('captcha:auto-solved', { jobId: ctx.jobId, stepId: step.id, method: auto.method });
-          if (auto.token) ctx.runtimeInputs[step.id] = auto.token;
-          return;
-        }
-        logger.warn('captcha:auto-solve-failed', { jobId: ctx.jobId, stepId: step.id, error: auto.error });
-      } catch (err) {
-        logger.warn('captcha:auto-solve-threw', { jobId: ctx.jobId, stepId: step.id, error: (err as Error).message });
-      }
+    const startedAt = Date.now();
+    // Classify + open a metrics event for whatever this pause turns out to
+    // be (captcha / otp / mfa / login-verification / security-block /
+    // generic). Pure DOM inspection — no LLM call.
+    const { detection, eventId } = await beginChallenge(ctx.page, ctx, step);
 
-      // Tier 2: premium solver API (if configured, budget permitting) or
-      // human-in-the-loop via the admin captcha queue.
-      try {
-        const locator = await resolveLocator(step, ctx);
-        let captchaUrl = '';
-        if (locator) {
-          const src = await locator.first().getAttribute('src');
-          captchaUrl = src && src.startsWith('data:') ? src : `data:image/jpeg;base64,${(await locator.first().screenshot({ type: 'jpeg' })).toString('base64')}`;
-        }
-
-        const solution = await captchaService.solve({
-          id: `${ctx.jobId}_${step.id}`,
-          type: 'text',
-          imageUrl: captchaUrl,
-          siteId: ctx.siteId,
-          userId: ctx.userId,
-          premium: Boolean(process.env.CAPTCHA_SOLVER_API_KEY),
+    // Tiers 1+2: free in-browser auto-solve, then a plan-gated paid
+    // provider. Bounded attempts, and a security block is never
+    // auto-attempted — it always falls through to the human tier below.
+    let autoAttempts = 0;
+    if (detection.eventType === 'captcha') {
+      const auto = await attemptAutomatedResolution(ctx.page, ctx, detection);
+      autoAttempts = auto.attempts;
+      if (auto.resolved) {
+        logger.info('captcha:auto-resolved', { jobId: ctx.jobId, stepId: step.id, resolvedBy: auto.resolvedBy, provider: auto.provider });
+        if (auto.token) ctx.runtimeInputs[step.id] = auto.token;
+        await finalizeResolution(eventId, ctx, step, detection, {
+          status: 'resolved', resolvedBy: auto.resolvedBy, provider: auto.provider,
+          attempts: auto.attempts, costUsd: auto.costUsd, durationMs: Date.now() - startedAt,
         });
-
-        ctx.runtimeInputs[step.id] = solution;
         return;
-      } catch (err) {
-        logger.warn('captcha:automated-solve-failed-falling-back', { jobId: ctx.jobId, error: (err as Error).message });
       }
+      logger.info('captcha:auto-resolve-exhausted', { jobId: ctx.jobId, stepId: step.id, error: auto.error });
     }
 
+    // Tier 3: human-in-the-loop via the live chat/browser-view pause — the
+    // "live Human-in-the-Loop CAPTCHA interface" for free users, and the
+    // seamless fallback for premium users whose automated solve failed
+    // (or for anything a solver was never meant to touch, like a
+    // security block, OTP, MFA, or login-verification checkpoint).
     const redis = await getRedisClient();
     await ensureNotCancelled(ctx);
-    
-    // Boost stream if this is a CAPTCHA or sensitive input
+
     const stream = (ctx as any).activeStream;
-    if (stream && step.expectedInput === 'captcha') {
+    if (stream && detection.eventType === 'captcha') {
       stream.setFps(3);
     }
 
     let captchaUrl = '';
     let rect: { x: number, y: number, w: number, h: number } | undefined = undefined;
 
-    if (step.expectedInput === 'captcha' && step.target) {
+    if (detection.eventType === 'captcha' && step.target) {
       try {
         const locator = await resolveLocator(step, ctx);
         if (locator) {
@@ -659,19 +667,34 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
       lastInputType: step.expectedInput || 'text',
     });
 
+    const pauseMessage = detection.eventType === 'security_block'
+      ? (step.contextMessage ?? `This site is showing a security check (${detection.type.replace(/-/g, ' ')}) rather than a solvable CAPTCHA. Please resolve it manually in the live view below, then continue.`)
+      : (step.contextMessage ?? step.description);
+
     await redis.publish('chat:pause', JSON.stringify({
       jobId: ctx.jobId,
       userId: ctx.userId,
       sessionId: ctx.sessionId,
       stepId: step.id,
       type: step.expectedInput || 'text',
-      contextMessage: step.contextMessage ?? step.description,
+      contextMessage: pauseMessage,
       data: { captchaUrl, rect }
     }));
 
+    // Mirror into the admin pending-queue so an admin can resolve this
+    // pause from the admin panel as an alternative to the end user.
+    const idleTimeoutMs = step.timeout || 3 * 60 * 1000; // 3 minutes default
+    await redis.setEx(`captcha:pending:${ctx.jobId}`, Math.ceil(idleTimeoutMs / 1000), JSON.stringify({
+      id: ctx.jobId,
+      siteId: ctx.siteId,
+      type: step.expectedInput || detection.type,
+      payload: { captchaUrl, rect, contextMessage: pauseMessage },
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    })).catch(() => {});
+
     return new Promise<void>((resolve, reject) => {
       const subRedis = redis.duplicate();
-      const idleTimeoutMs = step.timeout || 3 * 60 * 1000; // 3 minutes default
       let settled = false;
 
       subRedis.connect().then(() => {
@@ -683,30 +706,56 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
             await subRedis.unsubscribe(`job:cancel:${ctx.jobId}`);
           } catch {}
           await subRedis.quit().catch(() => {});
+          await redis.del(`captcha:pending:${ctx.jobId}`).catch(() => {});
         };
 
-        // Idle timeout — auto-cancel if user doesn't respond
+        // Idle timeout — auto-cancel if user doesn't respond. This is the
+        // hard ceiling that stops a stuck checkpoint from hanging forever.
         const idleTimer = setTimeout(() => {
           if (settled) return;
           console.warn(`[Executor] Idle timeout (${idleTimeoutMs / 1000}s) for job ${ctx.jobId} step ${step.id}`);
           ctx.cancellation.cancelled = true;
           updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
-          if (stream && step.expectedInput === 'captcha') {
+          if (stream && detection.eventType === 'captcha') {
             stream.setFps(1);
           }
+          finalizeResolution(eventId, ctx, step, detection, {
+            status: 'timeout', resolvedBy: 'failed', attempts: autoAttempts, durationMs: Date.now() - startedAt, error: 'idle timeout',
+          }).catch(() => {});
           cleanup().catch(() => {});
           reject(new JobCancelledError(ctx.jobId));
         }, idleTimeoutMs);
 
-        subRedis.subscribe(`job:resume:${ctx.jobId}`, (message) => {
+        subRedis.subscribe(`job:resume:${ctx.jobId}`, (message: string) => {
           if (settled) return;
-          ctx.runtimeInputs[step.id] = message;
+
+          // The admin-panel solve endpoint wraps its answer in a small
+          // envelope so metrics can tell "an admin solved this" apart from
+          // "the requesting user solved this" — the real chat/live-view
+          // resume path always publishes the raw typed value, never JSON
+          // shaped like this, so this check can't misfire on it.
+          let value = message;
+          let resolvedByHuman: 'human_user' | 'human_admin' = 'human_user';
+          try {
+            const parsed = JSON.parse(message);
+            if (parsed && typeof parsed === 'object' && parsed.__hieAdmin) {
+              value = String(parsed.solution ?? '');
+              resolvedByHuman = 'human_admin';
+            }
+          } catch {
+            // Not JSON — it's the plain value the user typed, as expected.
+          }
+
+          ctx.runtimeInputs[step.id] = value;
           updateJobRuntimeState(ctx, { status: 'running', activeStepId: step.id }).catch(() => {});
-          
+
           // Reset FPS if it was boosted
-          if (stream && step.expectedInput === 'captcha') {
+          if (stream && detection.eventType === 'captcha') {
             stream.setFps(1);
           }
+          finalizeResolution(eventId, ctx, step, detection, {
+            status: 'resolved', resolvedBy: resolvedByHuman, attempts: autoAttempts + 1, durationMs: Date.now() - startedAt,
+          }).catch(() => {});
           cleanup().catch(() => {});
           resolve();
         });
@@ -714,9 +763,12 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
           if (settled) return;
           ctx.cancellation.cancelled = true;
           updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
-          if (stream && step.expectedInput === 'captcha') {
+          if (stream && detection.eventType === 'captcha') {
             stream.setFps(1);
           }
+          finalizeResolution(eventId, ctx, step, detection, {
+            status: 'failed', resolvedBy: 'failed', attempts: autoAttempts, durationMs: Date.now() - startedAt, error: 'cancelled',
+          }).catch(() => {});
           cleanup().catch(() => {});
           reject(new JobCancelledError(ctx.jobId));
         });
@@ -794,7 +846,12 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
   clickCaptcha: async (step, ctx) => {
     // This handler waits for the user to click coordinates on an image
-    // then replays those clicks on the browser page.
+    // then replays those clicks on the browser page. Grid/click captchas
+    // aren't token-based, so there's no automated-provider tier here —
+    // this is always a human checkpoint; we still log it for metrics and
+    // so the workflow retains the checkpoint for next time.
+    const startedAt = Date.now();
+    const { detection, eventId } = await beginChallenge(ctx.page, ctx, step);
     const redis = await getRedisClient();
     await updateJobRuntimeState(ctx, {
       status: 'paused',
@@ -820,10 +877,30 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
       data: { captchaUrl }
     }));
 
+    const idleTimeoutMs = step.timeout || 3 * 60 * 1000;
+    await redis.setEx(`captcha:pending:${ctx.jobId}`, Math.ceil(idleTimeoutMs / 1000), JSON.stringify({
+      id: ctx.jobId,
+      siteId: ctx.siteId,
+      type: 'clickCaptcha',
+      payload: { captchaUrl, contextMessage: step.contextMessage },
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    })).catch(() => {});
+
     return new Promise<void>((resolve, reject) => {
       const subRedis = redis.duplicate();
+      const idleTimer = setTimeout(() => {
+        finalizeResolution(eventId, ctx, step, detection, {
+          status: 'timeout', resolvedBy: 'failed', attempts: 0, durationMs: Date.now() - startedAt, error: 'idle timeout',
+        }).catch(() => {});
+        redis.del(`captcha:pending:${ctx.jobId}`).catch(() => {});
+        subRedis.quit().catch(() => {});
+        reject(new JobCancelledError(ctx.jobId));
+      }, idleTimeoutMs);
+
       subRedis.connect().then(() => {
         subRedis.subscribe(`job:resume:${ctx.jobId}`, async (message) => {
+          clearTimeout(idleTimer);
           try {
             const { points } = JSON.parse(message) as { points: Array<{ x: number, y: number }> };
             const locator = await resolveLocator(step, ctx);
@@ -834,9 +911,17 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
                 await humanDelay(100, 300);
               }
             }
+            await finalizeResolution(eventId, ctx, step, detection, {
+              status: 'resolved', resolvedBy: 'human_user', attempts: 1, durationMs: Date.now() - startedAt,
+            });
+            await redis.del(`captcha:pending:${ctx.jobId}`).catch(() => {});
             await subRedis.quit();
             resolve();
           } catch (err) {
+            await finalizeResolution(eventId, ctx, step, detection, {
+              status: 'failed', resolvedBy: 'failed', attempts: 1, durationMs: Date.now() - startedAt, error: (err as Error).message,
+            });
+            await redis.del(`captcha:pending:${ctx.jobId}`).catch(() => {});
             await subRedis.quit();
             reject(err);
           }
@@ -1118,6 +1203,7 @@ export class ExecutionEngine {
         userId: job.userId,
         sessionId,
         siteId: job.payload.siteId,
+        workflowKey: job.payload.workflowKey,
         task,
         runtimeInputs: {},
         extractedData: {},
@@ -1185,7 +1271,8 @@ export class ExecutionEngine {
       await this.sessionManager.save(sessionId, page, lease.context);
 
       allSucceeded = stepResults.every((result) => result.success);
-      await this.logResult(job.id, job.userId, job.payload.sessionId, job.payload.siteId, allSucceeded, stepResults, ctx.metrics, job.payload.task, undefined, job.payload.workflowKey);
+      const verified = computeVerified(actionPlan, ctx, allSucceeded);
+      await this.logResult(job.id, job.userId, job.payload.sessionId, job.payload.siteId, allSucceeded, stepResults, ctx.metrics, job.payload.task, undefined, job.payload.workflowKey, verified);
       const failedStepError = stepResults.find((result) => result.error)?.error;
       await updateJobRuntimeState(ctx, {
         status: allSucceeded ? 'completed' : 'failed',
@@ -1409,7 +1496,8 @@ export class ExecutionEngine {
     metrics: ExecutionContext['metrics'],
     task?: string,
     errorMessage?: string,
-    workflowKey?: string
+    workflowKey?: string,
+    verified?: boolean
   ): Promise<void> {
     const pool = getPgPool();
     const totalDuration = steps.reduce((sum, step) => sum + step.duration, 0);
@@ -1420,8 +1508,8 @@ export class ExecutionEngine {
     await pool.query(
       `INSERT INTO job_logs (
          job_id, user_id, session_id, type, site_id, status, completed_at, duration_ms,
-         success, ai_call_count, selector_fallback_cnt, retry_count, result, error, task, workflow_key
-       ) VALUES ($1, $2, $3, 'execute', $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+         success, ai_call_count, selector_fallback_cnt, retry_count, result, error, task, workflow_key, verified
+       ) VALUES ($1, $2, $3, 'execute', $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         jobId,
         userId,
@@ -1437,6 +1525,7 @@ export class ExecutionEngine {
         finalError,
         task ?? null,
         workflowKey ?? null,
+        verified ?? null,
       ]
     );
   }

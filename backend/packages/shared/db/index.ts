@@ -364,6 +364,11 @@ CREATE TABLE IF NOT EXISTS job_logs (
   task                  TEXT,
   updated_at            TIMESTAMPTZ DEFAULT NOW()
 );
+-- Distinct from 'success' (every step ran without erroring): 'verified'
+-- additionally checks that steps meant to produce something (extractData /
+-- extract) actually produced non-empty output — a step can "succeed" while
+-- silently extracting nothing. NULL means not evaluated (e.g. job failed).
+ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS verified BOOLEAN;
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS session_id TEXT;
 -- Original task text, needed so a failed job can actually be re-enqueued on
@@ -510,6 +515,58 @@ CREATE TABLE IF NOT EXISTS user_secrets (
   UNIQUE (user_id, site_id, key_name)
 );
 CREATE INDEX IF NOT EXISTS idx_user_secrets_user_id ON user_secrets(user_id);
+
+-- ── User Plan (free vs premium — gates automated CAPTCHA solving) ──
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free';
+
+-- ── Per-user CAPTCHA usage (monthly quota tracking for plan gating) ──
+CREATE TABLE IF NOT EXISTS user_captcha_usage (
+  user_id          TEXT NOT NULL,
+  month            TEXT NOT NULL,  -- 'YYYY-MM'
+  auto_solve_count INTEGER NOT NULL DEFAULT 0,
+  spend_usd        NUMERIC(10,4) NOT NULL DEFAULT 0,
+  updated_at       TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (user_id, month)
+);
+
+-- ── Human Intervention Events ───────────────────────────────
+-- Every CAPTCHA / OTP / MFA / login-verification / security-block
+-- checkpoint a workflow hits, however it was resolved. This is the
+-- metrics + audit trail for the whole human-verification subsystem,
+-- and (via workflow_key) the record that lets a successful checkpoint
+-- be retained for future runs of the same workflow.
+CREATE TABLE IF NOT EXISTS human_intervention_events (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  job_id         TEXT NOT NULL,
+  workflow_key   TEXT,
+  site_id        UUID REFERENCES sites(id) ON DELETE SET NULL,
+  user_id        TEXT,
+  step_id        TEXT,
+  event_type     TEXT NOT NULL CHECK (event_type IN ('captcha','otp','mfa','login_verification','security_block','generic')),
+  challenge_type TEXT,
+  status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','resolved','failed','timeout')),
+  resolved_by    TEXT CHECK (resolved_by IN ('auto','premium_api','human_user','human_admin','failed','skipped')),
+  provider       TEXT,
+  attempts       INTEGER NOT NULL DEFAULT 0,
+  cost_usd       NUMERIC(10,4) NOT NULL DEFAULT 0,
+  duration_ms    INTEGER,
+  error          TEXT,
+  metadata       JSONB DEFAULT '{}',
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  resolved_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_hie_job ON human_intervention_events(job_id);
+CREATE INDEX IF NOT EXISTS idx_hie_type_status ON human_intervention_events(event_type, status);
+CREATE INDEX IF NOT EXISTS idx_hie_created ON human_intervention_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hie_workflow_key ON human_intervention_events(workflow_key);
+
+-- ── Known checkpoints on a workflow (which step hit which challenge
+--    type, and which provider/path resolved it last time) — lets a
+--    future run of the same workflow skip re-detection guesswork. ──
+ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS known_checkpoints JSONB DEFAULT '[]';
+
+-- ── Cached-flow → workflow promotion tracking (learning flywheel) ──
+ALTER TABLE cached_flows ADD COLUMN IF NOT EXISTS promoted_workflow_id UUID REFERENCES site_workflows(id) ON DELETE SET NULL;
 
 `;
 

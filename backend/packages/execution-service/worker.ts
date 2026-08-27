@@ -254,6 +254,7 @@ const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
         matchedWorkflowId: decision.matchedWorkflowId,
         matchedWorkflowName: decision.matchedWorkflowName,
         fallbackPlan: decision.fallbackPlan,
+        zeroShotHistoryId: decision.zeroShotHistoryId,
       };
       console.log(
         `[Worker] Planning source: ${decision.source ?? 'ai-generated'}`
@@ -290,8 +291,11 @@ const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
 
     const result = await executionEngine.execute(job);
 
-    // Record AI flow outcome
-    await aiPlanner.recordOutcome(job.payload.siteId, job.payload.task, result.success);
+    // Record AI flow outcome — feeds the learning flywheel (zero-shot
+    // history + cached-flow -> draft-workflow promotion).
+    await aiPlanner.recordOutcome(job.payload.siteId, job.payload.task, result.success, {
+      zeroShotHistoryId: job.metadata?.zeroShotHistoryId as string | undefined,
+    });
 
     jobCounter.inc({ type: 'execute', status: result.success ? 'success' : 'failure' });
 

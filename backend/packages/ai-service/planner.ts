@@ -99,6 +99,84 @@ async function markFlowFailure(siteId: string, task: string): Promise<void> {
   `, [siteId, taskHash]);
 }
 
+// ─── Learning Flywheel: zero-shot history + cached-flow promotion ─────
+// Discover (AI generates a plan) -> Execute (worker runs it) -> Record
+// (zero_shot_history + cached_flows outcome, below) -> Verify (net wins
+// over losses) -> Reuse (promoted into site_workflows as a draft, so the
+// *next* user's request for the same task hits a real workflow instead
+// of another AI-generation round).
+
+const PROMOTION_THRESHOLD = parseInt(process.env.WORKFLOW_PROMOTION_THRESHOLD ?? '3', 10);
+
+/** Log every AI-generated (zero-shot) plan attempt, win or lose — this is the audit trail an admin reviews to see what the platform is discovering on its own. */
+async function logZeroShotAttempt(url: string, task: string, actionPlan: ActionStep[]): Promise<string | null> {
+  try {
+    const { rows } = await getPgPool().query(
+      `INSERT INTO zero_shot_history (url, prompt, steps) VALUES ($1, $2, $3) RETURNING id`,
+      [url, task, JSON.stringify(actionPlan)]
+    );
+    return rows[0]?.id ?? null;
+  } catch (err) {
+    console.warn(`[AI] Failed to log zero-shot attempt: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+async function updateZeroShotOutcome(id: string, success: boolean): Promise<void> {
+  try {
+    await getPgPool().query(
+      `UPDATE zero_shot_history SET success = $2, result = $3 WHERE id = $1`,
+      [id, success, JSON.stringify({ success })]
+    );
+  } catch (err) {
+    console.warn(`[AI] Failed to update zero-shot outcome: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Once a cached AI-generated flow has proven itself (net successes over
+ * PROMOTION_THRESHOLD), promote it into site_workflows as a draft — never
+ * published automatically, so an admin still reviews it before it can be
+ * matched by a new chat request, but it no longer requires the AI to
+ * regenerate the plan from scratch every time it's replayed.
+ */
+async function promoteCachedFlowIfEligible(siteId: string, task: string): Promise<void> {
+  const taskHash = hashTask(task);
+  const pool = getPgPool();
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, action_plan, success_count, failure_count, promoted_workflow_id
+       FROM cached_flows WHERE site_id = $1 AND task_hash = $2`,
+      [siteId, taskHash]
+    );
+    const flow = rows[0];
+    if (!flow || flow.promoted_workflow_id) return;
+    if (flow.success_count - flow.failure_count < PROMOTION_THRESHOLD) return;
+
+    const workflowKey = `zero-shot-${siteId.slice(0, 8)}-${taskHash.slice(0, 8)}`;
+    const name = task.length > 80 ? `${task.slice(0, 77)}...` : task;
+
+    const { rows: inserted } = await pool.query(
+      `INSERT INTO site_workflows
+         (site_id, workflow_key, category, name, trigger, portal_type, starter_action_plan, status, is_active, metadata)
+       VALUES ($1,$2,'ai-discovered',$3,$4,'general-web',$5,'draft',true,$6)
+       ON CONFLICT (workflow_key) DO NOTHING
+       RETURNING id`,
+      [
+        siteId, workflowKey, name, task.toLowerCase(),
+        JSON.stringify(flow.action_plan),
+        JSON.stringify({ promotedFrom: 'cached-flow', cachedFlowId: flow.id, successCount: flow.success_count, failureCount: flow.failure_count }),
+      ]
+    );
+    if (!inserted.length) return;
+
+    await pool.query(`UPDATE cached_flows SET promoted_workflow_id = $2 WHERE id = $1`, [flow.id, inserted[0].id]);
+    console.log(`[AI] 🎓 Promoted cached flow "${task.slice(0, 60)}" to draft workflow ${workflowKey} (${flow.success_count} successes, ${flow.failure_count} failures)`);
+  } catch (err) {
+    console.warn(`[AI] Flow promotion check failed: ${(err as Error).message}`);
+  }
+}
+
 async function getSiteWorkflowContext(siteId: string): Promise<string> {
   const pool = getPgPool();
   const { rows } = await pool.query(
@@ -410,9 +488,12 @@ export class AIPlanner {
       throw new Error(`[AI] Failed to parse action plan: ${(err as Error).message}\nRaw: ${raw.slice(0, 200)}`);
     }
 
-    // Cache the new flow
+    // Cache the new flow, and log the attempt to the zero-shot history so
+    // it's visible to an admin (and eligible for promotion once it's
+    // proven itself — see recordOutcome below).
     if (parsed.actionPlan.length > 0) {
       await saveFlow(siteId, task, parsed.actionPlan);
+      parsed.zeroShotHistoryId = (await logZeroShotAttempt(snapshot.url, task, parsed.actionPlan)) ?? undefined;
     }
 
     return parsed;
@@ -506,10 +587,20 @@ Return ONLY a CSS selector string, no explanation. If impossible, return null.`,
 
   // ─── Flow Feedback ────────────────────────────────────────────
 
-  async recordOutcome(siteId: string, task: string, success: boolean): Promise<void> {
+  async recordOutcome(
+    siteId: string,
+    task: string,
+    success: boolean,
+    opts?: { zeroShotHistoryId?: string }
+  ): Promise<void> {
+    if (opts?.zeroShotHistoryId) {
+      await updateZeroShotOutcome(opts.zeroShotHistoryId, success);
+    }
     if (!success) {
       await markFlowFailure(siteId, task);
+      return;
     }
+    await promoteCachedFlowIfEligible(siteId, task);
   }
 }
 

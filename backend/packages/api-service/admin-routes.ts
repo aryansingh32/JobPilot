@@ -12,6 +12,9 @@ import { dryRunService } from '../execution-service/dry-run-service.js';
 import { generalizeSteps } from '../execution-service/llm-generalizer.js';
 import { getAllQueueStats } from '../shared/queue/index.js';
 import { getSelectorHealthReport } from '../execution-service/selector-engine.js';
+import { getCaptchaMetrics } from '../execution-service/captcha/events.js';
+import { listAllProviders } from '../execution-service/captcha/provider-registry.js';
+import { canUsePaidProvider } from '../execution-service/captcha/plan-gate.js';
 import { register as promRegister } from 'prom-client';
 import { createLogger } from '../shared/logger/index.js';
 import { adminAuth } from './admin-auth.js';
@@ -446,8 +449,15 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         if (val !== undefined) { sets.push(`${col} = $${pi++}`); params.push(val); }
       }
       if (!sets.length) return reply.status(400).send({ error: 'No fields to update' });
+
+      // Auto-bump the version on any real edit the caller didn't already
+      // version explicitly — otherwise `version` is just a static field
+      // nobody ever moves, not real revision tracking.
+      if (body.version === undefined) {
+        sets.push('version = COALESCE(version, 0) + 1');
+      }
       params.push(workflowId);
-      
+
 
       const { rows } = await pool.query(
         `UPDATE site_workflows SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${pi} RETURNING *`,
@@ -603,14 +613,18 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // captchaId is the paused job's id — the pending queue mirrors whatever
+  // job is currently blocked on pauseForUserInput/clickCaptcha, and
+  // resolving it here publishes to the exact same job:resume channel the
+  // end user's chat pause listens on, so an admin can stand in for them.
   app.post('/admin/captcha/:captchaId/solve', { preHandler: adminAuth }, async (req, reply) => {
     const { captchaId } = req.params as { captchaId: string };
     const { solution } = req.body as { solution: string };
     try {
       const redis = await getRedisClient();
-      await redis.publish(`captcha:solved:${captchaId}`, JSON.stringify({ captchaId, solution, source: 'admin' }));
+      await redis.publish(`job:resume:${captchaId}`, JSON.stringify({ __hieAdmin: true, solution }));
       await redis.del(`captcha:pending:${captchaId}`);
-      return reply.send({ captchaId, solved: true });
+      return reply.send({ captchaId, solved: true, resolvedBy: 'human_admin' });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
     }
@@ -737,28 +751,108 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── Captcha Spend (monthly premium-solver budget) ───────
+  // Sourced from user_captcha_usage (the per-user ledger recordPaidProviderUsage
+  // writes to) rather than a single global Redis counter, so this reflects
+  // real per-plan spend across every user, not just a legacy global cap.
   app.get('/admin/captcha/spend', { preHandler: adminAuth }, async (_req, reply) => {
+    const pool = getPgPool();
     try {
-      const redis = await getRedisClient();
       const currentMonth = new Date().toISOString().slice(0, 7);
-      const maxMonthlySpend = parseFloat(process.env.MAX_CAPTCHA_SPEND ?? '5.0');
-      const keys = await redis.keys('captcha:spend:*');
-      const months = await Promise.all(
-        keys.map(async (k) => ({
-          month: k.replace('captcha:spend:', ''),
-          spend: parseFloat((await redis.get(k)) ?? '0'),
-        }))
+      const maxMonthlySpend = parseFloat(process.env.PREMIUM_PLAN_MONTHLY_SPEND_CAP_USD ?? process.env.MAX_CAPTCHA_SPEND ?? '5.0');
+      const { rows } = await pool.query(
+        `SELECT month, SUM(spend_usd) AS spend FROM user_captcha_usage GROUP BY month ORDER BY month DESC LIMIT 12`
       );
-      months.sort((a, b) => b.month.localeCompare(a.month));
+      const months = rows.map((r) => ({ month: r.month, spend: parseFloat(r.spend) }));
       const currentSpend = months.find((m) => m.month === currentMonth)?.spend ?? 0;
       return reply.send({
         currentMonth,
         currentSpend,
         maxMonthlySpend,
         remaining: Math.max(0, maxMonthlySpend - currentSpend),
-        premiumConfigured: Boolean(process.env.CAPTCHA_SOLVER_API_KEY),
+        premiumConfigured: listAllProviders().some((p) => p.isConfigured()),
         history: months,
       });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── CAPTCHA / Human-Intervention Metrics ────────────────
+  app.get('/admin/captcha/metrics', { preHandler: adminAuth }, async (req, reply) => {
+    const { days = '30' } = req.query as { days?: string };
+    const sinceDays = Math.max(1, parseInt(days, 10) || 30);
+    try {
+      const metrics = await getCaptchaMetrics(sinceDays);
+      return reply.send(metrics);
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── Solver Provider Status (which providers are configured) ─
+  app.get('/admin/captcha/providers', { preHandler: adminAuth }, async (_req, reply) => {
+    try {
+      const providers = listAllProviders().map((p) => ({
+        id: p.id,
+        configured: p.isConfigured(),
+        supports: Array.from(p.supports),
+      }));
+      return reply.send({ providers });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── User Plan (free/premium — gates automated CAPTCHA solving) ─
+  app.get('/admin/users/:userId/plan', { preHandler: adminAuth }, async (req, reply) => {
+    const { userId } = req.params as { userId: string };
+    try {
+      const [userRes, gate] = await Promise.all([
+        getPgPool().query('SELECT id, plan FROM users WHERE id = $1', [userId]),
+        canUsePaidProvider(userId),
+      ]);
+      if (!userRes.rows.length) return reply.status(404).send({ error: 'User not found' });
+      return reply.send({ userId, plan: userRes.rows[0].plan, usage: gate });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  app.post('/admin/users/:userId/plan', { preHandler: adminAuth }, async (req, reply) => {
+    const { userId } = req.params as { userId: string };
+    const { plan } = req.body as { plan: string };
+    if (plan !== 'free' && plan !== 'premium') {
+      return reply.status(400).send({ error: "plan must be 'free' or 'premium'" });
+    }
+    try {
+      const { rows } = await getPgPool().query(
+        'UPDATE users SET plan = $2 WHERE id = $1 RETURNING id, plan',
+        [userId, plan]
+      );
+      if (!rows.length) return reply.status(404).send({ error: 'User not found' });
+      return reply.send({ userId: rows[0].id, plan: rows[0].plan });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── Zero-Shot History (AI-discovered task attempts — the learning
+  //    flywheel's audit trail; see also cached_flows.promoted_workflow_id
+  //    once one of these has been promoted into a real workflow) ────
+  app.get('/admin/zero-shot-history', { preHandler: adminAuth }, async (req, reply) => {
+    const { days = '30', limit = '50' } = req.query as { days?: string; limit?: string };
+    const sinceDays = Math.max(1, parseInt(days, 10) || 30);
+    const rowLimit = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+    try {
+      const { rows } = await getPgPool().query(
+        `SELECT id, url, prompt, success, created_at
+         FROM zero_shot_history
+         WHERE created_at > NOW() - ($1 || ' days')::interval
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        [sinceDays, rowLimit]
+      );
+      return reply.send({ days: sinceDays, attempts: rows });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
     }
