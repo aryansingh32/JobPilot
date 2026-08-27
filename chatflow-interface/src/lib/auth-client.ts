@@ -21,7 +21,13 @@ async function authRequest<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${config.apiBaseUrl}${path}`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json", "x-api-key": config.apiKey },
+    // Only declare a JSON content type when there's actually a body — the
+    // backend's strict JSON body parser 400s on an empty body sent with
+    // Content-Type: application/json, which broke logout/adminLogout (the
+    // only two callers with no body) until this was traced to a real 400.
+    headers: body
+      ? { "Content-Type": "application/json", "x-api-key": config.apiKey }
+      : { "x-api-key": config.apiKey },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));

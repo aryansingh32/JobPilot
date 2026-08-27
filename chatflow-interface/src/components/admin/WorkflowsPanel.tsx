@@ -1,6 +1,16 @@
 import { useEffect, useState, useCallback } from "react";
-import { Plus, Pencil, Trash2, Save, Search, ToggleLeft, ToggleRight, Video } from "lucide-react";
-import { adminApi, type AdminWorkflow } from "@/lib/admin-api";
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  Save,
+  Search,
+  ToggleLeft,
+  ToggleRight,
+  Video,
+  TrendingUp,
+} from "lucide-react";
+import { adminApi, type AdminWorkflow, type WorkflowAnalyticsRow } from "@/lib/admin-api";
 import { toast } from "sonner";
 import { StatusBadge } from "./StatusBadge";
 import { RecordWorkflowModal } from "./RecordWorkflowModal";
@@ -131,6 +141,7 @@ function WorkflowModal({
 
 export function WorkflowsPanel() {
   const [workflows, setWorkflows] = useState<AdminWorkflow[]>([]);
+  const [analytics, setAnalytics] = useState<Record<string, WorkflowAnalyticsRow>>({});
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Partial<AdminWorkflow> | null>(null);
@@ -147,6 +158,12 @@ export function WorkflowsPanel() {
     } catch {
     } finally {
       setLoading(false);
+    }
+    try {
+      const a = await adminApi.workflowAnalytics(30);
+      setAnalytics(Object.fromEntries(a.workflows.map((row) => [row.workflowKey, row])));
+    } catch {
+      /* analytics badges just stay hidden on transient fetch failure */
     }
   }, []);
 
@@ -270,6 +287,38 @@ export function WorkflowsPanel() {
                     </span>
                     {wf.version && <span>v{wf.version}</span>}
                   </div>
+                  {wf.workflow_key && analytics[wf.workflow_key] && (
+                    <div className="mt-2 flex flex-wrap items-center gap-3 rounded-lg bg-muted/40 px-2.5 py-1.5 text-[11px]">
+                      <span className="flex items-center gap-1 text-muted-foreground">
+                        <TrendingUp className="h-3 w-3" /> Last 30d
+                      </span>
+                      <span
+                        className={
+                          Number(analytics[wf.workflow_key].successRatePct ?? 0) >= 80
+                            ? "text-emerald-400"
+                            : Number(analytics[wf.workflow_key].successRatePct ?? 0) >= 50
+                              ? "text-amber-400"
+                              : "text-red-400"
+                        }
+                      >
+                        {analytics[wf.workflow_key].successRatePct ?? "—"}% success (
+                        {analytics[wf.workflow_key].totalRuns} runs)
+                      </span>
+                      {analytics[wf.workflow_key].avgDurationMs && (
+                        <span className="text-muted-foreground">
+                          avg {Math.round(Number(analytics[wf.workflow_key].avgDurationMs) / 1000)}s
+                        </span>
+                      )}
+                      {analytics[wf.workflow_key].mostCommonFailureStep && (
+                        <span className="text-muted-foreground">
+                          most failures at{" "}
+                          <span className="text-foreground font-mono">
+                            {analytics[wf.workflow_key].mostCommonFailureStep}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-1 opacity-100 transition shrink-0 md:opacity-0 md:group-hover:opacity-100">
                   <button

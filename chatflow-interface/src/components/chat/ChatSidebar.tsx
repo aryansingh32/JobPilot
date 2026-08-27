@@ -112,7 +112,7 @@ export function ChatSidebar({
       <div className="px-3">
         <button
           onClick={onNew}
-          className="flex w-full items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-accent/40 px-3 py-2 text-sm font-medium hover:bg-sidebar-accent"
+          className="flex w-full items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-accent/40 px-3 py-2 text-sm font-medium transition-all duration-150 hover:border-primary/30 hover:bg-sidebar-accent active:scale-[0.98]"
         >
           <Plus className="h-4 w-4" /> New chat
         </button>
@@ -127,7 +127,7 @@ export function ChatSidebar({
           return (
             <div
               key={t.id}
-              className={`group mb-0.5 flex items-center gap-2 rounded-lg px-2 py-2 text-sm ${
+              className={`group mb-0.5 flex items-center gap-2 rounded-lg px-2 py-2 text-sm transition-colors duration-150 ${
                 active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/50"
               }`}
             >

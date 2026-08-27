@@ -155,12 +155,61 @@ export interface CaptchaSpend {
   history: { month: string; spend: number }[];
 }
 
+export interface CaptchaMetrics {
+  days: number;
+  totals: { events: number; resolved: number; failed: number; timeout: number; costUsd: number; avgDurationMs: number | null };
+  byEventType: { eventType: string; count: number; resolvedCount: number }[];
+  byResolvedBy: { resolvedBy: string | null; count: number }[];
+  byProvider: { provider: string | null; count: number; costUsd: number }[];
+}
+
+export interface CaptchaProviderStatus {
+  id: string;
+  configured: boolean;
+  supports: string[];
+}
+
+export interface ZeroShotAttempt {
+  id: string;
+  url: string;
+  prompt: string;
+  success: boolean | null;
+  created_at: string;
+}
+
 export interface SelectorHealthRow {
   type: string;
   total_selectors: string;
   avg_confidence: string | null;
   total_failures: string;
   broken_selectors: string;
+}
+
+export interface LLMUsageData {
+  days: number;
+  totalJobs: number;
+  totalAiCalls: number;
+  avgAiCallsPerJob: number;
+  daily: { day: string; ai_calls: string; jobs: string }[];
+  byWorkflow: { key: string; name: string | null; ai_calls: string; jobs: string }[];
+  models: {
+    plannerModel: string | null;
+    selectorModel: string | null;
+    recoveryModel: string | null;
+    chatModel: string | null;
+  };
+}
+
+export interface WorkflowAnalyticsRow {
+  workflowKey: string;
+  name: string | null;
+  siteId: string | null;
+  totalRuns: string;
+  successfulRuns: string;
+  successRatePct: string | null;
+  avgDurationMs: string | null;
+  mostCommonFailureStep: string | null;
+  mostCommonFailureCount: string | null;
 }
 
 export interface CircuitBreakerRow {
@@ -302,6 +351,21 @@ export const adminApi = {
     aPost<{ captchaId: string; solved: boolean }>(`/admin/captcha/${captchaId}/solve`, {
       solution,
     }),
+  captchaMetrics: (days = 30) => aGet<CaptchaMetrics>(`/admin/captcha/metrics?days=${days}`),
+  captchaProviders: () => aGet<{ providers: CaptchaProviderStatus[] }>("/admin/captcha/providers"),
+  zeroShotHistory: (days = 30, limit = 50) =>
+    aGet<{ days: number; attempts: ZeroShotAttempt[] }>(
+      `/admin/zero-shot-history?days=${days}&limit=${limit}`,
+    ),
+  setUserPlan: (userId: string, plan: "free" | "premium") =>
+    aPost<{ userId: string; plan: string }>(`/admin/users/${userId}/plan`, { plan }),
+
+  // Analytics
+  workflowAnalytics: (days = 30) =>
+    aGet<{ days: number; workflows: WorkflowAnalyticsRow[] }>(
+      `/admin/analytics/workflows?days=${days}`,
+    ),
+  llmUsage: (days = 30) => aGet<LLMUsageData>(`/admin/analytics/llm-usage?days=${days}`),
 
   // Reliability
   captchaSpend: () => aGet<CaptchaSpend>("/admin/captcha/spend"),

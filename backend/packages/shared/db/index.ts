@@ -58,17 +58,47 @@ export async function withTransaction<T>(
 
 let redisClient: RedisClientType | null = null;
 
+// Exported so every duplicated client (subRedis instances used for the
+// captcha/human-verification pause/resume pub-sub in executor.ts, and
+// anywhere else that calls redis.duplicate()) gets the exact same
+// reconnect behavior — a live pause must survive a Redis blip, not die
+// silently because its subscriber connection gave up.
+export function redisReconnectStrategy(retries: number): number | Error {
+  const MAX_RETRIES = parseInt(process.env.REDIS_MAX_RECONNECT_RETRIES ?? '50', 10);
+  if (retries > MAX_RETRIES) {
+    logger.error('redis:reconnect-exhausted', { retries, maxRetries: MAX_RETRIES });
+    return new Error(`Redis reconnection abandoned after ${retries} attempts`);
+  }
+  // Capped exponential backoff: 100ms, 200ms, 400ms... up to 5s, so a
+  // brief blip reconnects almost immediately and a longer outage doesn't
+  // hammer the server.
+  const delayMs = Math.min(100 * 2 ** Math.min(retries, 6), 5000);
+  logger.warn('redis:reconnecting', { retries, delayMs });
+  return delayMs;
+}
+
+export function getRedisUrl(): string {
+  const password = process.env.REDIS_PASSWORD;
+  return password
+    ? `redis://:${password}@${process.env.REDIS_HOST ?? 'localhost'}:${process.env.REDIS_PORT ?? '6379'}`
+    : `redis://${process.env.REDIS_HOST ?? 'localhost'}:${process.env.REDIS_PORT ?? '6379'}`;
+}
+
 export async function getRedisClient(): Promise<RedisClientType> {
   if (!redisClient) {
-    const password = process.env.REDIS_PASSWORD;
-    const url = password
-      ? `redis://:${password}@${process.env.REDIS_HOST ?? 'localhost'}:${process.env.REDIS_PORT ?? '6379'}`
-      : `redis://${process.env.REDIS_HOST ?? 'localhost'}:${process.env.REDIS_PORT ?? '6379'}`;
-
-    redisClient = createClient({ url }) as RedisClientType;
+    redisClient = createClient({
+      url: getRedisUrl(),
+      socket: { reconnectStrategy: redisReconnectStrategy },
+    }) as RedisClientType;
 
     redisClient.on('error', (err: Error) => {
       logger.error('redis:client-error', err);
+    });
+    redisClient.on('reconnecting', () => {
+      logger.warn('redis:socket-reconnecting');
+    });
+    redisClient.on('ready', () => {
+      logger.info('redis:ready');
     });
 
     await redisClient.connect();
@@ -364,6 +394,11 @@ CREATE TABLE IF NOT EXISTS job_logs (
   task                  TEXT,
   updated_at            TIMESTAMPTZ DEFAULT NOW()
 );
+-- Distinct from 'success' (every step ran without erroring): 'verified'
+-- additionally checks that steps meant to produce something (extractData /
+-- extract) actually produced non-empty output — a step can "succeed" while
+-- silently extracting nothing. NULL means not evaluated (e.g. job failed).
+ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS verified BOOLEAN;
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS session_id TEXT;
 -- Original task text, needed so a failed job can actually be re-enqueued on
@@ -371,11 +406,16 @@ ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS session_id TEXT;
 -- 24h TTL and may be long gone by the time an admin retries an old job).
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS task TEXT;
 ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+-- Which site_workflows.workflow_key was matched for this job, so analytics
+-- can be broken down per-workflow instead of only per-site (a site can have
+-- several published workflows).
+ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS workflow_key TEXT;
 CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_logs_status ON job_logs(status);
 CREATE INDEX IF NOT EXISTS idx_job_logs_user_id ON job_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_job_logs_session_id ON job_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_job_logs_started_at ON job_logs(started_at);
+CREATE INDEX IF NOT EXISTS idx_job_logs_workflow_key ON job_logs(workflow_key);
 
 -- ── File Indexes ─────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_user_files_created_at ON user_files(created_at);
@@ -505,6 +545,58 @@ CREATE TABLE IF NOT EXISTS user_secrets (
   UNIQUE (user_id, site_id, key_name)
 );
 CREATE INDEX IF NOT EXISTS idx_user_secrets_user_id ON user_secrets(user_id);
+
+-- ── User Plan (free vs premium — gates automated CAPTCHA solving) ──
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free';
+
+-- ── Per-user CAPTCHA usage (monthly quota tracking for plan gating) ──
+CREATE TABLE IF NOT EXISTS user_captcha_usage (
+  user_id          TEXT NOT NULL,
+  month            TEXT NOT NULL,  -- 'YYYY-MM'
+  auto_solve_count INTEGER NOT NULL DEFAULT 0,
+  spend_usd        NUMERIC(10,4) NOT NULL DEFAULT 0,
+  updated_at       TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (user_id, month)
+);
+
+-- ── Human Intervention Events ───────────────────────────────
+-- Every CAPTCHA / OTP / MFA / login-verification / security-block
+-- checkpoint a workflow hits, however it was resolved. This is the
+-- metrics + audit trail for the whole human-verification subsystem,
+-- and (via workflow_key) the record that lets a successful checkpoint
+-- be retained for future runs of the same workflow.
+CREATE TABLE IF NOT EXISTS human_intervention_events (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  job_id         TEXT NOT NULL,
+  workflow_key   TEXT,
+  site_id        UUID REFERENCES sites(id) ON DELETE SET NULL,
+  user_id        TEXT,
+  step_id        TEXT,
+  event_type     TEXT NOT NULL CHECK (event_type IN ('captcha','otp','mfa','login_verification','security_block','generic')),
+  challenge_type TEXT,
+  status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','resolved','failed','timeout')),
+  resolved_by    TEXT CHECK (resolved_by IN ('auto','premium_api','human_user','human_admin','failed','skipped')),
+  provider       TEXT,
+  attempts       INTEGER NOT NULL DEFAULT 0,
+  cost_usd       NUMERIC(10,4) NOT NULL DEFAULT 0,
+  duration_ms    INTEGER,
+  error          TEXT,
+  metadata       JSONB DEFAULT '{}',
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  resolved_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_hie_job ON human_intervention_events(job_id);
+CREATE INDEX IF NOT EXISTS idx_hie_type_status ON human_intervention_events(event_type, status);
+CREATE INDEX IF NOT EXISTS idx_hie_created ON human_intervention_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hie_workflow_key ON human_intervention_events(workflow_key);
+
+-- ── Known checkpoints on a workflow (which step hit which challenge
+--    type, and which provider/path resolved it last time) — lets a
+--    future run of the same workflow skip re-detection guesswork. ──
+ALTER TABLE site_workflows ADD COLUMN IF NOT EXISTS known_checkpoints JSONB DEFAULT '[]';
+
+-- ── Cached-flow → workflow promotion tracking (learning flywheel) ──
+ALTER TABLE cached_flows ADD COLUMN IF NOT EXISTS promoted_workflow_id UUID REFERENCES site_workflows(id) ON DELETE SET NULL;
 
 `;
 

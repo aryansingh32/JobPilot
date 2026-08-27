@@ -12,6 +12,9 @@ import { dryRunService } from '../execution-service/dry-run-service.js';
 import { generalizeSteps } from '../execution-service/llm-generalizer.js';
 import { getAllQueueStats } from '../shared/queue/index.js';
 import { getSelectorHealthReport } from '../execution-service/selector-engine.js';
+import { getCaptchaMetrics } from '../execution-service/captcha/events.js';
+import { listAllProviders } from '../execution-service/captcha/provider-registry.js';
+import { canUsePaidProvider } from '../execution-service/captcha/plan-gate.js';
 import { register as promRegister } from 'prom-client';
 import { createLogger } from '../shared/logger/index.js';
 import { adminAuth } from './admin-auth.js';
@@ -261,6 +264,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         payload: {
           siteId: row.site_id,
           task: row.task,
+          workflowKey: row.workflow_key ?? undefined,
           sessionId: row.session_id,
           useCache: false,
         },
@@ -390,12 +394,18 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
         RETURNING *
       `, [
+        // trigger_phrases / page_url_patterns / required_inputs / required_files
+        // are TEXT[] columns — the pg driver serializes a plain JS array into
+        // the correct Postgres array literal on its own; JSON.stringify()-ing
+        // them produces a JSON string like ["x"], which Postgres rejects with
+        // "malformed array literal". Only the genuinely JSONB columns below
+        // (starter_action_plan, error_recovery_plan, metadata) need it.
         body.siteId, body.workflowKey, body.category, body.name,
-        body.trigger, JSON.stringify(body.triggerPhrases ?? []),
+        body.trigger, body.triggerPhrases ?? [],
         body.portalType, body.siteSection, body.entryUrl, body.pageUrl,
-        body.pageUrlPattern, JSON.stringify(body.pageUrlPatterns ?? []),
-        JSON.stringify(body.requiredInputs ?? []),
-        JSON.stringify(body.requiredFiles ?? []),
+        body.pageUrlPattern, body.pageUrlPatterns ?? [],
+        body.requiredInputs ?? [],
+        body.requiredFiles ?? [],
         body.instructions, body.defaultProfileName,
         JSON.stringify(starterActionPlan),
         JSON.stringify(body.errorRecoveryPlan ?? []),
@@ -439,14 +449,25 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         is_active: body.isActive, portal_type: body.portalType,
         entry_url: body.entryUrl, page_url: body.pageUrl,
         category: body.category, version: body.version,
-        status: body.status, starter_action_plan: body.starterActionPlan !== undefined ? JSON.stringify(body.starterActionPlan) : undefined
+        status: body.status, starter_action_plan: body.starterActionPlan !== undefined ? JSON.stringify(body.starterActionPlan) : undefined,
+        // TEXT[] columns — pass the plain array, not JSON.stringify(), same
+        // reasoning as the POST /admin/workflows insert above.
+        trigger_phrases: body.triggerPhrases, page_url_patterns: body.pageUrlPatterns,
+        required_inputs: body.requiredInputs, required_files: body.requiredFiles,
       };
       for (const [col, val] of Object.entries(map)) {
         if (val !== undefined) { sets.push(`${col} = $${pi++}`); params.push(val); }
       }
       if (!sets.length) return reply.status(400).send({ error: 'No fields to update' });
+
+      // Auto-bump the version on any real edit the caller didn't already
+      // version explicitly — otherwise `version` is just a static field
+      // nobody ever moves, not real revision tracking.
+      if (body.version === undefined) {
+        sets.push('version = COALESCE(version, 0) + 1');
+      }
       params.push(workflowId);
-      
+
 
       const { rows } = await pool.query(
         `UPDATE site_workflows SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${pi} RETURNING *`,
@@ -602,42 +623,246 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // captchaId is the paused job's id — the pending queue mirrors whatever
+  // job is currently blocked on pauseForUserInput/clickCaptcha, and
+  // resolving it here publishes to the exact same job:resume channel the
+  // end user's chat pause listens on, so an admin can stand in for them.
   app.post('/admin/captcha/:captchaId/solve', { preHandler: adminAuth }, async (req, reply) => {
     const { captchaId } = req.params as { captchaId: string };
     const { solution } = req.body as { solution: string };
     try {
       const redis = await getRedisClient();
-      await redis.publish(`captcha:solved:${captchaId}`, JSON.stringify({ captchaId, solution, source: 'admin' }));
+      await redis.publish(`job:resume:${captchaId}`, JSON.stringify({ __hieAdmin: true, solution }));
       await redis.del(`captcha:pending:${captchaId}`);
-      return reply.send({ captchaId, solved: true });
+      return reply.send({ captchaId, solved: true, resolvedBy: 'human_admin' });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── Per-Workflow Analytics ──────────────────────────────
+  app.get('/admin/analytics/workflows', { preHandler: adminAuth }, async (req, reply) => {
+    const { days = '30' } = req.query as { days?: string };
+    const sinceDays = Math.max(1, parseInt(days, 10) || 30);
+    const pool = getPgPool();
+    try {
+      const { rows } = await pool.query(
+        `
+        WITH job_stats AS (
+          SELECT
+            workflow_key,
+            COUNT(*) AS total_runs,
+            COUNT(*) FILTER (WHERE success) AS successful_runs,
+            AVG(duration_ms) FILTER (WHERE duration_ms IS NOT NULL) AS avg_duration_ms
+          FROM job_logs
+          WHERE workflow_key IS NOT NULL AND started_at > NOW() - ($1 || ' days')::interval
+          GROUP BY workflow_key
+        ),
+        failure_steps AS (
+          SELECT workflow_key, step_id, COUNT(*) AS failure_count
+          FROM (
+            SELECT jl.workflow_key, step->>'stepId' AS step_id
+            FROM job_logs jl,
+              jsonb_array_elements(
+                CASE WHEN jsonb_typeof(jl.result->'steps') = 'array' THEN jl.result->'steps' ELSE '[]'::jsonb END
+              ) AS step
+            WHERE jl.workflow_key IS NOT NULL
+              AND jl.started_at > NOW() - ($1 || ' days')::interval
+              AND step ? 'error'
+              AND NULLIF(step->>'error', '') IS NOT NULL
+          ) sub
+          GROUP BY workflow_key, step_id
+        ),
+        top_failure_step AS (
+          SELECT DISTINCT ON (workflow_key) workflow_key, step_id, failure_count
+          FROM failure_steps
+          ORDER BY workflow_key, failure_count DESC
+        )
+        SELECT
+          js.workflow_key AS "workflowKey",
+          sw.name,
+          sw.site_id AS "siteId",
+          js.total_runs AS "totalRuns",
+          js.successful_runs AS "successfulRuns",
+          ROUND((js.successful_runs::numeric / NULLIF(js.total_runs, 0)) * 100, 1) AS "successRatePct",
+          ROUND(js.avg_duration_ms::numeric, 0) AS "avgDurationMs",
+          tfs.step_id AS "mostCommonFailureStep",
+          tfs.failure_count AS "mostCommonFailureCount"
+        FROM job_stats js
+        LEFT JOIN site_workflows sw ON sw.workflow_key = js.workflow_key
+        LEFT JOIN top_failure_step tfs ON tfs.workflow_key = js.workflow_key
+        ORDER BY js.total_runs DESC
+        `,
+        [sinceDays]
+      );
+      return reply.send({ days: sinceDays, workflows: rows });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── LLM Call Volume (cost proxy — no per-token pricing tracked) ──
+  app.get('/admin/analytics/llm-usage', { preHandler: adminAuth }, async (req, reply) => {
+    const { days = '30' } = req.query as { days?: string };
+    const sinceDays = Math.max(1, parseInt(days, 10) || 30);
+    const pool = getPgPool();
+    try {
+      const [totalsRes, dailyRes, byWorkflowRes] = await Promise.all([
+        pool.query(
+          `SELECT COUNT(*) AS total_jobs, COALESCE(SUM(ai_call_count), 0) AS total_ai_calls
+           FROM job_logs WHERE started_at > NOW() - ($1 || ' days')::interval`,
+          [sinceDays]
+        ),
+        pool.query(
+          `SELECT DATE_TRUNC('day', started_at) AS day,
+                  COALESCE(SUM(ai_call_count), 0) AS ai_calls,
+                  COUNT(*) AS jobs
+           FROM job_logs
+           WHERE started_at > NOW() - ($1 || ' days')::interval
+           GROUP BY day ORDER BY day ASC`,
+          [sinceDays]
+        ),
+        pool.query(
+          `SELECT
+             COALESCE(jl.workflow_key, jl.site_id::text, 'unknown') AS key,
+             sw.name,
+             COALESCE(SUM(jl.ai_call_count), 0) AS ai_calls,
+             COUNT(*) AS jobs
+           FROM job_logs jl
+           LEFT JOIN site_workflows sw ON sw.workflow_key = jl.workflow_key
+           WHERE jl.started_at > NOW() - ($1 || ' days')::interval
+           GROUP BY key, sw.name
+           ORDER BY ai_calls DESC
+           LIMIT 20`,
+          [sinceDays]
+        ),
+      ]);
+
+      const totalJobs = Number(totalsRes.rows[0]?.total_jobs ?? 0);
+      const totalAiCalls = Number(totalsRes.rows[0]?.total_ai_calls ?? 0);
+
+      return reply.send({
+        days: sinceDays,
+        totalJobs,
+        totalAiCalls,
+        avgAiCallsPerJob: totalJobs ? Number((totalAiCalls / totalJobs).toFixed(2)) : 0,
+        daily: dailyRes.rows,
+        byWorkflow: byWorkflowRes.rows,
+        models: {
+          plannerModel: process.env.AI_PLANNER_MODEL || process.env.LLM_MODEL || null,
+          selectorModel: process.env.AI_SELECTOR_MODEL || process.env.AI_PLANNER_MODEL || process.env.LLM_MODEL || null,
+          recoveryModel: process.env.AI_RECOVERY_MODEL || process.env.AI_PLANNER_MODEL || process.env.LLM_MODEL || null,
+          chatModel: process.env.CHAT_LLM_MODEL || process.env.LLM_MODEL || null,
+        },
+      });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
     }
   });
 
   // ── Captcha Spend (monthly premium-solver budget) ───────
+  // Sourced from user_captcha_usage (the per-user ledger recordPaidProviderUsage
+  // writes to) rather than a single global Redis counter, so this reflects
+  // real per-plan spend across every user, not just a legacy global cap.
   app.get('/admin/captcha/spend', { preHandler: adminAuth }, async (_req, reply) => {
+    const pool = getPgPool();
     try {
-      const redis = await getRedisClient();
       const currentMonth = new Date().toISOString().slice(0, 7);
-      const maxMonthlySpend = parseFloat(process.env.MAX_CAPTCHA_SPEND ?? '5.0');
-      const keys = await redis.keys('captcha:spend:*');
-      const months = await Promise.all(
-        keys.map(async (k) => ({
-          month: k.replace('captcha:spend:', ''),
-          spend: parseFloat((await redis.get(k)) ?? '0'),
-        }))
+      const maxMonthlySpend = parseFloat(process.env.PREMIUM_PLAN_MONTHLY_SPEND_CAP_USD ?? process.env.MAX_CAPTCHA_SPEND ?? '5.0');
+      const { rows } = await pool.query(
+        `SELECT month, SUM(spend_usd) AS spend FROM user_captcha_usage GROUP BY month ORDER BY month DESC LIMIT 12`
       );
-      months.sort((a, b) => b.month.localeCompare(a.month));
+      const months = rows.map((r) => ({ month: r.month, spend: parseFloat(r.spend) }));
       const currentSpend = months.find((m) => m.month === currentMonth)?.spend ?? 0;
       return reply.send({
         currentMonth,
         currentSpend,
         maxMonthlySpend,
         remaining: Math.max(0, maxMonthlySpend - currentSpend),
-        premiumConfigured: Boolean(process.env.CAPTCHA_SOLVER_API_KEY),
+        premiumConfigured: listAllProviders().some((p) => p.isConfigured()),
         history: months,
       });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── CAPTCHA / Human-Intervention Metrics ────────────────
+  app.get('/admin/captcha/metrics', { preHandler: adminAuth }, async (req, reply) => {
+    const { days = '30' } = req.query as { days?: string };
+    const sinceDays = Math.max(1, parseInt(days, 10) || 30);
+    try {
+      const metrics = await getCaptchaMetrics(sinceDays);
+      return reply.send(metrics);
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── Solver Provider Status (which providers are configured) ─
+  app.get('/admin/captcha/providers', { preHandler: adminAuth }, async (_req, reply) => {
+    try {
+      const providers = listAllProviders().map((p) => ({
+        id: p.id,
+        configured: p.isConfigured(),
+        supports: Array.from(p.supports),
+      }));
+      return reply.send({ providers });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── User Plan (free/premium — gates automated CAPTCHA solving) ─
+  app.get('/admin/users/:userId/plan', { preHandler: adminAuth }, async (req, reply) => {
+    const { userId } = req.params as { userId: string };
+    try {
+      const [userRes, gate] = await Promise.all([
+        getPgPool().query('SELECT id, plan FROM users WHERE id = $1', [userId]),
+        canUsePaidProvider(userId),
+      ]);
+      if (!userRes.rows.length) return reply.status(404).send({ error: 'User not found' });
+      return reply.send({ userId, plan: userRes.rows[0].plan, usage: gate });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  app.post('/admin/users/:userId/plan', { preHandler: adminAuth }, async (req, reply) => {
+    const { userId } = req.params as { userId: string };
+    const { plan } = req.body as { plan: string };
+    if (plan !== 'free' && plan !== 'premium') {
+      return reply.status(400).send({ error: "plan must be 'free' or 'premium'" });
+    }
+    try {
+      const { rows } = await getPgPool().query(
+        'UPDATE users SET plan = $2 WHERE id = $1 RETURNING id, plan',
+        [userId, plan]
+      );
+      if (!rows.length) return reply.status(404).send({ error: 'User not found' });
+      return reply.send({ userId: rows[0].id, plan: rows[0].plan });
+    } catch (e: any) {
+      return reply.status(500).send({ error: e.message });
+    }
+  });
+
+  // ── Zero-Shot History (AI-discovered task attempts — the learning
+  //    flywheel's audit trail; see also cached_flows.promoted_workflow_id
+  //    once one of these has been promoted into a real workflow) ────
+  app.get('/admin/zero-shot-history', { preHandler: adminAuth }, async (req, reply) => {
+    const { days = '30', limit = '50' } = req.query as { days?: string; limit?: string };
+    const sinceDays = Math.max(1, parseInt(days, 10) || 30);
+    const rowLimit = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+    try {
+      const { rows } = await getPgPool().query(
+        `SELECT id, url, prompt, success, created_at
+         FROM zero_shot_history
+         WHERE created_at > NOW() - ($1 || ' days')::interval
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        [sinceDays, rowLimit]
+      );
+      return reply.send({ days: sinceDays, attempts: rows });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
     }

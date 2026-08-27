@@ -841,6 +841,9 @@ async function main() {
 
     const pubClient = await getRedisClient();
     const subClient = pubClient.duplicate();
+    // A Redis blip on any duplicated subscriber client is otherwise a
+    // fatal unhandled 'error' event that crashes the whole API process.
+    subClient.on('error', (err) => logger.warn('redis:socketio-adapter-sub-error', { error: (err as Error).message }));
     await subClient.connect();
     io.adapter(createAdapter(pubClient, subClient));
 
@@ -886,6 +889,7 @@ async function main() {
       socket.emit('ready', { channel: 'observability' });
     });
     const adminObsSub = pubClient.duplicate();
+    adminObsSub.on('error', (err) => logger.warn('redis:admin-obs-sub-error', { error: (err as Error).message }));
     await adminObsSub.connect();
     await adminObsSub.subscribe(ADMIN_OBSERVABILITY_CHANNEL, (msg) => {
       try {
@@ -904,6 +908,7 @@ async function main() {
 
     // Listen for events from ExecutionService (Pause for input)
     const systemSub = pubClient.duplicate();
+    systemSub.on('error', (err) => logger.warn('redis:system-sub-error', { error: (err as Error).message }));
     await systemSub.connect();
     
     await systemSub.subscribe('chat:pause', async (message) => {
@@ -1035,6 +1040,7 @@ setInterval(() => {
           
           // Subscribe to live stream for this job
           const streamSub = pubClient.duplicate();
+          streamSub.on('error', (err) => logger.warn('redis:stream-sub-error', { socketId: socket.id, jobId: data.activeJobId, error: (err as Error).message }));
           streamSub.connect().then(() => {
             streamSub.subscribe(`live-stream:${data.activeJobId}`, (frame) => {
               socket.emit('live-stream:frame', frame);

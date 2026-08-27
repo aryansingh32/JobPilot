@@ -35,6 +35,7 @@ export interface ExecuteJob extends BaseJob {
   payload: {
     siteId: string;
     task: string;           // natural language
+    workflowKey?: string;   // matched site_workflows.workflow_key, for per-workflow analytics
     actionPlan?: ActionStep[];  // pre-computed or AI-generated
     sessionId: string;
     useCache: boolean;
@@ -139,7 +140,50 @@ export interface BoundingBox {
 
 // ─── Action Types ────────────────────────────────────────────
 
-export type InputCardKind = 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file' | 'direct_input';
+export type InputCardKind = 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file' | 'direct_input' | 'mfa' | 'loginVerification' | 'credentialFill';
+
+// ─── Human-in-the-Loop / CAPTCHA subsystem ─────────────────────
+
+/** Plan tier gating automated CAPTCHA-solving API usage. */
+export type UserPlan = 'free' | 'premium';
+
+/**
+ * Taxonomy for `human_intervention_events` — every checkpoint that stops a
+ * workflow and needs either an automated solver or a human, tracked
+ * separately so metrics/retry policy can differ per kind. 'security_block'
+ * covers WAF/Cloudflare-interstitial/rate-limit states that are detected
+ * and routed to a human, never bypassed.
+ */
+export type HumanInterventionEventType =
+  | 'captcha'
+  | 'otp'
+  | 'mfa'
+  | 'login_verification'
+  | 'security_block'
+  | 'generic';
+
+export type InterventionResolvedBy = 'auto' | 'premium_api' | 'human_user' | 'human_admin' | 'failed' | 'skipped';
+
+export interface HumanInterventionEvent {
+  id: string;
+  jobId: string;
+  workflowKey?: string;
+  siteId?: string;
+  userId?: string;
+  stepId?: string;
+  eventType: HumanInterventionEventType;
+  challengeType?: string;
+  status: 'pending' | 'resolved' | 'failed' | 'timeout';
+  resolvedBy?: InterventionResolvedBy;
+  provider?: string;
+  attempts: number;
+  costUsd: number;
+  durationMs?: number;
+  error?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: Date;
+  resolvedAt?: Date;
+}
 
 
 export interface ActionStep {
@@ -299,6 +343,8 @@ export interface AIDecision {
   source?: 'structured-workflow' | 'cached-flow' | 'ai-generated';
   matchedWorkflowId?: string;
   matchedWorkflowName?: string;
+  /** Set when this decision was logged to zero_shot_history (ai-generated only) — recordOutcome() updates that row once the job finishes. */
+  zeroShotHistoryId?: string;
 }
 
 export interface CachedFlow {
@@ -396,6 +442,15 @@ export interface SiteWorkflow {
   status?: 'draft' | 'published' | 'archived';
   completionArtifact?: string;
   metadata?: Record<string, unknown> & { lightweight?: boolean };
+  /** Checkpoints this workflow is known to hit (step + challenge type + last successful resolution path), recorded automatically as jobs succeed. */
+  knownCheckpoints?: Array<{
+    stepId: string;
+    eventType: HumanInterventionEventType;
+    challengeType?: string;
+    lastResolvedBy: InterventionResolvedBy;
+    lastProvider?: string;
+    successCount: number;
+  }>;
   createdAt: Date;
   updatedAt: Date;
 }

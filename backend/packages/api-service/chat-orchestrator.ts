@@ -21,6 +21,7 @@ const logger = createLogger('chat-orchestrator');
 type WorkflowMatch = {
   siteId: string;
   workflowName: string;
+  workflowKey?: string;
   trigger: string;
   score: number;
   lightweight?: boolean;
@@ -109,6 +110,7 @@ async function findMatchingWorkflow(task: string): Promise<WorkflowMatch | null>
       best = {
         siteId: workflow.siteId,
         workflowName: workflow.name,
+        workflowKey: workflow.workflowKey ?? undefined,
         trigger: workflow.trigger,
         score,
         lightweight: workflow.metadata?.lightweight as boolean | undefined,
@@ -398,6 +400,7 @@ export class ChatOrchestrator {
           payload: {
             siteId: workflowMatch.siteId,
             task: taskInstruction,
+            workflowKey: workflowMatch.workflowKey,
             sessionId,
             useCache: false,
             lightweight: workflowMatch.lightweight

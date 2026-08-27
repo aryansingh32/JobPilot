@@ -19,7 +19,7 @@ if ! docker compose version >/dev/null 2>&1; then
   fi
 fi
 
-DOWN_ARGS=(--profile observability)
+DOWN_ARGS=(--profile scheduler --profile observability)
 if [ "${1:-}" = "--volumes" ] || [ "${1:-}" = "-v" ]; then
   echo "This will permanently delete the Postgres and Redis data volumes."
   read -r -p "Type 'yes' to continue: " CONFIRM
