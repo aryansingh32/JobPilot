@@ -420,7 +420,10 @@ const handlePaymentStep: ActionHandler = async (step, ctx) => {
   });
 };
 
-const ACTION_HANDLERS: Record<string, ActionHandler> = {
+// Exported (in addition to being used internally below) so integration
+// tests can exercise the exact production pause/resume/captcha-fallback
+// code path instead of re-implementing it against a mock.
+export const ACTION_HANDLERS: Record<string, ActionHandler> = {
   navigate: async (step, ctx) => {
     if (!step.value) throw new Error('navigate action requires a URL value');
     await ctx.page.goto(resolveRuntimeValue(step.value, ctx), {
@@ -727,23 +730,33 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
         // Idle timeout — auto-cancel if user doesn't respond. This is the
         // hard ceiling that stops a stuck checkpoint from hanging forever.
-        const idleTimer = setTimeout(() => {
+        //
+        // Every branch below awaits finalizeResolution() and cleanup()
+        // BEFORE settling the promise. That ordering is deliberate: a step
+        // this pause returns from is a step whose event row is already
+        // written and whose captcha:pending entry is already gone — never
+        // a race where the workflow moves on (or a test/caller observes
+        // "resolved") while the audit trail is still catching up.
+        const idleTimer = setTimeout(async () => {
           if (settled) return;
+          settled = true;
           console.warn(`[Executor] Idle timeout (${idleTimeoutMs / 1000}s) for job ${ctx.jobId} step ${step.id}`);
           ctx.cancellation.cancelled = true;
           updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
           if (stream && detection.eventType === 'captcha') {
             stream.setFps(1);
           }
-          finalizeResolution(eventId, ctx, step, detection, {
+          await finalizeResolution(eventId, ctx, step, detection, {
             status: 'timeout', resolvedBy: 'failed', attempts: autoAttempts, durationMs: Date.now() - startedAt, error: 'idle timeout',
           }).catch(() => {});
-          cleanup().catch(() => {});
+          await cleanup().catch(() => {});
           reject(new JobCancelledError(ctx.jobId));
         }, idleTimeoutMs);
 
-        subRedis.subscribe(`job:resume:${ctx.jobId}`, (message: string) => {
+        subRedis.subscribe(`job:resume:${ctx.jobId}`, async (message: string) => {
           if (settled) return;
+          settled = true;
+          clearTimeout(idleTimer);
 
           // The admin-panel solve endpoint wraps its answer in a small
           // envelope so metrics can tell "an admin solved this" apart from
@@ -769,23 +782,25 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
           if (stream && detection.eventType === 'captcha') {
             stream.setFps(1);
           }
-          finalizeResolution(eventId, ctx, step, detection, {
+          await finalizeResolution(eventId, ctx, step, detection, {
             status: 'resolved', resolvedBy: resolvedByHuman, attempts: autoAttempts + 1, durationMs: Date.now() - startedAt,
           }).catch(() => {});
-          cleanup().catch(() => {});
+          await cleanup().catch(() => {});
           resolve();
         });
-        subRedis.subscribe(`job:cancel:${ctx.jobId}`, () => {
+        subRedis.subscribe(`job:cancel:${ctx.jobId}`, async () => {
           if (settled) return;
+          settled = true;
+          clearTimeout(idleTimer);
           ctx.cancellation.cancelled = true;
           updateJobRuntimeState(ctx, { status: 'failed' }).catch(() => {});
           if (stream && detection.eventType === 'captcha') {
             stream.setFps(1);
           }
-          finalizeResolution(eventId, ctx, step, detection, {
+          await finalizeResolution(eventId, ctx, step, detection, {
             status: 'failed', resolvedBy: 'failed', attempts: autoAttempts, durationMs: Date.now() - startedAt, error: 'cancelled',
           }).catch(() => {});
-          cleanup().catch(() => {});
+          await cleanup().catch(() => {});
           reject(new JobCancelledError(ctx.jobId));
         });
       });
@@ -905,12 +920,12 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
     return new Promise<void>((resolve, reject) => {
       const subRedis = redis.duplicate();
-      const idleTimer = setTimeout(() => {
-        finalizeResolution(eventId, ctx, step, detection, {
+      const idleTimer = setTimeout(async () => {
+        await finalizeResolution(eventId, ctx, step, detection, {
           status: 'timeout', resolvedBy: 'failed', attempts: 0, durationMs: Date.now() - startedAt, error: 'idle timeout',
         }).catch(() => {});
-        redis.del(`captcha:pending:${ctx.jobId}`).catch(() => {});
-        subRedis.quit().catch(() => {});
+        await redis.del(`captcha:pending:${ctx.jobId}`).catch(() => {});
+        await subRedis.quit().catch(() => {});
         reject(new JobCancelledError(ctx.jobId));
       }, idleTimeoutMs);
 
