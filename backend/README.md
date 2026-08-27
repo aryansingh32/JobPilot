@@ -82,6 +82,8 @@ Production-grade intelligent browser automation with AI-powered decision making,
 
 ## 🚀 Quickstart
 
+> **Fastest path:** `./start.sh` from the repo root brings up Postgres, Redis, the API, the worker, and the frontend dev server in one command, with secrets auto-generated on first run. See [`TESTING.md`](../TESTING.md) at the repo root for the full local-run and testing guide, including the isolated verification scripts for the CAPTCHA subsystem and Redis resilience.
+
 ### Docker Compose (local dev)
 
 ```bash
