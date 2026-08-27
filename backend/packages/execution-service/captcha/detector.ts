@@ -81,14 +81,17 @@ async function detectCaptchaWidget(page: Page): Promise<DomSignal> {
         signal: 'cf-turnstile element/iframe present',
       };
     }
-    if (document.querySelector('[class*="slider"][class*="captcha"], [id*="slider-captcha"]')) {
-      return { detected: true, type: 'slider' as const, signal: 'slider-captcha class/id present' };
+    const SLIDER_SELECTOR = '[class*="slider"][class*="captcha"], [id*="slider-captcha"]';
+    if (document.querySelector(SLIDER_SELECTOR)) {
+      return { detected: true, type: 'slider' as const, selector: SLIDER_SELECTOR, signal: 'slider-captcha class/id present' };
     }
-    if (document.querySelector('[class*="puzzle-captcha"], [class*="jigsaw"]')) {
-      return { detected: true, type: 'puzzle' as const, signal: 'puzzle/jigsaw class present' };
+    const PUZZLE_SELECTOR = '[class*="puzzle-captcha"], [class*="jigsaw"]';
+    if (document.querySelector(PUZZLE_SELECTOR)) {
+      return { detected: true, type: 'puzzle' as const, selector: PUZZLE_SELECTOR, signal: 'puzzle/jigsaw class present' };
     }
-    if (document.querySelector('img[src*="captcha"], img[alt*="captcha" i], canvas[id*="captcha"]')) {
-      return { detected: true, type: 'image-text' as const, signal: 'captcha image/canvas present' };
+    const IMAGE_TEXT_SELECTOR = 'img[src*="captcha"], img[alt*="captcha" i], canvas[id*="captcha"]';
+    if (document.querySelector(IMAGE_TEXT_SELECTOR)) {
+      return { detected: true, type: 'image-text' as const, selector: IMAGE_TEXT_SELECTOR, signal: 'captcha image/canvas present' };
     }
     return { detected: false, type: 'unknown' as const };
   });

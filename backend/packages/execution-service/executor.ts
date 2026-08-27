@@ -595,27 +595,43 @@ const ACTION_HANDLERS: Record<string, ActionHandler> = {
     // Tiers 1+2: free in-browser auto-solve, then a plan-gated paid
     // provider. Bounded attempts, and a security block is never
     // auto-attempted — it always falls through to the human tier below.
+    //
+    // This try/catch is deliberate, not defensive boilerplate: free-plan
+    // users always land on the human tier below (their plan limit keeps
+    // tier 2 closed), and premium users must land there too whenever
+    // auto-solve doesn't pan out — including the rare case where this
+    // call throws instead of returning `resolved: false` (a provider bug,
+    // an unexpected network error, anything). Without this catch, that
+    // exception would propagate out of the step and fail the job instead
+    // of falling back to a human — exactly the outcome the fallback tier
+    // exists to prevent.
     let autoAttempts = 0;
     if (detection.eventType === 'captcha') {
-      const auto = await attemptAutomatedResolution(ctx.page, ctx, detection);
-      autoAttempts = auto.attempts;
-      if (auto.resolved) {
-        logger.info('captcha:auto-resolved', { jobId: ctx.jobId, stepId: step.id, resolvedBy: auto.resolvedBy, provider: auto.provider });
-        if (auto.token) ctx.runtimeInputs[step.id] = auto.token;
-        await finalizeResolution(eventId, ctx, step, detection, {
-          status: 'resolved', resolvedBy: auto.resolvedBy, provider: auto.provider,
-          attempts: auto.attempts, costUsd: auto.costUsd, durationMs: Date.now() - startedAt,
-        });
-        return;
+      try {
+        const auto = await attemptAutomatedResolution(ctx.page, ctx, detection);
+        autoAttempts = auto.attempts;
+        if (auto.resolved) {
+          logger.info('captcha:auto-resolved', { jobId: ctx.jobId, stepId: step.id, resolvedBy: auto.resolvedBy, provider: auto.provider });
+          if (auto.token) ctx.runtimeInputs[step.id] = auto.token;
+          await finalizeResolution(eventId, ctx, step, detection, {
+            status: 'resolved', resolvedBy: auto.resolvedBy, provider: auto.provider,
+            attempts: auto.attempts, costUsd: auto.costUsd, durationMs: Date.now() - startedAt,
+          });
+          return;
+        }
+        logger.info('captcha:auto-resolve-exhausted', { jobId: ctx.jobId, stepId: step.id, error: auto.error });
+      } catch (err) {
+        logger.warn('captcha:auto-resolve-threw', { jobId: ctx.jobId, stepId: step.id, error: (err as Error).message });
       }
-      logger.info('captcha:auto-resolve-exhausted', { jobId: ctx.jobId, stepId: step.id, error: auto.error });
     }
 
     // Tier 3: human-in-the-loop via the live chat/browser-view pause — the
-    // "live Human-in-the-Loop CAPTCHA interface" for free users, and the
-    // seamless fallback for premium users whose automated solve failed
-    // (or for anything a solver was never meant to touch, like a
-    // security block, OTP, MFA, or login-verification checkpoint).
+    // "live Human-in-the-Loop CAPTCHA interface" for free users (always
+    // reached, since their plan keeps tier 2 closed), and the fallback for
+    // premium users whenever automated solve doesn't succeed — the rare
+    // case, but never a dead end (or for anything a solver was never meant
+    // to touch, like a security block, OTP, MFA, or login-verification
+    // checkpoint).
     const redis = await getRedisClient();
     await ensureNotCancelled(ctx);
 
