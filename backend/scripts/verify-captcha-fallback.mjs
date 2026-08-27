@@ -450,6 +450,162 @@ section('L. checkpoint retained on the workflow after resolution');
   assert(entry?.lastResolvedBy === 'auto' && entry?.successCount === 1, 'checkpoint recorded lastResolvedBy=auto, successCount=1', JSON.stringify(entry));
 }
 
+// ============================================================
+// SCENARIO M — human error + recovery: the real pattern shipped in
+// workflows/uidai/aadhaar-download.json (retryLoop wrapping a nested
+// pauseForUserInput, checking an "Invalid Captcha" DOM condition).
+// First captcha was wrong; the human is asked again; second answer is
+// accepted and the loop exits cleanly. This is the actual recovery
+// mechanism for a wrong human answer — it exists at the *workflow*
+// level, not automatically inside pauseForUserInput itself.
+// ============================================================
+section('M. human got the captcha wrong once — retryLoop asks again, then recovers');
+{
+  const ctx = makeCtx();
+  const pageState = { invalidCaptchaShowing: true };
+  ctx.page = {
+    ...makeMockPage(),
+    locator: (sel) => ({
+      first: () => ({
+        textContent: async () => (pageState.invalidCaptchaShowing ? 'Invalid Captcha, please retry' : ''),
+        screenshot: async () => Buffer.from('fake-jpeg-bytes'),
+        getAttribute: async () => null,
+        boundingBox: async () => ({ x: 0, y: 0, width: 100, height: 30 }),
+      }),
+      count: async () => (sel.includes('Invalid Captcha') && pageState.invalidCaptchaShowing ? 1 : 0),
+    }),
+  };
+
+  const step = {
+    id: 'retry-captcha-loop',
+    action: 'retryLoop',
+    retries: 3,
+    condition: { type: 'exists', target: 'text=/Invalid Captcha/i' },
+    trueSteps: [
+      { id: 'retry-captcha-pause', order: 1, action: 'pauseForUserInput', expectedInput: 'captcha', contextMessage: 'CAPTCHA was incorrect. Please type the NEW CAPTCHA shown.' },
+    ],
+  };
+
+  const handlerPromise = ACTION_HANDLERS.retryLoop(step, ctx);
+  await waitFor(() => pendingKeyExists(ctx.jobId));
+  // The human sees the "invalid, try again" message and submits a fresh
+  // answer — the site (in reality) would now accept it.
+  pageState.invalidCaptchaShowing = false;
+  await redis.publish(`job:resume:${ctx.jobId}`, 'NEWCAPTCHA-CORRECT');
+  await handlerPromise;
+
+  assert(ctx.runtimeInputs['retry-captcha-pause'] === 'NEWCAPTCHA-CORRECT', 'the retry answer reached runtimeInputs under the nested step id');
+  const evt = await getEvent(ctx.jobId, 'retry-captcha-pause');
+  assert(evt?.status === 'resolved' && evt?.resolved_by === 'human_user', 'the retried checkpoint was logged as its own resolved event', `${evt?.status}/${evt?.resolved_by}`);
+}
+
+// ============================================================
+// SCENARIO N — human error, never recovers: the site keeps rejecting
+// the answer (or the human keeps mistyping) until retries are
+// exhausted. Must fail with a clear, bounded error — not hang and not
+// ask the human an unbounded number of times.
+// ============================================================
+section('N. human keeps getting it wrong — retryLoop is bounded, fails clearly, no infinite asking');
+{
+  const ctx = makeCtx();
+  ctx.page = {
+    ...makeMockPage(),
+    locator: (sel) => ({
+      first: () => ({ textContent: async () => 'Invalid Captcha', screenshot: async () => Buffer.from('x'), getAttribute: async () => null, boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }) }),
+      count: async () => (sel.includes('Invalid Captcha') ? 1 : 0), // always "still wrong"
+    }),
+  };
+  const step = {
+    id: 'retry-captcha-loop-fail',
+    action: 'retryLoop',
+    retries: 2,
+    condition: { type: 'exists', target: 'text=/Invalid Captcha/i' },
+    trueSteps: [{ id: 'retry-captcha-pause-fail', order: 1, action: 'pauseForUserInput', expectedInput: 'captcha' }],
+  };
+
+  let askCount = 0;
+  const stop = { flag: false };
+  const keepAnswering = (async () => {
+    while (!stop.flag) {
+      if (await pendingKeyExists(ctx.jobId)) {
+        askCount++;
+        await redis.publish(`job:resume:${ctx.jobId}`, `WRONG-ATTEMPT-${askCount}`);
+        await waitFor(() => pendingKeyExists(ctx.jobId).then((v) => !v), { timeoutMs: 2000 });
+      }
+      await new Promise((r) => setTimeout(r, 30));
+    }
+  })();
+
+  let threw = null;
+  try { await ACTION_HANDLERS.retryLoop(step, ctx); } catch (e) { threw = e; }
+  stop.flag = true;
+  await keepAnswering;
+
+  assert(threw !== null && /Retry loop failed after 2 attempts/.test(String(threw?.message)), 'retryLoop threw a clear, bounded "failed after N attempts" error', threw?.message);
+  assert(askCount === 2, `the human was asked exactly retries (2) times, not unboundedly (asked ${askCount})`, String(askCount));
+}
+
+// ============================================================
+// SCENARIO O — duplicate / late resume message: two answers arrive
+// for the same pause (e.g. a double-tap on "submit", or the end user
+// and an admin both answer). The second must be safely ignored, not
+// double-write the event or crash.
+// ============================================================
+section('O. duplicate resume message — second answer is ignored safely, no double-write');
+{
+  const ctx = makeCtx();
+  ctx.page = makeMockPage();
+  const step = { id: 'dup-answer-step', action: 'pauseForUserInput', expectedInput: 'otp' };
+
+  const handlerPromise = ACTION_HANDLERS.pauseForUserInput(step, ctx);
+  await waitFor(() => pendingKeyExists(ctx.jobId));
+  await redis.publish(`job:resume:${ctx.jobId}`, 'FIRST-ANSWER');
+  await handlerPromise;
+  // A second message on the same channel, arriving after the pause has
+  // already settled (simulates a race between two answerers, or a
+  // retried network request resending the same submit).
+  let secondPublishThrew = null;
+  try { await redis.publish(`job:resume:${ctx.jobId}`, 'SECOND-LATE-ANSWER'); } catch (e) { secondPublishThrew = e; }
+  await new Promise((r) => setTimeout(r, 200)); // give any stray handler a chance to misbehave
+
+  assert(secondPublishThrew === null, 'publishing a second, late answer does not throw or crash anything');
+  assert(ctx.runtimeInputs[step.id] === 'FIRST-ANSWER', 'the first answer is what was kept — the late second one was ignored');
+  const { rows } = await pool.query(`SELECT COUNT(*) AS n FROM human_intervention_events WHERE job_id = $1 AND step_id = $2`, [ctx.jobId, step.id]);
+  assert(Number(rows[0].n) === 1, 'exactly one event row exists — the late duplicate did not create a second one', rows[0].n);
+}
+
+// ============================================================
+// SCENARIO P — sequential multi-checkpoint job (e.g. a login-verification
+// pause immediately followed by a captcha pause on the *same* job):
+// state must not leak between them — separate events, separate
+// runtimeInputs, pending key correctly re-created and re-cleaned.
+// ============================================================
+section('P. two checkpoints back-to-back on the same job — no state leakage');
+{
+  const ctx = makeCtx();
+  ctx.page = makeMockPage();
+
+  const step1 = { id: 'multi-step-1', action: 'pauseForUserInput', expectedInput: 'loginVerification' };
+  const p1 = ACTION_HANDLERS.pauseForUserInput(step1, ctx);
+  await waitFor(() => pendingKeyExists(ctx.jobId));
+  await redis.publish(`job:resume:${ctx.jobId}`, 'LOGIN-OK');
+  await p1;
+  assert(!(await pendingKeyExists(ctx.jobId)), 'first checkpoint cleaned up its pending entry before the second begins');
+
+  ctx.page = makeMockPage({ widget: { detected: true, type: 'image-text', selector: 'img[src*="captcha"], img[alt*="captcha" i], canvas[id*="captcha"]' } });
+  const step2 = { id: 'multi-step-2', action: 'pauseForUserInput', expectedInput: 'captcha' };
+  const p2 = ACTION_HANDLERS.pauseForUserInput(step2, ctx);
+  await waitFor(() => pendingKeyExists(ctx.jobId));
+  await redis.publish(`job:resume:${ctx.jobId}`, 'CAPTCHA-OK');
+  await p2;
+
+  assert(ctx.runtimeInputs['multi-step-1'] === 'LOGIN-OK' && ctx.runtimeInputs['multi-step-2'] === 'CAPTCHA-OK', 'both checkpoints kept their own distinct answers');
+  const evt1 = await getEvent(ctx.jobId, 'multi-step-1');
+  const evt2 = await getEvent(ctx.jobId, 'multi-step-2');
+  assert(evt1?.event_type === 'login_verification' && evt2?.event_type === 'captcha', 'each checkpoint logged its own correct event_type', `${evt1?.event_type}/${evt2?.event_type}`);
+  assert(!(await pendingKeyExists(ctx.jobId)), 'second checkpoint cleaned up too — nothing left dangling for this job');
+}
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n${'═'.repeat(60)}`);
 console.log(`  ${GREEN}Passed: ${passed}${RESET}   ${failed > 0 ? RED : ''}Failed: ${failed}${RESET}`);
