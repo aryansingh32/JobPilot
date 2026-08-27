@@ -394,12 +394,18 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
         RETURNING *
       `, [
+        // trigger_phrases / page_url_patterns / required_inputs / required_files
+        // are TEXT[] columns — the pg driver serializes a plain JS array into
+        // the correct Postgres array literal on its own; JSON.stringify()-ing
+        // them produces a JSON string like ["x"], which Postgres rejects with
+        // "malformed array literal". Only the genuinely JSONB columns below
+        // (starter_action_plan, error_recovery_plan, metadata) need it.
         body.siteId, body.workflowKey, body.category, body.name,
-        body.trigger, JSON.stringify(body.triggerPhrases ?? []),
+        body.trigger, body.triggerPhrases ?? [],
         body.portalType, body.siteSection, body.entryUrl, body.pageUrl,
-        body.pageUrlPattern, JSON.stringify(body.pageUrlPatterns ?? []),
-        JSON.stringify(body.requiredInputs ?? []),
-        JSON.stringify(body.requiredFiles ?? []),
+        body.pageUrlPattern, body.pageUrlPatterns ?? [],
+        body.requiredInputs ?? [],
+        body.requiredFiles ?? [],
         body.instructions, body.defaultProfileName,
         JSON.stringify(starterActionPlan),
         JSON.stringify(body.errorRecoveryPlan ?? []),
@@ -443,7 +449,11 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         is_active: body.isActive, portal_type: body.portalType,
         entry_url: body.entryUrl, page_url: body.pageUrl,
         category: body.category, version: body.version,
-        status: body.status, starter_action_plan: body.starterActionPlan !== undefined ? JSON.stringify(body.starterActionPlan) : undefined
+        status: body.status, starter_action_plan: body.starterActionPlan !== undefined ? JSON.stringify(body.starterActionPlan) : undefined,
+        // TEXT[] columns — pass the plain array, not JSON.stringify(), same
+        // reasoning as the POST /admin/workflows insert above.
+        trigger_phrases: body.triggerPhrases, page_url_patterns: body.pageUrlPatterns,
+        required_inputs: body.requiredInputs, required_files: body.requiredFiles,
       };
       for (const [col, val] of Object.entries(map)) {
         if (val !== undefined) { sets.push(`${col} = $${pi++}`); params.push(val); }
