@@ -50,8 +50,16 @@ async function detectCaptchaWidget(page: Page): Promise<DomSignal> {
         signal: 'g-recaptcha element/iframe present',
       };
     }
-    if (document.querySelector('script[src*="recaptcha/api.js"]')) {
-      return { detected: true, type: 'recaptcha-v3' as const, signal: 'recaptcha/api.js script present' };
+    const rc3Script = document.querySelector('script[src*="recaptcha/api.js"]');
+    if (rc3Script) {
+      const src = rc3Script.getAttribute('src') ?? '';
+      const renderKey = new URL(src, window.location.href).searchParams.get('render');
+      return {
+        detected: true,
+        type: 'recaptcha-v3' as const,
+        sitekey: renderKey && renderKey !== 'explicit' ? renderKey : undefined,
+        signal: 'recaptcha/api.js script present',
+      };
     }
     const hcap = document.querySelector('.h-captcha, iframe[src*="hcaptcha"]');
     if (hcap) {
@@ -63,8 +71,15 @@ async function detectCaptchaWidget(page: Page): Promise<DomSignal> {
         signal: 'h-captcha element/iframe present',
       };
     }
-    if (document.querySelector('.cf-turnstile, iframe[src*="challenges.cloudflare"]')) {
-      return { detected: true, type: 'cloudflare-turnstile' as const, signal: 'cf-turnstile element/iframe present' };
+    const turnstile = document.querySelector('.cf-turnstile, iframe[src*="challenges.cloudflare"]');
+    if (turnstile) {
+      return {
+        detected: true,
+        type: 'cloudflare-turnstile' as const,
+        selector: '.cf-turnstile',
+        sitekey: turnstile.getAttribute('data-sitekey') ?? undefined,
+        signal: 'cf-turnstile element/iframe present',
+      };
     }
     if (document.querySelector('[class*="slider"][class*="captcha"], [id*="slider-captcha"]')) {
       return { detected: true, type: 'slider' as const, signal: 'slider-captcha class/id present' };
