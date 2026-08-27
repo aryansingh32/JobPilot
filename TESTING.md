@@ -39,6 +39,25 @@ node --import tsx --test packages/execution-service/captcha-handler.test.ts
 
 `verify:redis-reconnect` genuinely stops and starts a `redis-server` process on `REDIS_PORT` (default 6379) — don't point it at a shared/production Redis.
 
+### Live end-to-end (real API + worker, real HTTP, real browser)
+
+Unlike the two scripts above, `verify:live-e2e` doesn't import the code directly — it makes real HTTP requests against an already-running API service and worker, so start those first:
+
+```bash
+# Terminal 1
+cd backend && POSTGRES_PASSWORD=changeme node --import tsx packages/api-service/server.ts
+
+# Terminal 2
+cd backend && POSTGRES_PASSWORD=changeme node --import tsx packages/execution-service/worker.ts
+
+# Terminal 3
+cd backend && ADMIN_API_KEY=<whatever seeded it, see backend/.env> node --import tsx scripts/verify-live-e2e.mjs
+```
+
+It covers: real email-OTP login (reading the code back out of the API's dev-fallback console log) and admin login, protected-route gating (401s with no/wrong credentials), a real structured workflow created via the live admin API and executed by a real Playwright browser against a small local test HTTP server this script spins up (navigate/fill/select/check/extractData/click/assertText/download/screenshot — a real form submission and a real file download, verified against the actual bytes the server sent), and 4 of those jobs fired concurrently to confirm the circuit breaker doesn't spuriously trip under real concurrent load.
+
+If you're on this sandbox-style environment and hit `browserType.launch: Executable doesn't exist` when running the API/worker bare-metal (rather than via `./start.sh`'s Docker path), set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` in `backend/.env` to a Chromium binary you do have — this is an intentional opt-in override, not a workaround for anything a normal `npm install && npx playwright install` setup would hit.
+
 If you only changed frontend code, the equivalent is:
 
 ```bash

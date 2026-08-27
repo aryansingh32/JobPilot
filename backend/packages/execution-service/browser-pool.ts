@@ -239,8 +239,14 @@ export class BrowserPool extends EventEmitter {
   // ─── Internal Browser Management ────────────────────────────
 
   private async spawnBrowser(): Promise<PooledBrowser> {
+    // Opt-in override for a specific Chromium binary (a pinned system
+    // Chrome, or a browser cached at a path that doesn't match this
+    // Playwright version's expected download) — unset by default, so
+    // normal deployments keep using Playwright's own bundled browser.
+    const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
     const browser = await chromium.launch({
       headless: true,
+      executablePath,
       args: [...STEALTH_ARGS, ...(this.config.launchArgs ?? [])],
     });
 

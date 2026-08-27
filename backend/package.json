@@ -30,6 +30,7 @@
     "validate:backend": "node --import tsx scripts/validate-backend.mjs",
     "verify:captcha-fallback": "node --import tsx scripts/verify-captcha-fallback.mjs",
     "verify:redis-reconnect": "node --import tsx scripts/verify-redis-reconnect.mjs",
+    "verify:live-e2e": "node --import tsx scripts/verify-live-e2e.mjs",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf packages/*/dist tsconfig.tsbuildinfo"
   },
