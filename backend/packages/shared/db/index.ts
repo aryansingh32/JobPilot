@@ -58,17 +58,47 @@ export async function withTransaction<T>(
 
 let redisClient: RedisClientType | null = null;
 
+// Exported so every duplicated client (subRedis instances used for the
+// captcha/human-verification pause/resume pub-sub in executor.ts, and
+// anywhere else that calls redis.duplicate()) gets the exact same
+// reconnect behavior — a live pause must survive a Redis blip, not die
+// silently because its subscriber connection gave up.
+export function redisReconnectStrategy(retries: number): number | Error {
+  const MAX_RETRIES = parseInt(process.env.REDIS_MAX_RECONNECT_RETRIES ?? '50', 10);
+  if (retries > MAX_RETRIES) {
+    logger.error('redis:reconnect-exhausted', { retries, maxRetries: MAX_RETRIES });
+    return new Error(`Redis reconnection abandoned after ${retries} attempts`);
+  }
+  // Capped exponential backoff: 100ms, 200ms, 400ms... up to 5s, so a
+  // brief blip reconnects almost immediately and a longer outage doesn't
+  // hammer the server.
+  const delayMs = Math.min(100 * 2 ** Math.min(retries, 6), 5000);
+  logger.warn('redis:reconnecting', { retries, delayMs });
+  return delayMs;
+}
+
+export function getRedisUrl(): string {
+  const password = process.env.REDIS_PASSWORD;
+  return password
+    ? `redis://:${password}@${process.env.REDIS_HOST ?? 'localhost'}:${process.env.REDIS_PORT ?? '6379'}`
+    : `redis://${process.env.REDIS_HOST ?? 'localhost'}:${process.env.REDIS_PORT ?? '6379'}`;
+}
+
 export async function getRedisClient(): Promise<RedisClientType> {
   if (!redisClient) {
-    const password = process.env.REDIS_PASSWORD;
-    const url = password
-      ? `redis://:${password}@${process.env.REDIS_HOST ?? 'localhost'}:${process.env.REDIS_PORT ?? '6379'}`
-      : `redis://${process.env.REDIS_HOST ?? 'localhost'}:${process.env.REDIS_PORT ?? '6379'}`;
-
-    redisClient = createClient({ url }) as RedisClientType;
+    redisClient = createClient({
+      url: getRedisUrl(),
+      socket: { reconnectStrategy: redisReconnectStrategy },
+    }) as RedisClientType;
 
     redisClient.on('error', (err: Error) => {
       logger.error('redis:client-error', err);
+    });
+    redisClient.on('reconnecting', () => {
+      logger.warn('redis:socket-reconnecting');
+    });
+    redisClient.on('ready', () => {
+      logger.info('redis:ready');
     });
 
     await redisClient.connect();

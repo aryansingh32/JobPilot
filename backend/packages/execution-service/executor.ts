@@ -377,6 +377,9 @@ const handlePaymentStep: ActionHandler = async (step, ctx) => {
 
   await new Promise<void>((resolve, reject) => {
     const subRedis = redis.duplicate();
+    // A Redis blip on this subscriber must never crash the process — an
+    // unhandled 'error' event on any EventEmitter is fatal in Node.
+    subRedis.on('error', (err) => logger.warn('redis:sub-client-error', { jobId: ctx.jobId, stepId: step.id, error: (err as Error).message }));
     const idleTimeoutMs = step.timeout || 5 * 60 * 1000; // 5 minutes for payments
     let settled = false;
 
@@ -714,6 +717,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
     return new Promise<void>((resolve, reject) => {
       const subRedis = redis.duplicate();
+      subRedis.on('error', (err) => logger.warn('redis:sub-client-error', { jobId: ctx.jobId, stepId: step.id, error: (err as Error).message }));
       let settled = false;
 
       subRedis.connect().then(() => {
@@ -920,6 +924,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
     return new Promise<void>((resolve, reject) => {
       const subRedis = redis.duplicate();
+      subRedis.on('error', (err) => logger.warn('redis:sub-client-error', { jobId: ctx.jobId, stepId: step.id, error: (err as Error).message }));
       const idleTimer = setTimeout(async () => {
         await finalizeResolution(eventId, ctx, step, detection, {
           status: 'timeout', resolvedBy: 'failed', attempts: 0, durationMs: Date.now() - startedAt, error: 'idle timeout',
@@ -993,6 +998,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
       plainText = await new Promise<string>((resolve, reject) => {
         const subRedis = redis.duplicate();
+        subRedis.on('error', (err) => logger.warn('redis:sub-client-error', { jobId: ctx.jobId, stepId: step.id, error: (err as Error).message }));
         const idleTimeoutMs = step.timeout || 3 * 60 * 1000;
         let settled = false;
 
