@@ -180,6 +180,12 @@ function buildCallbacks(emitter: BotEmitter) {
   return {
     onChatReceive: (message: string) => {
       emitter.setTyping(false);
+      // chat:receive is the backend's terminal "bot replied, nothing else
+      // pending" signal for a plain (non-job, non-pause) turn — without
+      // this the composer stayed disabled ("Agent is working…") for the
+      // full 30s failsafe timeout in routes/index.tsx after every message,
+      // even though the reply had already rendered.
+      emitter.setBusy(false);
       emitter.pushMessage({
         id: uid(),
         role: "bot" as const,

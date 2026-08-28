@@ -17,6 +17,7 @@ import { listAllProviders } from '../execution-service/captcha/provider-registry
 import { canUsePaidProvider } from '../execution-service/captcha/plan-gate.js';
 import { register as promRegister } from 'prom-client';
 import { createLogger } from '../shared/logger/index.js';
+import { parsePagination, parseListLimit } from '../shared/pagination.js';
 import { adminAuth } from './admin-auth.js';
 import os from 'os';
 import fs from 'fs';
@@ -167,7 +168,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     if (to)     { conditions.push(`started_at <= $${pi++}`); params.push(new Date(to)); }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    params.push(parseInt(limit), parseInt(offset));
+    const { limit: safeLimit, offset: safeOffset } = parsePagination({ limit, offset });
+    params.push(safeLimit, safeOffset);
 
     try {
       const { rows } = await pool.query(
@@ -281,7 +283,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Users / Sessions ────────────────────────────────────
   app.get('/admin/users', { preHandler: adminAuth }, async (req, reply) => {
-    const { limit = '100', offset = '0' } = req.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(req.query as { limit?: string; offset?: string }, { limit: 100, maxLimit: 500 });
     const pool = getPgPool();
     try {
       // Derive users from memory profiles and job_logs (no auth users table yet)
@@ -297,7 +299,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         GROUP BY user_id
         ORDER BY last_active DESC
         LIMIT $1 OFFSET $2
-      `, [parseInt(limit), parseInt(offset)]);
+      `, [limit, offset]);
 
       const countRes = await pool.query(`SELECT COUNT(DISTINCT user_id) FROM job_logs`);
       return reply.send({ users: rows, total: Number(countRes.rows[0].count) });
@@ -334,7 +336,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   // ── User Prompts / Chat History ─────────────────────────
   app.get('/admin/users/:userId/prompts', { preHandler: adminAuth }, async (req, reply) => {
     const { userId } = req.params as { userId: string };
-    const { limit = '50', offset = '0' } = req.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(req.query as { limit?: string; offset?: string });
     const pool = getPgPool();
     try {
       const { rows } = await pool.query(`
@@ -343,7 +345,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         WHERE user_id = $1
         ORDER BY started_at DESC
         LIMIT $2 OFFSET $3
-      `, [userId, parseInt(limit), parseInt(offset)]);
+      `, [userId, limit, offset]);
       return reply.send({ prompts: rows });
     } catch {
       return reply.status(500).send({ error: 'Failed to fetch prompts' });
@@ -352,7 +354,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Workflows CRUD ──────────────────────────────────────
   app.get('/admin/workflows', { preHandler: adminAuth }, async (req, reply) => {
-    const { siteId, isActive, limit = '100', offset = '0' } = req.query as {
+    const { siteId, isActive, limit, offset } = req.query as {
       siteId?: string; isActive?: string; limit?: string; offset?: string;
     };
     const pool = getPgPool();
@@ -362,7 +364,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     if (siteId)   { conditions.push(`site_id = $${pi++}`); params.push(siteId); }
     if (isActive !== undefined) { conditions.push(`is_active = $${pi++}`); params.push(isActive === 'true'); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    params.push(parseInt(limit), parseInt(offset));
+    const safePage = parsePagination({ limit, offset }, { limit: 100, maxLimit: 500 });
+    params.push(safePage.limit, safePage.offset);
     try {
       const { rows } = await pool.query(
         `SELECT * FROM site_workflows ${where} ORDER BY created_at DESC LIMIT $${pi} OFFSET $${pi+1}`,
@@ -900,11 +903,12 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Log Tail (last N lines from Redis log stream) ───────
   app.get('/admin/logs', { preHandler: adminAuth }, async (req, reply) => {
-    const { service = 'api', limit = '200' } = req.query as { service?: string; limit?: string };
+    const { service = 'api', limit } = req.query as { service?: string; limit?: string };
     try {
       const redis = await getRedisClient();
       const key = `logs:${service}`;
-      const raw = await redis.lRange(key, -parseInt(limit), -1).catch(() => [] as string[]);
+      const safeLimit = parseListLimit(limit, 200);
+      const raw = await redis.lRange(key, -safeLimit, -1).catch(() => [] as string[]);
       const entries = raw.map((r) => { try { return JSON.parse(r); } catch { return { msg: r }; } });
       return reply.send({ service, entries: entries.reverse() });
     } catch (e: any) {
@@ -934,10 +938,11 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Error Tracker ───────────────────────────────────────
   app.get('/admin/errors', { preHandler: adminAuth }, async (req, reply) => {
-    const { limit = '100' } = req.query as { limit?: string };
+    const { limit } = req.query as { limit?: string };
     try {
       const redis = await getRedisClient();
-      const raw = await redis.lRange('logs:errors', -parseInt(limit), -1).catch(() => [] as string[]);
+      const safeLimit = parseListLimit(limit, 100);
+      const raw = await redis.lRange('logs:errors', -safeLimit, -1).catch(() => [] as string[]);
       const entries = raw.map((r) => { try { return JSON.parse(r); } catch { return { msg: r }; } });
       return reply.send({ errors: entries.reverse() });
     } catch (e: any) {
@@ -947,12 +952,12 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Sites ───────────────────────────────────────────────
   app.get('/admin/sites', { preHandler: adminAuth }, async (req, reply) => {
-    const { limit = '100', offset = '0' } = req.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(req.query as { limit?: string; offset?: string }, { limit: 100, maxLimit: 500 });
     const pool = getPgPool();
     try {
       const { rows } = await pool.query(
         `SELECT id, domain, page_count, status, created_at, updated_at FROM sites ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-        [parseInt(limit), parseInt(offset)]
+        [limit, offset]
       );
       const countRes = await pool.query(`SELECT COUNT(*) FROM sites`);
       return reply.send({ sites: rows, total: Number(countRes.rows[0].count) });

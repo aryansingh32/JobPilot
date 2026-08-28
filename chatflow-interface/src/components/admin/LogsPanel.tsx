@@ -154,7 +154,7 @@ export function ErrorsPanel() {
                   <button
                     type="button"
                     className="flex w-full items-start justify-between gap-2 text-left"
-                    onClick={() => setOpen(open ? null : e.id)}
+                    onClick={() => setOpenId(open ? null : e.id)}
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">

@@ -117,6 +117,10 @@ export interface AdminWorkflow {
   version?: number;
   created_at: string;
   updated_at: string;
+  // Write-only on create/update — the backend reads these off the POST/PUT
+  // body (see admin-routes.ts) but doesn't echo them back on read shapes.
+  starterActionPlan?: unknown[];
+  errorRecoveryPlan?: unknown[];
 }
 
 export interface AdminZeroShotRun {

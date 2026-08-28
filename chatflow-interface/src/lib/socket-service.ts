@@ -117,9 +117,10 @@ class SocketService {
       this._connected = true;
       logger.info("socket:connected", { socketId: this.socket?.id, apiBaseUrl: config.apiBaseUrl });
 
-      // Join the user's rooms
+      // Join the user's rooms. userId isn't sent here — the server derives
+      // it from the httpOnly session cookie (withCredentials above), not
+      // from anything the client claims.
       this.socket?.emit("join", {
-        userId: config.userId,
         sessionId,
         activeJobId: this._activeJobId ?? undefined,
       });

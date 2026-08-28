@@ -5,6 +5,7 @@
 import { createHash } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createLogger } from '../shared/logger/index.js';
+import { parseListLimit } from '../shared/pagination.js';
 import { adminAuth } from './admin-auth.js';
 import {
   ingestClientEvents,
@@ -46,9 +47,9 @@ export async function registerObservabilityAdminRoutes(app: FastifyInstance): Pr
   });
 
   app.get('/admin/observability/sessions', { preHandler: adminAuth }, async (req, reply) => {
-    const { limit = '50' } = req.query as { limit?: string };
+    const { limit } = req.query as { limit?: string };
     try {
-      const sessions = await listRecentSessions(parseInt(limit, 10) || 50);
+      const sessions = await listRecentSessions(parseListLimit(limit, 50));
       return reply.send({ sessions });
     } catch {
       return reply.status(500).send({ error: 'failed' });
@@ -60,9 +61,9 @@ export async function registerObservabilityAdminRoutes(app: FastifyInstance): Pr
     { preHandler: adminAuth },
     async (req, reply) => {
       const { sessionId } = req.params as { sessionId: string };
-      const { limit = '500' } = req.query as { limit?: string };
+      const { limit } = req.query as { limit?: string };
       try {
-        const timeline = await getSessionTimeline(sessionId, parseInt(limit, 10) || 500);
+        const timeline = await getSessionTimeline(sessionId, parseListLimit(limit, 500));
         return reply.send({ sessionId, events: timeline });
       } catch {
         return reply.status(500).send({ error: 'failed' });
@@ -71,9 +72,9 @@ export async function registerObservabilityAdminRoutes(app: FastifyInstance): Pr
   );
 
   app.get('/admin/observability/errors', { preHandler: adminAuth }, async (req, reply) => {
-    const { limit = '100' } = req.query as { limit?: string };
+    const { limit } = req.query as { limit?: string };
     try {
-      const errors = await listErrorReports(parseInt(limit, 10) || 100);
+      const errors = await listErrorReports(parseListLimit(limit, 100));
       return reply.send({ errors });
     } catch {
       return reply.status(500).send({ error: 'failed' });

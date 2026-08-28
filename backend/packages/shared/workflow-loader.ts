@@ -226,7 +226,10 @@ export class WorkflowLoader {
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           await walk(fullPath);
-        } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        } else if (entry.isFile() && entry.name.endsWith('.json') && entry.name !== 'site.json') {
+          // site.json is a per-category manifest (name/domain/workflow list), not a
+          // workflow definition — every category directory has one, and it will
+          // never satisfy normalizeWorkflow's required fields.
           files.push(fullPath);
         }
       }
