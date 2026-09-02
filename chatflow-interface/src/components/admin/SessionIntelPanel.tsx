@@ -38,10 +38,14 @@ export function SessionIntelPanel() {
   return (
     <div className="grid gap-4 lg:grid-cols-2" style={{ minHeight: "calc(100vh - 180px)" }}>
       <div className="flex flex-col rounded-2xl border border-border/40 bg-card/30">
-        <div className="border-b border-border/30 px-4 py-3 text-sm font-medium">Sessions (client + server events)</div>
+        <div className="border-b border-border/30 px-4 py-3 text-sm font-medium">
+          Sessions (client + server events)
+        </div>
         <div className="flex-1 overflow-y-auto scroll-thin">
           {!sessions.length ? (
-            <p className="p-4 text-sm text-muted-foreground">No session telemetry yet — browse the app to ingest events.</p>
+            <p className="p-4 text-sm text-muted-foreground">
+              No session telemetry yet — browse the app to ingest events.
+            </p>
           ) : (
             sessions.map((s) => (
               <button
@@ -75,7 +79,9 @@ export function SessionIntelPanel() {
         </div>
         <div className="flex-1 overflow-y-auto p-3 scroll-thin">
           {!selected ? (
-            <p className="text-sm text-muted-foreground">Select a session to replay its timeline.</p>
+            <p className="text-sm text-muted-foreground">
+              Select a session to replay its timeline.
+            </p>
           ) : !timeline.length ? (
             <p className="text-sm text-muted-foreground">No events for this session.</p>
           ) : (
@@ -99,7 +105,9 @@ export function SessionIntelPanel() {
                         {ev.ts ? new Date(ev.ts as string).toLocaleTimeString() : ""}
                       </span>
                     </button>
-                    {ev.route ? <div className="mt-1 text-[10px] text-primary/80">{String(ev.route)}</div> : null}
+                    {ev.route ? (
+                      <div className="mt-1 text-[10px] text-primary/80">{String(ev.route)}</div>
+                    ) : null}
                     {open ? (
                       <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-black/40 p-2 text-[10px] text-zinc-200">
                         {JSON.stringify(ev.payload ?? {}, null, 2)}

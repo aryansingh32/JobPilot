@@ -180,6 +180,7 @@ function buildCallbacks(emitter: BotEmitter) {
   return {
     onChatReceive: (message: string) => {
       emitter.setTyping(false);
+      emitter.setBusy(false);
       emitter.pushMessage({
         id: uid(),
         role: "bot" as const,
@@ -292,6 +293,8 @@ function buildCallbacks(emitter: BotEmitter) {
 
     onError: (error: Error) => {
       logger.error("socket:error", error);
+      emitter.setTyping(false);
+      emitter.setBusy(false);
     },
   };
 }

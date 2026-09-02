@@ -226,7 +226,7 @@ export class WorkflowLoader {
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           await walk(fullPath);
-        } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        } else if (entry.isFile() && entry.name.endsWith('.json') && entry.name !== 'site.json') {
           files.push(fullPath);
         }
       }

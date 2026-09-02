@@ -146,4 +146,3 @@ export function Composer({ onSend, busy, onStop }: Props) {
     </div>
   );
 }
-

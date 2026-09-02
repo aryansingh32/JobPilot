@@ -41,7 +41,9 @@ export function LogsPanel() {
     if (autoRefresh) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [entries, autoRefresh]);
 
-  const filtered = filter ? entries.filter((e) => JSON.stringify(e).toLowerCase().includes(filter.toLowerCase())) : entries;
+  const filtered = filter
+    ? entries.filter((e) => JSON.stringify(e).toLowerCase().includes(filter.toLowerCase()))
+    : entries;
 
   return (
     <div className="flex flex-col gap-4" style={{ height: "calc(100vh - 160px)" }}>
@@ -52,7 +54,9 @@ export function LogsPanel() {
               key={s}
               onClick={() => setService(s)}
               className={`rounded-lg px-3 py-1.5 text-xs font-medium transition capitalize ${
-                service === s ? "bg-primary/20 text-primary border border-primary/40" : "bg-card/60 text-muted-foreground border border-border/40"
+                service === s
+                  ? "bg-primary/20 text-primary border border-primary/40"
+                  : "bg-card/60 text-muted-foreground border border-border/40"
               }`}
             >
               {s}
@@ -65,9 +69,16 @@ export function LogsPanel() {
           placeholder="Filter…"
           className="rounded-xl border border-border/50 bg-card/60 px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/60 focus:outline-none w-40"
         />
-        <label className="flex items-center gap-2 cursor-pointer" onClick={() => setAutoRefresh((v) => !v)}>
-          <div className={`relative h-5 w-9 rounded-full transition-colors ${autoRefresh ? "bg-primary" : "bg-zinc-700"}`}>
-            <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${autoRefresh ? "translate-x-4" : "translate-x-0.5"}`} />
+        <label
+          className="flex items-center gap-2 cursor-pointer"
+          onClick={() => setAutoRefresh((v) => !v)}
+        >
+          <div
+            className={`relative h-5 w-9 rounded-full transition-colors ${autoRefresh ? "bg-primary" : "bg-zinc-700"}`}
+          >
+            <div
+              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${autoRefresh ? "translate-x-4" : "translate-x-0.5"}`}
+            />
           </div>
           <span className="text-xs text-muted-foreground">Live</span>
         </label>
@@ -82,13 +93,18 @@ export function LogsPanel() {
         ) : (
           filtered.map((entry, i) => {
             const level = String(entry.level ?? "").toLowerCase();
-            const cls = Object.entries(LOG_LEVELS).find(([k]) => level.includes(k))?.[1] ?? "text-zinc-300";
-            const ts = entry.timestamp ? new Date(entry.timestamp as string).toLocaleTimeString() : "";
+            const cls =
+              Object.entries(LOG_LEVELS).find(([k]) => level.includes(k))?.[1] ?? "text-zinc-300";
+            const ts = entry.timestamp
+              ? new Date(entry.timestamp as string).toLocaleTimeString()
+              : "";
             const msg = String(entry.message ?? entry.msg ?? JSON.stringify(entry));
             return (
               <div key={i} className="flex gap-2 py-0.5 hover:bg-white/5 rounded">
                 <span className="shrink-0 text-zinc-600 w-20">{ts}</span>
-                <span className={`shrink-0 w-12 uppercase ${cls}`}>{level.slice(0, 5) || "LOG"}</span>
+                <span className={`shrink-0 w-12 uppercase ${cls}`}>
+                  {level.slice(0, 5) || "LOG"}
+                </span>
                 <span className="text-zinc-300 break-all">{msg.slice(0, 300)}</span>
               </div>
             );
@@ -150,22 +166,33 @@ export function ErrorsPanel() {
             {dbErrors.map((e) => {
               const open = openId === e.id;
               return (
-                <div key={e.id} className="rounded-xl border border-rose-500/25 bg-gradient-to-r from-rose-950/30 to-transparent px-4 py-3">
+                <div
+                  key={e.id}
+                  className="rounded-xl border border-rose-500/25 bg-gradient-to-r from-rose-950/30 to-transparent px-4 py-3"
+                >
                   <button
                     type="button"
                     className="flex w-full items-start justify-between gap-2 text-left"
-                    onClick={() => setOpen(open ? null : e.id)}
+                    onClick={() => setOpenId(open ? null : e.id)}
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        {open ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                        {open ? (
+                          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        )}
                         <span className="text-sm text-rose-100">{e.message.slice(0, 220)}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
                         <span className="font-mono">id {e.id.slice(0, 8)}…</span>
                         {e.http_status != null ? <span>HTTP {e.http_status}</span> : null}
                         {e.route ? <span className="truncate">{e.route}</span> : null}
-                        {e.trace_id ? <span className="font-mono">trace {String(e.trace_id).slice(0, 12)}…</span> : null}
+                        {e.trace_id ? (
+                          <span className="font-mono">
+                            trace {String(e.trace_id).slice(0, 12)}…
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1">
@@ -200,7 +227,7 @@ export function ErrorsPanel() {
                           session_id: e.session_id,
                         },
                         null,
-                        2
+                        2,
                       )}
                     </pre>
                   ) : null}
@@ -217,10 +244,15 @@ export function ErrorsPanel() {
           Redis error stream (legacy tail)
         </div>
         {!redisErrors.length ? (
-          <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 py-6 text-center text-sm text-emerald-400">✓ No tail entries</div>
+          <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 py-6 text-center text-sm text-emerald-400">
+            ✓ No tail entries
+          </div>
         ) : (
           redisErrors.map((err, i) => (
-            <div key={i} className="mb-2 rounded-lg border border-border/30 bg-card/20 px-3 py-2 font-mono text-[11px] text-zinc-300">
+            <div
+              key={i}
+              className="mb-2 rounded-lg border border-border/30 bg-card/20 px-3 py-2 font-mono text-[11px] text-zinc-300"
+            >
               {String(err.message ?? err.msg ?? JSON.stringify(err))}
             </div>
           ))
