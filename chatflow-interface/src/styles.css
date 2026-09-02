@@ -43,7 +43,40 @@
 
 :root {
   --radius: 0.875rem;
-  /* Dark mode by default per spec — true black, zero chroma, single blue accent */
+  /* Light theme — warm-neutral, zero chroma, single blue accent (default) */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.17 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.17 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.17 0 0);
+  --primary: oklch(0.5 0.1 258);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.95 0 0);
+  --secondary-foreground: oklch(0.17 0 0);
+  --muted: oklch(0.96 0 0);
+  --muted-foreground: oklch(0.47 0 0);
+  --accent: oklch(0.95 0 0);
+  --accent-foreground: oklch(0.17 0 0);
+  --destructive: oklch(0.58 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --success: oklch(0.5 0.1 258);
+  --success-foreground: oklch(0.98 0 0);
+  --warning: oklch(0.7 0.17 75);
+  --warning-foreground: oklch(0.2 0.04 75);
+  --border: oklch(0.9 0 0);
+  --input: oklch(0.9 0 0);
+  --ring: oklch(0.5 0.1 258);
+  --sidebar: oklch(0.97 0 0);
+  --sidebar-foreground: oklch(0.17 0 0);
+  --sidebar-accent: oklch(0.93 0 0);
+  --sidebar-border: oklch(0.89 0 0);
+  --bubble-user: oklch(0.94 0 0);
+  --bubble-user-foreground: oklch(0.17 0 0);
+}
+
+.dark {
+  /* Dark theme — true black, zero chroma, single blue accent */
   --background: oklch(0.09 0 0);
   --foreground: oklch(0.98 0 0);
   --card: oklch(0.14 0 0);
@@ -56,7 +89,7 @@
   --secondary-foreground: oklch(0.98 0 0);
   --muted: oklch(0.18 0 0);
   --muted-foreground: oklch(0.65 0 0);
-  --accent: oklch(0.20 0 0);
+  --accent: oklch(0.2 0 0);
   --accent-foreground: oklch(0.98 0 0);
   --destructive: oklch(0.62 0.22 25);
   --destructive-foreground: oklch(0.98 0 0);
@@ -64,13 +97,13 @@
   --success-foreground: oklch(0.98 0 0);
   --warning: oklch(0.78 0.16 75);
   --warning-foreground: oklch(0.2 0.04 75);
-  --border: oklch(0.20 0 0);
-  --input: oklch(0.20 0 0);
+  --border: oklch(0.2 0 0);
+  --input: oklch(0.2 0 0);
   --ring: oklch(0.56 0.09 258);
   --sidebar: oklch(0.12 0 0);
   --sidebar-foreground: oklch(0.98 0 0);
   --sidebar-accent: oklch(0.18 0 0);
-  --sidebar-border: oklch(0.20 0 0);
+  --sidebar-border: oklch(0.2 0 0);
   --bubble-user: oklch(0.22 0 0);
   --bubble-user-foreground: oklch(0.98 0 0);
 }
@@ -87,6 +120,9 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    transition:
+      background-color 0.15s ease,
+      color 0.15s ease;
     font-family:
       "Inter",
       ui-sans-serif,

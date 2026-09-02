@@ -29,14 +29,18 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
-      <div className="flex animate-in justify-end px-4 py-2 fade-in-0 slide-in-from-bottom-1 duration-300">
-        <div className="max-w-[78%]">
-          {msg.type === "text" && (
-            <div className="rounded-2xl rounded-br-md bg-bubble-user px-4 py-2.5 text-sm text-bubble-user-foreground">
-              {(msg as TextMessage).content}
-            </div>
-          )}
-          {msg.type === "file-upload" && <UserFileBubble msg={msg as FileMessage} />}
+      <div className="animate-in px-4 py-2 fade-in-0 slide-in-from-bottom-1 duration-300">
+        {/* Same centered column as the bot's reply below, so the user's
+            bubble hugs the column's right edge instead of the viewport's. */}
+        <div className="mx-auto flex max-w-3xl justify-end">
+          <div className="max-w-[85%] sm:max-w-[75%]">
+            {msg.type === "text" && (
+              <div className="rounded-2xl rounded-br-md bg-bubble-user px-4 py-2.5 text-[15px] leading-relaxed text-bubble-user-foreground shadow-sm">
+                {(msg as TextMessage).content}
+              </div>
+            )}
+            {msg.type === "file-upload" && <UserFileBubble msg={msg as FileMessage} />}
+          </div>
         </div>
       </div>
     );
@@ -46,10 +50,10 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
   return (
     <div className="animate-in px-4 py-3 fade-in-0 slide-in-from-bottom-1 duration-300">
       <div className="mx-auto flex max-w-3xl gap-3">
-        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-primary/15 text-primary text-[11px] font-bold">
+        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-[11px] font-bold">
           A
         </div>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 pt-0.5">
           {msg.type === "text" && <BotText msg={msg as TextMessage} />}
           {msg.type === "timeline" && <Timeline msg={msg as TimelineMessage} />}
           {msg.type === "input-card" && <InputCard msg={msg as InputCardMessage} />}
@@ -267,14 +271,13 @@ export function TypingIndicator() {
   return (
     <div className="px-4 py-3">
       <div className="mx-auto flex max-w-3xl gap-3">
-        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-primary/15 text-primary text-[11px] font-bold animate-pulse">
+        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-[11px] font-bold animate-pulse">
           A
         </div>
-        <div className="flex items-center gap-2 pt-1">
-          <div className="h-4 w-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
-          <span className="text-sm font-medium text-muted-foreground animate-pulse">
-            Thinking...
-          </span>
+        <div className="flex items-center gap-1.5 pt-2.5">
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+          <span className="typing-dot" />
         </div>
       </div>
     </div>
