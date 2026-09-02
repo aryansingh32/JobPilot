@@ -26,7 +26,7 @@ Respond with a JSON object containing a 'steps' array of generalized steps, keep
       response_format: { type: 'json_object' }
     });
 
-    const content = response.choices[0]?.message?.content;
+    const content = response.choices?.[0]?.message?.content;
     if (!content) throw new Error('No response from LLM');
 
     const result = JSON.parse(content);

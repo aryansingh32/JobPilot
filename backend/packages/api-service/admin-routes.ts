@@ -151,6 +151,44 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── All Jobs (paginated) ────────────────────────────────
+  // A job only gets an `job_logs` row once it reaches a terminal state (see
+  // executor.ts logResult / worker.ts logUnhandledExecutionFailure) — until
+  // then its only record is the `job-runtime:<id>` Redis key the worker
+  // updates as it progresses. Queued/running/paused jobs therefore have to
+  // be read from there, not Postgres.
+  const IN_FLIGHT_STATUSES = new Set(['queued', 'running', 'paused']);
+
+  async function listInFlightJobs(status?: string, userId?: string) {
+    if (status && !IN_FLIGHT_STATUSES.has(status)) return [];
+    const redis = await getRedisClient();
+    const keys: string[] = [];
+    for await (const key of redis.scanIterator({ MATCH: 'job-runtime:*', COUNT: 200 })) {
+      keys.push(key as unknown as string);
+    }
+    if (!keys.length) return [];
+    const raw = await Promise.all(keys.map((k) => redis.get(k).catch(() => null)));
+    return raw
+      .map((r) => { try { return r ? JSON.parse(r) : null; } catch { return null; } })
+      .filter((r): r is Record<string, any> => !!r && IN_FLIGHT_STATUSES.has(r.status))
+      .filter((r) => !status || r.status === status)
+      .filter((r) => !userId || r.userId === userId)
+      .map((r) => ({
+        job_id: r.jobId,
+        user_id: r.userId,
+        session_id: r.sessionId,
+        type: 'execute',
+        site_id: r.siteId,
+        status: r.status,
+        started_at: r.createdAt,
+        completed_at: null,
+        success: null,
+        error: r.error ?? null,
+        task: r.task ?? null,
+        result: null,
+      }))
+      .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
+  }
+
   app.get('/admin/jobs', { preHandler: adminAuth }, async (req, reply) => {
     const { status, userId, limit = '50', offset = '0', from, to } = req.query as {
       status?: string; userId?: string; limit?: string; offset?: string; from?: string; to?: string;
@@ -167,18 +205,29 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     if (to)     { conditions.push(`started_at <= $${pi++}`); params.push(new Date(to)); }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    params.push(parseInt(limit), parseInt(offset));
+    const limitNum = parseInt(limit);
+    const offsetNum = parseInt(offset);
 
     try {
+      // In-flight jobs are surfaced on the first page only — they're
+      // re-fetched every poll (see JobsPanel's 10s interval) so they don't
+      // need stable offset-based pagination the way historical rows do.
+      const inFlight = offsetNum === 0 ? await listInFlightJobs(status, userId) : [];
+
       const { rows } = await pool.query(
-        `SELECT *, ${JOB_ERROR_SQL} FROM job_logs ${where} ORDER BY started_at DESC LIMIT $${pi} OFFSET $${pi+1}`,
-        params
+        `SELECT *, ${JOB_ERROR_SQL} FROM job_logs ${where} ORDER BY started_at DESC LIMIT $${pi} OFFSET $${pi + 1}`,
+        [...params, limitNum, offsetNum]
       );
-      const countRes = await pool.query(
-        `SELECT COUNT(*) FROM job_logs ${where}`,
-        params.slice(0, -2)
-      );
-      return reply.send({ jobs: rows, total: Number(countRes.rows[0].count) });
+      const countRes = await pool.query(`SELECT COUNT(*) FROM job_logs ${where}`, params);
+
+      const historicalIds = new Set(rows.map((r: any) => r.job_id));
+      const dedupedInFlight = inFlight.filter((j) => !historicalIds.has(j.job_id));
+      const jobs = [...dedupedInFlight, ...rows].slice(0, limitNum);
+
+      return reply.send({
+        jobs,
+        total: Number(countRes.rows[0].count) + dedupedInFlight.length,
+      });
     } catch (e) {
       logger.error('admin:jobs-query-failed', e);
       return reply.status(500).send({ error: 'Failed to fetch jobs' });

@@ -40,9 +40,9 @@ export function BrowsersPanel() {
     setTimeout(() => setFlushing(false), 1500);
   };
 
-  const total = stats?.totalBrowsers ?? 0;
-  const active = stats?.activeLeasesCount ?? 0;
-  const contexts = stats?.totalContexts ?? 0;
+  const total = stats?.browsers ?? 0;
+  const active = stats?.activeContexts ?? 0;
+  const contexts = stats?.activeContexts ?? 0;
 
   return (
     <div className="space-y-6">
@@ -81,7 +81,7 @@ export function BrowsersPanel() {
         </p>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {Object.entries(stats)
-            .filter(([k]) => !["totalBrowsers", "activeLeasesCount", "totalContexts"].includes(k))
+            .filter(([k]) => !["browsers", "activeContexts"].includes(k))
             .map(([key, val]) => (
               <div key={key} className="rounded-xl border border-border/30 bg-card/60 px-3 py-2.5">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider">

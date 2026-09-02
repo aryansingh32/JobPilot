@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Play, Square, Save, ArrowRight, ShieldAlert, FlaskConical } from "lucide-react";
+import { Play, Square, Save, ArrowRight, ShieldAlert, FlaskConical, MousePointerClick } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
 import { config, apiOriginForSockets } from "@/lib/config";
 import type { AdminWorkflow } from "@/lib/admin-api";
 import { toast } from "sonner";
+
+const QUICK_KEYS = ["Enter", "Tab", "Backspace", "Escape"];
 import {
   Dialog,
   DialogContent,
@@ -23,6 +25,8 @@ export function RecordWorkflowModal({
   const [isStarting, setIsStarting] = useState(false);
   const [rawSteps, setRawSteps] = useState<any[]>([]);
   const [generalizedSteps, setGeneralizedSteps] = useState<any[]>([]);
+  const [frame, setFrame] = useState<string | null>(null);
+  const [typeText, setTypeText] = useState("");
   const [isGeneralizing, setIsGeneralizing] = useState(false);
   const [starterActionPlan, setStarterActionPlan] = useState("");
   const [form, setForm] = useState<Partial<AdminWorkflow>>({
@@ -74,6 +78,14 @@ export function RecordWorkflowModal({
           }
         },
       );
+      socket.on(
+        "workflow:record-frame",
+        (payload: { sessionId: string; frame: string }) => {
+          if (payload.sessionId === sessionId) {
+            setFrame(`data:image/jpeg;base64,${payload.frame}`);
+          }
+        },
+      );
       socketRef.current = socket;
 
       setRecording(true);
@@ -109,7 +121,38 @@ export function RecordWorkflowModal({
       socketRef.current = null;
       sessionIdRef.current = null;
       setRecording(false);
+      setFrame(null);
     }
+  };
+
+  // Interactive recording: clicking/typing on the streamed screenshot
+  // replays as a real Playwright mouse/keyboard action on the recorder's
+  // page (see recorderService.click/type/pressKey on the backend), which
+  // triggers the same real DOM events the injected step-capture script
+  // listens for — so it shows up in Raw Recorded Steps like any other click.
+  const handleLiveClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    const socket = socketRef.current;
+    const sessionId = sessionIdRef.current;
+    if (!socket || !sessionId) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const xPct = (e.clientX - rect.left) / rect.width;
+    const yPct = (e.clientY - rect.top) / rect.height;
+    socket.emit("workflow:record-click", { sessionId, xPct, yPct });
+  };
+
+  const sendType = () => {
+    const socket = socketRef.current;
+    const sessionId = sessionIdRef.current;
+    if (!socket || !sessionId || !typeText) return;
+    socket.emit("workflow:record-type", { sessionId, text: typeText });
+    setTypeText("");
+  };
+
+  const sendKey = (key: string) => {
+    const socket = socketRef.current;
+    const sessionId = sessionIdRef.current;
+    if (!socket || !sessionId) return;
+    socket.emit("workflow:record-key", { sessionId, key });
   };
 
   const handleGeneralize = async () => {
@@ -293,14 +336,65 @@ export function RecordWorkflowModal({
         </div>
 
         <div className="flex-1 grid grid-cols-1 gap-4 min-h-[250px] overflow-y-auto sm:grid-cols-2 sm:overflow-hidden">
-          <div className="flex flex-col border border-border rounded-xl overflow-hidden bg-card/40">
-            <div className="bg-muted px-3 py-2 text-xs font-semibold border-b border-border">
-              Raw Recorded Steps ({rawSteps.length})
+          {recording ? (
+            <div className="flex flex-col border border-border rounded-xl overflow-hidden bg-card/40">
+              <div className="flex items-center justify-between bg-muted px-3 py-2 text-xs font-semibold border-b border-border">
+                <span className="flex items-center gap-1.5">
+                  <MousePointerClick className="h-3.5 w-3.5" /> Live — click/type to interact ({rawSteps.length} steps)
+                </span>
+              </div>
+              <div className="flex-1 overflow-hidden bg-black/40 flex items-center justify-center min-h-[160px]">
+                {frame ? (
+                  <img
+                    src={frame}
+                    alt="Live recording view"
+                    onClick={handleLiveClick}
+                    className="max-h-full max-w-full cursor-crosshair"
+                  />
+                ) : (
+                  <span className="text-[11px] text-muted-foreground">Connecting…</span>
+                )}
+              </div>
+              <div className="border-t border-border p-2 space-y-1.5 shrink-0">
+                <div className="flex gap-1.5">
+                  <input
+                    value={typeText}
+                    onChange={(e) => setTypeText(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && sendType()}
+                    placeholder="Click a field above, then type here…"
+                    className="flex-1 rounded-lg border border-border bg-background px-2 py-1.5 text-xs focus:outline-none"
+                  />
+                  <button
+                    onClick={sendType}
+                    disabled={!typeText}
+                    className="rounded-lg bg-primary/20 text-primary px-3 text-xs font-medium hover:bg-primary/30 transition disabled:opacity-40"
+                  >
+                    Send
+                  </button>
+                </div>
+                <div className="flex gap-1.5">
+                  {QUICK_KEYS.map((key) => (
+                    <button
+                      key={key}
+                      onClick={() => sendKey(key)}
+                      className="rounded-lg border border-border px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground hover:border-primary/40 transition"
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
-            <pre className="p-3 text-[10px] overflow-y-auto flex-1 text-muted-foreground font-mono">
-              {rawSteps.length > 0 ? JSON.stringify(rawSteps, null, 2) : "Listening to socket..."}
-            </pre>
-          </div>
+          ) : (
+            <div className="flex flex-col border border-border rounded-xl overflow-hidden bg-card/40">
+              <div className="bg-muted px-3 py-2 text-xs font-semibold border-b border-border">
+                Raw Recorded Steps ({rawSteps.length})
+              </div>
+              <pre className="p-3 text-[10px] overflow-y-auto flex-1 text-muted-foreground font-mono">
+                {rawSteps.length > 0 ? JSON.stringify(rawSteps, null, 2) : "Click Start Recording to begin."}
+              </pre>
+            </div>
+          )}
           <div className="flex flex-col border border-border rounded-xl overflow-hidden bg-card/40">
             <div className="bg-muted px-3 py-2 text-xs font-semibold border-b border-border">
               Generalized Steps

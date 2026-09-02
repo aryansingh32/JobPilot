@@ -49,8 +49,8 @@ function HealthBar({ label, status, latency }: { label: string; status: string; 
 }
 
 function BrowserDonut({ stats }: { stats: Record<string, unknown> }) {
-  const total = (stats?.totalBrowsers as number) ?? 0;
-  const active = (stats?.activeLeasesCount as number) ?? 0;
+  const total = (stats?.browsers as number) ?? 0;
+  const active = (stats?.activeContexts as number) ?? 0;
   const idle = total - active;
   return (
     <div className="rounded-2xl border border-border/40 bg-card/60 p-5">

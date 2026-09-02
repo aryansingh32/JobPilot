@@ -7,16 +7,65 @@ interface Props {
   onStop?: () => void;
 }
 
+// Chrome/Edge/Safari ship this under the vendor-prefixed name; there's no
+// unprefixed `SpeechRecognition` yet and no TS lib.dom typing for either.
+type SpeechRecognitionInstance = {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  start(): void;
+  stop(): void;
+  onresult: ((event: any) => void) | null;
+  onerror: ((event: any) => void) | null;
+  onend: (() => void) | null;
+};
+
+function getSpeechRecognitionCtor(): (new () => SpeechRecognitionInstance) | null {
+  if (typeof window === "undefined") return null;
+  return (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition ?? null;
+}
+
 export function Composer({ onSend, busy, onStop }: Props) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [drag, setDrag] = useState(false);
+  const [listening, setListening] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const speechSupported = useRef(getSpeechRecognitionCtor() !== null).current;
 
   useEffect(() => {
     taRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    return () => recognitionRef.current?.stop();
+  }, []);
+
+  const toggleListening = () => {
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) return;
+    const recognition = new Ctor();
+    recognition.lang = "en-US";
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognition.onresult = (event: any) => {
+      const transcript = Array.from(event.results as ArrayLike<any>)
+        .map((r: any) => r[0]?.transcript ?? "")
+        .join(" ");
+      setText(transcript);
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  };
 
   useEffect(() => {
     const ta = taRef.current;
@@ -29,6 +78,7 @@ export function Composer({ onSend, busy, onStop }: Props) {
     if (busy) return;
     const t = text.trim();
     if (!t && files.length === 0) return;
+    recognitionRef.current?.stop();
     onSend(t, files);
     setText("");
     setFiles([]);
@@ -118,13 +168,21 @@ export function Composer({ onSend, busy, onStop }: Props) {
               >
                 <Square className="h-4 w-4" />
               </button>
-            ) : !text.trim() && files.length === 0 ? (
+            ) : listening || (!text.trim() && files.length === 0) ? (
               <button
                 type="button"
-                className="flex h-9 items-center gap-1.5 rounded-full bg-secondary px-3.5 text-sm font-medium text-secondary-foreground transition-all hover:bg-muted"
+                onClick={toggleListening}
+                disabled={!speechSupported}
+                title={speechSupported ? undefined : "Voice input isn't supported in this browser"}
+                aria-pressed={listening}
+                className={`flex h-9 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+                  listening
+                    ? "bg-destructive text-destructive-foreground animate-pulse"
+                    : "bg-secondary text-secondary-foreground hover:bg-muted"
+                }`}
               >
                 <Mic className="h-4 w-4" />
-                Speak
+                {listening ? "Listening…" : "Speak"}
               </button>
             ) : (
               <button

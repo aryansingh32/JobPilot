@@ -116,6 +116,7 @@ services:
     restart: unless-stopped
     environment:
       <<: *common-env
+      SERVICE_NAME: api
     ports:
       - "${API_PUBLIC_PORT:-3000}:3000"
     depends_on:
@@ -137,6 +138,7 @@ services:
     restart: unless-stopped
     environment:
       <<: *common-env
+      SERVICE_NAME: worker
     depends_on:
       postgres:
         condition: service_healthy

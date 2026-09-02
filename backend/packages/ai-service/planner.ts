@@ -466,7 +466,7 @@ export class AIPlanner {
     }
 
     const response = await client.chat.completions.create(requestBody as any);
-    const raw = getTextResponse(response.choices[0]?.message?.content);
+    const raw = getTextResponse(response.choices?.[0]?.message?.content);
 
     let parsed: AIDecision;
     try {
@@ -532,7 +532,7 @@ Format: { "recoverable": true/false, "steps": [...] }`,
     };
 
     const response = await client.chat.completions.create(requestBody as any);
-    const raw = getTextResponse(response.choices[0]?.message?.content);
+    const raw = getTextResponse(response.choices?.[0]?.message?.content);
     try {
       const clean = raw.replace(/```json\n?|\n?```/g, '').trim();
       const data = JSON.parse(clean);
@@ -573,7 +573,7 @@ Return ONLY a CSS selector string, no explanation. If impossible, return null.`,
     };
 
     const response = await client.chat.completions.create(requestBody as any);
-    const raw = getTextResponse(response.choices[0]?.message?.content).trim();
+    const raw = getTextResponse(response.choices?.[0]?.message?.content).trim();
     if (!raw || raw === 'null' || raw.length > 200) return null;
 
     // Validate the selector works

@@ -325,7 +325,7 @@ If data is missing, say what to collect next.`;
       temperature: 0.2,
       max_tokens: 1200,
     });
-    const text = completion.choices[0]?.message?.content ?? 'No response.';
+    const text = completion.choices?.[0]?.message?.content ?? 'No response.';
     return { answer: text, model: completion.model, structured };
   } catch (e) {
     logger.error('observability:copilot-llm-failed', e);

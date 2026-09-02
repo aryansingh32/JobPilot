@@ -15,7 +15,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { chatOrchestrator } from './chat-orchestrator.js';
 import { ADMIN_OBSERVABILITY_CHANNEL } from './observability.service.js';
-import { RECORD_STEP_CHANNEL } from '../execution-service/recorder.js';
+import { RECORD_STEP_CHANNEL, RECORD_FRAME_CHANNEL, recorderService } from '../execution-service/recorder.js';
 import { memoryService } from './user-memory.service.js';
 import { siteWorkflowService } from './site-workflow.service.js';
 import type { ActionStep, JobRuntimeState, SiteWorkflow } from '../shared/types/index.js';
@@ -141,6 +141,26 @@ async function buildApp(): Promise<FastifyInstance> {
       statusCode: reply.statusCode,
       responseTimeMs: reply.elapsedTime,
     });
+
+    // Feeds the admin panel's Network tab (GET /admin/network/stats reads
+    // these same keys — see admin-routes.ts). Best-effort: never let stats
+    // bookkeeping fail a request.
+    try {
+      const redis = await getRedisClient();
+      const multi = redis.multi();
+      multi.incr('stats:requests:total');
+      if (reply.statusCode >= 400) {
+        multi.incr('stats:requests:failed');
+      }
+      await multi.exec();
+      // Exponential moving average keeps this O(1) per request instead of
+      // storing every sample.
+      const prevAvg = Number((await redis.get('stats:latency:avg')) ?? 0);
+      const nextAvg = prevAvg > 0 ? prevAvg * 0.9 + reply.elapsedTime * 0.1 : reply.elapsedTime;
+      await redis.set('stats:latency:avg', nextAvg.toFixed(2));
+    } catch {
+      /* stats are best-effort */
+    }
   });
 
   app.setErrorHandler(async (error, req, reply) => {
@@ -887,6 +907,32 @@ async function main() {
     adminNs.on('connection', (socket) => {
       logger.info('admin-socket:connected', { socketId: socket.id });
       socket.emit('ready', { channel: 'observability' });
+
+      // Interactive workflow recording: the admin clicks/types on the
+      // streamed screenshot in RecordWorkflowModal, and we replay it as a
+      // real Playwright mouse/keyboard action on the recording session's
+      // page — see recorderService.click/type/pressKey.
+      socket.on('workflow:record-click', async (data: { sessionId: string; xPct: number; yPct: number }) => {
+        try {
+          await recorderService.click(data.sessionId, data.xPct, data.yPct);
+        } catch (e) {
+          logger.warn('workflow:record-click-failed', { error: (e as Error).message });
+        }
+      });
+      socket.on('workflow:record-type', async (data: { sessionId: string; text: string }) => {
+        try {
+          await recorderService.type(data.sessionId, data.text);
+        } catch (e) {
+          logger.warn('workflow:record-type-failed', { error: (e as Error).message });
+        }
+      });
+      socket.on('workflow:record-key', async (data: { sessionId: string; key: string }) => {
+        try {
+          await recorderService.pressKey(data.sessionId, data.key);
+        } catch (e) {
+          logger.warn('workflow:record-key-failed', { error: (e as Error).message });
+        }
+      });
     });
     const adminObsSub = pubClient.duplicate();
     adminObsSub.on('error', (err) => logger.warn('redis:admin-obs-sub-error', { error: (err as Error).message }));
@@ -901,6 +947,13 @@ async function main() {
     await adminObsSub.subscribe(RECORD_STEP_CHANNEL, (msg) => {
       try {
         adminNs.emit('workflow:record-step', JSON.parse(msg));
+      } catch {
+        /* ignore malformed recorder payloads */
+      }
+    });
+    await adminObsSub.subscribe(RECORD_FRAME_CHANNEL, (msg) => {
+      try {
+        adminNs.emit('workflow:record-frame', JSON.parse(msg));
       } catch {
         /* ignore malformed recorder payloads */
       }

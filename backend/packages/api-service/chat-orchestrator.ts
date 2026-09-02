@@ -161,7 +161,7 @@ Return ONLY valid JSON:
     requestBody.extra_body = reasoningBody;
   }
   const response = await openai.chat.completions.create(requestBody as any);
-  const responseContent = response.choices[0]?.message?.content;
+  const responseContent = response.choices?.[0]?.message?.content;
   const content = typeof responseContent === 'string' ? responseContent : '{}';
   const parsed = JSON.parse(content) as ManualGuidanceDecision;
   const intro = parsed.replyText ?? 'Here are the steps you can follow to complete this task manually. ✅';
@@ -266,7 +266,7 @@ export class ChatOrchestrator {
       let responseContent: string | null = null;
       try {
         response = await openai.chat.completions.create(requestBody as any, { timeout: 30000 });
-        responseContent = response.choices[0]?.message?.content ?? null;
+        responseContent = response.choices?.[0]?.message?.content ?? null;
       } catch (err: any) {
         logger.error('llm:chat-orchestration-failed', {
           userId,

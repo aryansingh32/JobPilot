@@ -26,6 +26,34 @@ function serializeError(error: unknown): Record<string, unknown> {
   return { error };
 }
 
+// Scopes that get their own admin "Logs" tab regardless of which process
+// they run in; everything else buckets under SERVICE_NAME (set per
+// docker-compose service — see infrastructure/docker) so the admin tail
+// still separates api/worker/scheduler output.
+const SCOPE_SERVICE_OVERRIDES: Record<string, string> = {
+  'auth-routes': 'auth',
+  'execution-engine': 'execution',
+};
+
+function resolveServiceBucket(scope: string): string {
+  return SCOPE_SERVICE_OVERRIDES[scope] ?? process.env.SERVICE_NAME ?? 'system';
+}
+
+// Feeds the admin panel's live "Logs" tail (GET /admin/logs reads this same
+// `logs:<service>` Redis list — see admin-routes.ts). Dynamic import avoids a
+// circular import: shared/db already imports createLogger from this module.
+function tailToRedis(service: string, line: string): void {
+  import('../db/index.js')
+    .then(async ({ getRedisClient }) => {
+      const redis = await getRedisClient();
+      const key = `logs:${service}`;
+      await redis.rPush(key, line);
+      await redis.lTrim(key, -500, -1);
+      await redis.expire(key, 86400);
+    })
+    .catch(() => {});
+}
+
 function write(level: LogLevel, scope: string, message: string, context?: LogContext): void {
   if (!shouldLog(level)) return;
   const payload = {
@@ -43,6 +71,7 @@ function write(level: LogLevel, scope: string, message: string, context?: LogCon
   } else {
     console.log(line);
   }
+  tailToRedis(resolveServiceBucket(scope), line);
 }
 
 export function createLogger(scope: string) {
