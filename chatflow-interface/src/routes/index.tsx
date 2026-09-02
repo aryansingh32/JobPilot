@@ -1,21 +1,8 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import {
-  PanelLeft,
-  Monitor,
-  Sparkles,
-  Wifi,
-  WifiOff,
-  ShieldCheck,
-  MoreVertical,
-} from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from "@/components/ui/dropdown-menu";
+import { PanelLeft, Monitor, Sparkles, Wifi, WifiOff, Sun, Moon, LogOut } from "lucide-react";
 import { useChatStore, uid } from "@/lib/chat-store";
+import { useTheme } from "@/hooks/use-theme";
 import { PROFILES } from "@/lib/chat-types";
 import type { ChatMessage, FileAttachment, InputCardMessage } from "@/lib/chat-types";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
@@ -79,6 +66,7 @@ function Index() {
   const [authChecked, setAuthChecked] = useState(false);
   const navigate = useNavigate();
   const isMobile = useIsMobile();
+  const { theme, toggleTheme } = useTheme();
 
   // The sidebar defaults open for desktop's persistent-panel layout, but on
   // mobile it's a full-screen overlay — starting it open there would bury
@@ -372,47 +360,24 @@ function Index() {
             {liveHot && <span className="live-dot absolute -right-0.5 -top-0.5 h-1.5 w-1.5" />}
           </button>
 
-          {/* Desktop: inline links. Mobile: collapsed into an overflow menu below. */}
-          <a
-            href="/admin"
-            className="hidden items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground sm:flex"
+          <button
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            className="rounded-md p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
           >
-            <ShieldCheck className="h-3.5 w-3.5" />
-            Admin
-          </a>
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
           {authUser && (
             <button
               onClick={() => authClient.logout().then(() => navigate({ to: "/login" }))}
-              className="ml-1 hidden text-xs font-medium text-muted-foreground transition hover:text-foreground sm:inline"
-              title={authUser.email ?? authUser.mobileNumber ?? "Signed in"}
+              aria-label="Sign out"
+              title={authUser.email ?? authUser.mobileNumber ?? "Sign out"}
+              className="rounded-md p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
             >
-              Sign out
+              <LogOut className="h-4 w-4" />
             </button>
           )}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label="More options"
-                className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground sm:hidden"
-              >
-                <MoreVertical className="h-4 w-4" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="sm:hidden">
-              <DropdownMenuItem asChild>
-                <a href="/admin" className="flex items-center gap-2">
-                  <ShieldCheck className="h-3.5 w-3.5" /> Admin
-                </a>
-              </DropdownMenuItem>
-              {authUser && (
-                <DropdownMenuItem
-                  onClick={() => authClient.logout().then(() => navigate({ to: "/login" }))}
-                >
-                  Sign out
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
         </header>
 
         <div
@@ -421,7 +386,7 @@ function Index() {
           className="scroll-thin flex-1 overflow-y-auto"
         >
           {showEmpty ? (
-            <EmptyState backendAvailable={backendAvailable} />
+            <EmptyState backendAvailable={backendAvailable} user={authUser} />
           ) : (
             <div className="py-3">
               {messages.map((m) => (
@@ -488,16 +453,37 @@ function Index() {
   );
 }
 
-function EmptyState({ backendAvailable }: { backendAvailable: boolean | null }) {
+function greeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+function EmptyState({
+  backendAvailable,
+  user,
+}: {
+  backendAvailable: boolean | null;
+  user: AuthUser | null;
+}) {
+  const name = user?.displayName || user?.email?.split("@")[0] || null;
+
   return (
     <div className="mx-auto flex h-full max-w-2xl animate-in flex-col items-center justify-center px-6 text-center fade-in-0 duration-500">
-      <span className="mb-4 grid h-11 w-11 place-items-center rounded-2xl bg-primary/15 text-primary">
+      <span className="mb-5 grid h-12 w-12 place-items-center rounded-2xl bg-primary/15 text-primary">
         <Sparkles className="h-5 w-5" />
       </span>
-      <h1 className="text-3xl font-semibold tracking-tight">How can I help you today?</h1>
+      <h1 className="text-2xl font-semibold tracking-tight text-muted-foreground sm:text-3xl">
+        {greeting()}
+        {name ? `, ${name}` : ""}
+      </h1>
+      <p className="mt-1 text-3xl font-semibold tracking-tight sm:text-4xl">
+        What can I help with?
+      </p>
 
       {backendAvailable === false && (
-        <div className="mt-4 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-warning">
+        <div className="mt-6 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-warning">
           Backend not available. Start it with{" "}
           <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">npm run dev:full</code>
         </div>
