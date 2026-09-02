@@ -17,7 +17,11 @@ export default defineConfig({
       watch: {
         ignored: ["**/backend/**", "**/mnt/**"],
       },
-      allowedHosts: ["unhumorous-expeditiously-sparkle.ngrok-free.dev", "dirtiness-cocoa-broadband.ngrok-free.dev", "localhost"],
+      allowedHosts: [
+        "unhumorous-expeditiously-sparkle.ngrok-free.dev",
+        "dirtiness-cocoa-broadband.ngrok-free.dev",
+        "localhost",
+      ],
       proxy: {
         "/socket.io": {
           target: "http://localhost:3000",

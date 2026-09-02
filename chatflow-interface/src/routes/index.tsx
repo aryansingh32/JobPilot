@@ -80,6 +80,13 @@ function Index() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
 
+  // The sidebar defaults open for desktop's persistent-panel layout, but on
+  // mobile it's a full-screen overlay — starting it open there would bury
+  // the chat behind a drawer on first load.
+  useEffect(() => {
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
+
   // Require a signed-in session — chat, memory, and files are all scoped to
   // the authenticated user server-side, so there is nothing useful to show
   // before this resolves.

@@ -4,6 +4,6 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["types/**/*.ts", "queue/**/*.ts", "db/**/*.ts", "llm/**/*.ts", "logger/**/*.ts", "workflow-loader.ts"],
+  "include": ["types/**/*.ts", "queue/**/*.ts", "db/**/*.ts", "llm/**/*.ts", "logger/**/*.ts", "auth/**/*.ts", "email/**/*.ts", "sms/**/*.ts", "workflow-loader.ts"],
   "exclude": ["dist", "**/dist/**"]
 }

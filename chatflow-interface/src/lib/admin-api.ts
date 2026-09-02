@@ -117,6 +117,9 @@ export interface AdminWorkflow {
   version?: number;
   created_at: string;
   updated_at: string;
+  // Accepted by POST/PUT /admin/workflows (see admin-routes.ts) but not part
+  // of the row shape returned by GET — only present on create/update payloads.
+  starterActionPlan?: unknown[];
 }
 
 export interface AdminZeroShotRun {
@@ -157,7 +160,14 @@ export interface CaptchaSpend {
 
 export interface CaptchaMetrics {
   days: number;
-  totals: { events: number; resolved: number; failed: number; timeout: number; costUsd: number; avgDurationMs: number | null };
+  totals: {
+    events: number;
+    resolved: number;
+    failed: number;
+    timeout: number;
+    costUsd: number;
+    avgDurationMs: number | null;
+  };
   byEventType: { eventType: string; count: number; resolvedCount: number }[];
   byResolvedBy: { resolvedBy: string | null; count: number }[];
   byProvider: { provider: string | null; count: number; costUsd: number }[];

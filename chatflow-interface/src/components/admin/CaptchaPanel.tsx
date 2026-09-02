@@ -114,12 +114,14 @@ export function CaptchaPanel() {
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed">
           A CAPTCHA/verification checkpoint is first tried against a free in-browser solve
-          (checkbox/audio/slider), then — <strong className="text-foreground">only for premium
-          users within their plan's monthly limit</strong> — a paid provider API. Anything left
-          unsolved, plus OTP/MFA/login-verification checkpoints and security blocks (WAF /
-          rate-limit / JS interstitial, never bypassed), falls to
-          <strong className="text-foreground"> human-in-the-loop</strong>: the live browser view
-          in the user's chat, or this queue, whichever answers first.
+          (checkbox/audio/slider), then —{" "}
+          <strong className="text-foreground">
+            only for premium users within their plan's monthly limit
+          </strong>{" "}
+          — a paid provider API. Anything left unsolved, plus OTP/MFA/login-verification checkpoints
+          and security blocks (WAF / rate-limit / JS interstitial, never bypassed), falls to
+          <strong className="text-foreground"> human-in-the-loop</strong>: the live browser view in
+          the user's chat, or this queue, whichever answers first.
         </p>
         <div className="mt-3 flex flex-wrap gap-4 text-[11px]">
           <span className="flex items-center gap-1 text-emerald-400">

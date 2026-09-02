@@ -1,5 +1,4 @@
-import test from 'node:test';
-import assert from 'node:assert';
+import { test, expect } from 'vitest';
 import { OpenSourceSolver } from './captcha-handler.js';
 import type { Page } from 'playwright';
 
@@ -14,9 +13,9 @@ test('OpenSourceSolver.solveHCaptcha catches and returns errors', async () => {
 
   const result = await solver.solveHCaptcha(mockPage, 'dummy-sitekey');
 
-  assert.strictEqual(result.solved, false);
-  assert.strictEqual(result.method, 'open-source');
-  assert.strictEqual(result.error, 'Mocked frameLocator error');
+  expect(result.solved).toBe(false);
+  expect(result.method).toBe('open-source');
+  expect(result.error).toBe('Mocked frameLocator error');
 });
 
 test('OpenSourceSolver.solveHCaptcha successfully solves', async () => {
@@ -41,10 +40,10 @@ test('OpenSourceSolver.solveHCaptcha successfully solves', async () => {
 
   const result = await solver.solveHCaptcha(mockPage, 'dummy-sitekey');
 
-  assert.strictEqual(result.solved, true);
-  assert.strictEqual(result.method, 'open-source');
-  assert.strictEqual(result.error, undefined);
-  assert.strictEqual(checkboxClicked, true);
+  expect(result.solved).toBe(true);
+  expect(result.method).toBe('open-source');
+  expect(result.error).toBeUndefined();
+  expect(checkboxClicked).toBe(true);
 });
 
 test('OpenSourceSolver.solveHCaptcha challenge required', async () => {
@@ -65,7 +64,7 @@ test('OpenSourceSolver.solveHCaptcha challenge required', async () => {
 
   const result = await solver.solveHCaptcha(mockPage, 'dummy-sitekey');
 
-  assert.strictEqual(result.solved, false);
-  assert.strictEqual(result.method, 'open-source');
-  assert.strictEqual(result.error, 'hCaptcha challenge required');
+  expect(result.solved).toBe(false);
+  expect(result.method).toBe('open-source');
+  expect(result.error).toBe('hCaptcha challenge required');
 });

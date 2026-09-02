@@ -17,7 +17,9 @@ export function StatusBadge({ status }: { status: string }) {
   };
   const cls = map[status?.toLowerCase()] ?? "bg-zinc-500/20 text-zinc-300 border-zinc-500/30";
   return (
-    <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${cls}`}>
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${cls}`}
+    >
       {status}
     </span>
   );

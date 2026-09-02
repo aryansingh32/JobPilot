@@ -35,18 +35,20 @@ function CoreMesh() {
 
 function MiniGalaxy() {
   return (
-    <Canvas
-      camera={{ position: [0, 0, 4], fov: 45 }}
-      className="h-[200px] w-full rounded-2xl bg-black/40"
-    >
-      <color attach="background" args={["#070712"]} />
-      <ambientLight intensity={0.35} />
-      <pointLight position={[4, 2, 6]} intensity={1.2} color="#a78bfa" />
-      <Stars radius={40} depth={40} count={1800} factor={3} saturation={0} fade speed={0.4} />
-      <Suspense fallback={null}>
-        <CoreMesh />
-      </Suspense>
-    </Canvas>
+    // react-three-fiber's <Canvas> sets height:100% via an inline style on its
+    // wrapper div, which wins over a Tailwind height class passed as
+    // `className` — constrain the size on an outer element instead.
+    <div className="h-[200px] w-full overflow-hidden rounded-2xl bg-black/40">
+      <Canvas camera={{ position: [0, 0, 4], fov: 45 }}>
+        <color attach="background" args={["#070712"]} />
+        <ambientLight intensity={0.35} />
+        <pointLight position={[4, 2, 6]} intensity={1.2} color="#a78bfa" />
+        <Stars radius={40} depth={40} count={1800} factor={3} saturation={0} fade speed={0.4} />
+        <Suspense fallback={null}>
+          <CoreMesh />
+        </Suspense>
+      </Canvas>
+    </div>
   );
 }
 
