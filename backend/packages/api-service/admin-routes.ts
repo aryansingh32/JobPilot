@@ -611,12 +611,15 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     try {
       const redis = await getRedisClient();
       const keys = await redis.keys('captcha:pending:*');
-      const items = await Promise.all(
-        keys.map(async (k) => {
-          const v = await redis.get(k);
-          return v ? JSON.parse(v) : null;
-        })
-      );
+
+      if (keys.length === 0) {
+        return reply.send({ captchas: [] });
+      }
+
+      // Optimize: Use mGet instead of N+1 individual gets
+      const rawVals = await redis.mGet(keys);
+      const items = rawVals.map(v => v ? JSON.parse(v) : null);
+
       return reply.send({ captchas: items.filter(Boolean) });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
