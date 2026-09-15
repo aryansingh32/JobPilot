@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   ChevronDown,
@@ -25,7 +25,7 @@ import type {
 import { InputCard } from "./InputCard";
 import { config } from "@/lib/config";
 
-export function MessageItem({ msg }: { msg: ChatMessage }) {
+const MessageItemImpl = ({ msg }: { msg: ChatMessage }) => {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
@@ -63,7 +63,15 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
       </div>
     </div>
   );
-}
+};
+
+// ⚡ BOLT OPTIMIZATION: Memoized MessageItem to prevent unnecessary re-renders of the entire
+// message list whenever the chat store updates (e.g. typing indicators or partial message patches).
+// This provides a noticeable performance boost for long chat histories.
+export const MessageItem = memo(MessageItemImpl, (prevProps, nextProps) => {
+  return prevProps.msg === nextProps.msg;
+});
+MessageItem.displayName = "MessageItem";
 
 function BotText({ msg }: { msg: TextMessage }) {
   const [displayed, setDisplayed] = useState("");

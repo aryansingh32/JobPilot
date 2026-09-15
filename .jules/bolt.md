@@ -1,0 +1,3 @@
+## 2024-05-18 - [Front-end Performance: Unnecessary re-renders on every message update]
+**Learning:** Found that `MessageItem` in `chatflow-interface/src/components/chat/MessageItem.tsx` does not use `React.memo`. Since this is a chat application, the message list can get very long, and new messages (or partial updates, like typing indicator updates or timeline step updates) will cause the entire list of messages to re-render if not memoized, reducing performance.
+**Action:** Wrap `MessageItem` in `React.memo` and export it to prevent unnecessary re-renders of the entire message list whenever the chat store updates.
