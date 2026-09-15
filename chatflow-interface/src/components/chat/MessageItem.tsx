@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   ChevronDown,
@@ -25,7 +25,7 @@ import type {
 import { InputCard } from "./InputCard";
 import { config } from "@/lib/config";
 
-export function MessageItem({ msg }: { msg: ChatMessage }) {
+export const MessageItem = React.memo(function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
@@ -63,7 +63,7 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
       </div>
     </div>
   );
-}
+});
 
 function BotText({ msg }: { msg: TextMessage }) {
   const [displayed, setDisplayed] = useState("");
