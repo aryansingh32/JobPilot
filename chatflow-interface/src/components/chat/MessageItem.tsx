@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   ChevronDown,
@@ -25,7 +25,11 @@ import type {
 import { InputCard } from "./InputCard";
 import { config } from "@/lib/config";
 
-export function MessageItem({ msg }: { msg: ChatMessage }) {
+// ⚡ Bolt: Wrapped MessageItem in React.memo to prevent unnecessary re-renders of older messages.
+// This is highly effective because chat state is managed immutably.
+// Expected Impact: Reduces re-renders of historical messages to near zero when typing or receiving new messages,
+// resulting in significantly lower CPU usage and a smoother chat experience for long conversations.
+export const MessageItem = memo(function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
@@ -63,7 +67,7 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
       </div>
     </div>
   );
-}
+});
 
 function BotText({ msg }: { msg: TextMessage }) {
   const [displayed, setDisplayed] = useState("");
