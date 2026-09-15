@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   ChevronDown,
@@ -25,7 +25,9 @@ import type {
 import { InputCard } from "./InputCard";
 import { config } from "@/lib/config";
 
-export function MessageItem({ msg }: { msg: ChatMessage }) {
+// ⚡ Bolt: Wrapped MessageItem with React.memo to prevent O(n) re-renders when new messages arrive.
+// Since this component only relies on the `msg` prop, shallow equality perfectly evaluates if a re-render is necessary.
+export const MessageItem = memo(function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
@@ -63,7 +65,7 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
       </div>
     </div>
   );
-}
+});
 
 function BotText({ msg }: { msg: TextMessage }) {
   const [displayed, setDisplayed] = useState("");
@@ -267,7 +269,8 @@ function StatusBubble({ msg }: { msg: StatusMessage }) {
   );
 }
 
-export function TypingIndicator() {
+// ⚡ Bolt: Wrapped TypingIndicator with React.memo to prevent unnecessary re-renders when parent state changes.
+export const TypingIndicator = memo(function TypingIndicator() {
   return (
     <div className="px-4 py-3">
       <div className="mx-auto flex max-w-3xl gap-3">
@@ -282,4 +285,4 @@ export function TypingIndicator() {
       </div>
     </div>
   );
-}
+});
