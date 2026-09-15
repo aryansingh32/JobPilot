@@ -86,9 +86,8 @@ function formatWorkflowSummary(workflows: Awaited<ReturnType<typeof siteWorkflow
     .join('\n');
 }
 
-async function findMatchingWorkflow(task: string): Promise<WorkflowMatch | null> {
+async function findMatchingWorkflow(task: string, workflows: Awaited<ReturnType<typeof siteWorkflowService.listAll>>): Promise<WorkflowMatch | null> {
   const normalizedTask = normalizeText(task);
-  const workflows = await siteWorkflowService.listAll();
   let best: WorkflowMatch | null = null;
 
   for (const workflow of workflows) {
@@ -233,11 +232,18 @@ export class ChatOrchestrator {
       const { chatModel } = getLLMProviderConfig();
       const reasoningBody = getReasoningRequestBody();
       const shouldUseContext = state.memoryContext.useContextMemory !== false;
-      const profileSummary = shouldUseContext
-        ? await memoryService.summarizeProfiles(userId)
-        : 'User requested no saved context memory for now.';
-      const fileSummary = await fileStorageService.summarizeFiles(userId);
-      const workflowSummary = formatWorkflowSummary(await siteWorkflowService.listAll());
+
+      // OPTIMIZATION: Fetch user profiles, user files, and site workflows in parallel
+      // rather than sequentially to reduce latency. Re-use workflows list later
+      // instead of hitting the database twice.
+      const [profileSummary, fileSummary, workflows] = await Promise.all([
+        shouldUseContext
+          ? memoryService.summarizeProfiles(userId)
+          : Promise.resolve('User requested no saved context memory for now.'),
+        fileStorageService.summarizeFiles(userId),
+        siteWorkflowService.listAll()
+      ]);
+      const workflowSummary = formatWorkflowSummary(workflows);
       workflowSummaryForTurn = workflowSummary;
       profileSummaryForTurn = profileSummary;
       const sessionMemorySummary = JSON.stringify({
@@ -355,7 +361,7 @@ export class ChatOrchestrator {
 
       // Handle Job Start
       if (parsed.intent === 'start_job' && parsed.jobDetails?.task) {
-        const workflowMatch = await findMatchingWorkflow(parsed.jobDetails.task);
+        const workflowMatch = await findMatchingWorkflow(parsed.jobDetails.task, workflows);
         if (!workflowMatch) {
           logger.warn('workflow:missing-for-task', {
             userId,

@@ -1,0 +1,3 @@
+## 2024-06-25 - Parallelize DB and API Queries in chat-orchestrator
+**Learning:** Running consecutive `await` statements for independent calls (like `memoryService.summarizeProfiles`, `fileStorageService.summarizeFiles`, and `siteWorkflowService.listAll`) significantly slows down the bot's response time, especially since it hits the database and potentially file systems consecutively. Also calling `siteWorkflowService.listAll` multiple times per prompt processing creates extra overhead.
+**Action:** Use `Promise.all` to fetch independent data sources in parallel. Pass reused data (like the workflows list) down as arguments rather than re-fetching it multiple times.
