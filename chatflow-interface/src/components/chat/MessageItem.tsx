@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   ChevronDown,
@@ -25,7 +25,10 @@ import type {
 import { InputCard } from "./InputCard";
 import { config } from "@/lib/config";
 
-export function MessageItem({ msg }: { msg: ChatMessage }) {
+// ⚡ Bolt: Memoize the MessageItem component to prevent unnecessary re-renders
+// of the entire chat history when new messages are added or the parent component updates.
+// Since chat messages are immutable (as noted in memory), React.memo is highly effective here.
+export const MessageItem = memo(function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
@@ -63,7 +66,7 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
       </div>
     </div>
   );
-}
+});
 
 function BotText({ msg }: { msg: TextMessage }) {
   const [displayed, setDisplayed] = useState("");
