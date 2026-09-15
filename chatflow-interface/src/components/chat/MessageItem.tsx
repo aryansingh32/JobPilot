@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   ChevronDown,
@@ -25,7 +25,9 @@ import type {
 import { InputCard } from "./InputCard";
 import { config } from "@/lib/config";
 
-export function MessageItem({ msg }: { msg: ChatMessage }) {
+// ⚡ Bolt: Wraps MessageItem with React.memo to prevent unnecessary re-renders
+// Reduces re-renders of message history when parent state (typing, busy, etc.) changes
+export const MessageItem = React.memo(function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
@@ -63,7 +65,7 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
       </div>
     </div>
   );
-}
+});
 
 function BotText({ msg }: { msg: TextMessage }) {
   const [displayed, setDisplayed] = useState("");
@@ -267,7 +269,9 @@ function StatusBubble({ msg }: { msg: StatusMessage }) {
   );
 }
 
-export function TypingIndicator() {
+// ⚡ Bolt: Wraps TypingIndicator with React.memo to prevent unnecessary re-renders
+// Reduces re-renders of the typing indicator when unrelated parent state changes
+export const TypingIndicator = React.memo(function TypingIndicator() {
   return (
     <div className="px-4 py-3">
       <div className="mx-auto flex max-w-3xl gap-3">
@@ -282,4 +286,4 @@ export function TypingIndicator() {
       </div>
     </div>
   );
-}
+});
