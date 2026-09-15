@@ -1,0 +1,3 @@
+## 2024-05-21 - Optimizing React chat interface re-renders
+**Learning:** Found that the React chat interface in `MessageItem.tsx` was not using `React.memo()`. Given that `routes/index.tsx` renders a map of `MessageItem`s based on a potentially long list of messages (and updating the parent state often due to typing indicator/live screen updates), wrapping the generic functional component in `memo()` prevents O(N) re-renders when a single message comes in or the composer text input updates the parent state.
+**Action:** Always verify if list items in high-frequency update components (like chat threads) are wrapped in `React.memo()` by default, since they usually receive stable reference props and do not need to re-render.
