@@ -1,0 +1,3 @@
+## 2024-05-29 - [Optimization React.memo for chat messages]
+**Learning:** The chat interface manages chat state immutably in `chat-store.ts`, which makes React.memo highly effective for optimizing the rendering of dynamic lists like chat messages history. Without memo, any state update in the parent (e.g. active typing indicator or new messages) will cause all previous messages to re-render.
+**Action:** Use `React.memo` to wrap list item components when the parent list state is updated immutably (which guarantees stable props for unchanged items), particularly for unbounded dynamic lists like chat histories.
