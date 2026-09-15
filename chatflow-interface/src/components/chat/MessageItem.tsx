@@ -25,7 +25,11 @@ import type {
 import { InputCard } from "./InputCard";
 import { config } from "@/lib/config";
 
-export function MessageItem({ msg }: { msg: ChatMessage }) {
+import { memo } from "react";
+
+// Optimization: Using React.memo prevents unnecessary re-renders of all messages
+// when new messages are added to the list or when the composer state changes.
+export const MessageItem = memo(function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
@@ -63,7 +67,7 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
       </div>
     </div>
   );
-}
+});
 
 function BotText({ msg }: { msg: TextMessage }) {
   const [displayed, setDisplayed] = useState("");
