@@ -1,0 +1,3 @@
+## 2026-06-25 - [Message Item Re-render Optimization]
+**Learning:** In the `chatflow-interface`, chat state is managed immutably (e.g., in `chat-store.ts`). This architectural choice makes `React.memo` highly effective for optimizing the rendering performance of dynamic lists, such as the chat message history, because references to existing messages don't change when new messages are added.
+**Action:** Always evaluate `React.memo` for list items when working with immutable state management to prevent unnecessary re-renders of the entire list upon addition of new items.
