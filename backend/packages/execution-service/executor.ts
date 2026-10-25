@@ -62,6 +62,7 @@ class JobParkedError extends Error {
 interface ParkSpec {
   kind: ParkState['kind'];
   question?: string;
+  questions?: ParkState['questions'];
   reviewFields?: ParkState['reviewFields'];
 }
 
@@ -834,7 +835,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
             }).catch(() => {});
             await cleanup().catch(() => {});
             reject(new JobParkedError(
-              { kind: park.kind, stepId: step.id, pending: { type: pendingType, ...pendingPayload }, question: park.question, reviewFields: park.reviewFields },
+              { kind: park.kind, stepId: step.id, pending: { type: pendingType, ...pendingPayload }, question: park.question, questions: park.questions, reviewFields: park.reviewFields },
               () => lateAnswer,
             ));
             return;
@@ -2000,7 +2001,9 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
     const submitButton = async (): Promise<Locator> => {
       if (explicit) return explicit;
       const tiers = [
-        ctx.page.locator('button[type="submit"], input[type="submit"]'),
+        // Lever: the visible button is type=button; the type=submit one is hCaptcha's hidden trigger.
+        ctx.page.locator('#btn-submit, [data-qa="btn-submit"], button.template-btn-submit'),
+        ctx.page.locator('button[type="submit"]:visible, input[type="submit"]:visible'),
         ctx.page.locator('button, [role="button"]').filter({ hasText: /submit|send application|finish|complete application/i }),
         ctx.page.locator('button, [role="button"]').filter({ hasText: /apply/i }),
       ];
@@ -2257,6 +2260,17 @@ async function writeSecret(ctx: ExecutionContext, keyName: string, value: string
 }
 
 /** Ask the user one thing mid-run (not parked: secrets must never land in answer memory). */
+/** A plain question to the person (not a code, password, upload, cover letter or something the profile owns). */
+function genericAsk(f: FormField, written: Map<number, string>, fields: FormField[], ctx: ExecutionContext, step: ActionStep): boolean {
+  if (written.get(f.idx) || f.type === 'file' || step.metadata?.askForMissing === false) return false;
+  if (isOtpField(f.label) || isSecretField(f.label, f.type)) return false;
+  if (isLoginIdField(f.label) && fields.some((x) => x.type === 'password')) return false;
+  if (/cover(ing)? letter|motivation letter/i.test(f.label)) return false;
+  if ((f.type === 'tel' || /\b(mobile|phone|cell)\b/i.test(f.label)) && !realOptions(f.options).length && !ctx.profile?.personal?.phone) return false;
+  if (f.type === 'combobox' && ['school', 'degree', 'field'].includes(ruleFor(f) ?? '')) return false;
+  return identityFieldKind(f.label, f.type) !== 'aadhaar';
+}
+
 async function askUser(ctx: ExecutionContext, id: string, expectedInput: string, message: string, extra: Record<string, unknown> = {}): Promise<string> {
   await ACTION_HANDLERS.pauseForUserInput({
     id,
@@ -2575,6 +2589,7 @@ async function fillPage(
 
   // Ask for each required answer we don't have, then remember it.
   const stillMissing: FormField[] = [];
+  const batchAnswers = new Map<number, string>();
   for (const field of missing) {
     const aiValue = written.get(field.idx);
     if (aiValue) {
@@ -2682,7 +2697,40 @@ async function fillPage(
       }
     }
     if (field.type === 'combobox' && !field.options.length) field.options = await readComboOptions(ctx.page, field);
+    const normalize = (f: FormField, raw: string) => {
+      const r = raw.trim();
+      return f.options.length ? (f.options.find((o) => o.toLowerCase() === r.toLowerCase()) ?? f.options.find((o) => o.toLowerCase().startsWith(r.toLowerCase())) ?? '') : r;
+    };
+    // Every other question this form will ask goes in ONE form, not one run (and one wait) per question.
+    if (!batchAnswers.has(field.idx)) {
+      const rest = missing.slice(missing.indexOf(field) + 1).filter((f) => genericAsk(f, written, fields, ctx, step));
+      if (rest.length) {
+        for (const f of rest) if (f.type === 'combobox' && !f.options.length) f.options = await readComboOptions(ctx.page, f).catch(() => []);
+        const group = [field, ...rest];
+        const batchId = `${askPrefix}_${field.idx}_batch`;
+        const questions = group.map((f) => ({ id: String(f.idx), question: f.label.replace(/\s*\*$/, ''), options: realOptions(f.options) }));
+        await ACTION_HANDLERS.pauseForUserInput({
+          id: batchId,
+          action: 'pauseForUserInput',
+          expectedInput: 'text',
+          timeout: 10 * 60_000,
+          description: `The application asks ${group.length} more questions`,
+          contextMessage: `The application asks ${group.length} more questions — answer them together`,
+          metadata: {
+            skipChallengeDetection: true,
+            pauseData: { question: `${group.length} questions from the application`, questions },
+            park: { kind: 'question', questions: questions.map((q) => ({ id: q.id, question: q.question })) } satisfies ParkSpec,
+          },
+        }, ctx);
+        let given: Record<string, string> = {};
+        try { given = JSON.parse(ctx.runtimeInputs[batchId] ?? '{}'); } catch { /* a plain answer: it belongs to the first question */ given = { [String(field.idx)]: ctx.runtimeInputs[batchId] ?? '' }; }
+        delete ctx.runtimeInputs[batchId];
+        for (const f of group) batchAnswers.set(f.idx, normalize(f, String(given[String(f.idx)] ?? '')));
+      }
+    }
     const askId = `${askPrefix}_${field.idx}`;
+    if (batchAnswers.has(field.idx)) ctx.runtimeInputs[askId] = batchAnswers.get(field.idx) ?? '';
+    else
     await ACTION_HANDLERS.pauseForUserInput({
       id: askId,
       action: 'pauseForUserInput',

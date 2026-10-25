@@ -383,6 +383,7 @@ function PendingCard({ appId, pending }: { appId: string; pending: PendingDTO })
     "w-full rounded-xl border border-border bg-card px-3 py-2 text-[13px] text-foreground outline-none focus:border-primary";
 
   if (pending.captchaUrl) return <CaptchaCard appId={appId} pending={pending} />;
+  if (pending.questions?.length) return <QuestionsCard appId={appId} questions={pending.questions} />;
 
   if (pending.type !== "review") {
     return (
@@ -605,6 +606,45 @@ function CaptchaCard({ appId, pending }: { appId: string; pending: PendingDTO })
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Everything the form still needs, in one go — one answer per question, sent together. */
+function QuestionsCard({ appId, questions }: { appId: string; questions: NonNullable<PendingDTO["questions"]> }) {
+  const { respond } = useApplicationActions();
+  const [values, setValues] = useState<Record<string, string>>({});
+  const ready = questions.every((q) => (values[q.id] ?? "").trim());
+  const box =
+    "w-full rounded-xl border border-border bg-card px-3 py-2 text-[13px] text-foreground outline-none focus:border-primary";
+  return (
+    <div id={`pending-${appId}`} className="mb-4 scroll-mt-24 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5">
+      <p className="text-[13px] font-semibold text-foreground">The application has {questions.length} questions for you</p>
+      <p className="mt-0.5 text-[12px] text-muted-foreground">Answer them all once; I'll remember each for next time.</p>
+      <div className="mt-3 space-y-3">
+        {questions.map((q) => (
+          <label key={q.id} className="block">
+            <span className="mb-1 block text-[12px] font-medium text-ink-2">{q.question}</span>
+            {q.options?.length ? (
+              <select className={box} value={values[q.id] ?? ""} onChange={(e) => setValues({ ...values, [q.id]: e.target.value })}>
+                <option value="">Choose…</option>
+                {q.options.map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            ) : (
+              <input className={box} value={values[q.id] ?? ""} onChange={(e) => setValues({ ...values, [q.id]: e.target.value })} />
+            )}
+          </label>
+        ))}
+      </div>
+      <button
+        disabled={!ready || respond.isPending}
+        onClick={() => respond.mutate({ id: appId, value: JSON.stringify(values) })}
+        className="mt-3 rounded-full bg-primary px-4 py-1.5 text-[13px] font-semibold text-primary-foreground disabled:opacity-50"
+      >
+        {respond.isPending ? "Sending…" : "Continue"}
+      </button>
     </div>
   );
 }

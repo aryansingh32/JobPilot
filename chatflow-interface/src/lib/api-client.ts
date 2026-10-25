@@ -327,6 +327,8 @@ export interface PendingDTO {
   contextMessage?: string;
   question?: string;
   options?: string[];
+  /** Several questions asked together; answered as one JSON object keyed by id. */
+  questions?: { id: string; question: string; options?: string[] }[];
   title?: string;
   sections?: { id: string; title: string; fields: PendingFieldDTO[] }[];
   missing?: string[];

@@ -360,6 +360,8 @@ export interface ParkState {
   /** Exactly what pendingInput() showed while the run was live. */
   pending: Record<string, unknown>;
   question?: string;
+  /** One form of several questions (answers come back as JSON keyed by id). */
+  questions?: { id: string; question: string }[];
   reviewFields?: { id: string; label: string; value: string }[];
   job: ExecuteJob;
 }
@@ -405,6 +407,12 @@ export async function continueParked(applicationId: string, value: string): Prom
     }
     approved = {};
     for (const f of state.reviewFields ?? []) approved[f.label] = msg.values?.[f.id] ?? f.value;
+  } else if (state.questions?.length) {
+    // Several questions answered together: each is remembered under its own wording.
+    try {
+      const given = JSON.parse(value) as Record<string, string>;
+      for (const q of state.questions) if (given[q.id]?.trim()) await answerMemory.remember(userId, q.question, given[q.id].trim());
+    } catch { /* not JSON: nothing to remember */ }
   } else if (state.question && value.trim()) {
     // Autofill recalls it on the re-run, like any remembered answer.
     await answerMemory.remember(userId, state.question, value.trim());

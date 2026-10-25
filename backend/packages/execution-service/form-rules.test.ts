@@ -56,3 +56,10 @@ describe('notice period lists', () => {
   it('exact number wins', () => expect(noticeOption(['7 Days', '15 Days', '30 Days'], 15)).toBe('15 Days'));
   it('a month', () => expect(noticeOption(o, noticeDays('1 month')!)).toBe('15-30 Days'));
 });
+
+describe('referrer and numeric notice', () => {
+  it('a referrer is never the applicant', () => {
+    expect(ruleFor(f('Referrer work email'))).toBeNull();
+    expect(ruleFor(f('Referrer name'))).toBeNull();
+  });
+});

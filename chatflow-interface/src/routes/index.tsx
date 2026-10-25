@@ -23,6 +23,8 @@ import { InboxView } from "@/components/chat/InboxView";
 import { AutoApplyView } from "@/components/chat/AutoApplyView";
 import { BuyCreditsDialog } from "@/components/chat/BuyCredits";
 import { ProfileGapsDialog } from "@/components/chat/ProfileGapsDialog";
+import { PortalPasswordCard } from "@/components/chat/PortalPasswordCard";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { taskStatus } from "@/lib/task-status";
 import {
   APPLY_JOB_EVENT,
@@ -399,6 +401,7 @@ function Index() {
     }
   }, [store.activeId, store.hydrated, getEmitter]);
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [gapsFor, setGapsFor] = useState<{ job: JobListingDTO; gaps: ProfileGapDTO[] } | null>(null);
 
   if (!store.hydrated) {
@@ -601,6 +604,7 @@ function Index() {
         onShowInbox={() => setView("inbox")}
         autoApplyActive={view === "autoapply"}
         onShowAutoApply={() => setView("autoapply")}
+        onOpenSettings={() => setSettingsOpen(true)}
         autoApplyOn={autoApplyQ.data?.settings.enabled}
         credits={credits}
         onBuyCredits={() => setBuyOpen(true)}
@@ -614,6 +618,12 @@ function Index() {
         />
       )}
 
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="max-w-md">
+          <DialogTitle>Settings</DialogTitle>
+          <PortalPasswordCard />
+        </DialogContent>
+      </Dialog>
       <ProfileGapsDialog
         gaps={gapsFor?.gaps ?? null}
         title={gapsFor?.job.title}

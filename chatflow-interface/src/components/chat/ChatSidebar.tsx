@@ -40,6 +40,8 @@ interface Props {
   onShowInbox: () => void;
   autoApplyActive?: boolean;
   onShowAutoApply: () => void;
+  /** Opens the settings dialog (portal password…). */
+  onOpenSettings?: () => void;
   /** Credit balance (null when credits are off) and the "Buy" action. */
   credits?: number | null;
   onBuyCredits?: () => void;
@@ -74,6 +76,7 @@ export function ChatSidebar({
   onShowInbox,
   autoApplyActive = false,
   onShowAutoApply,
+  onOpenSettings,
   autoApplyOn = false,
   credits = null,
   onBuyCredits,
@@ -372,12 +375,22 @@ export function ChatSidebar({
           </div>
         )}
         <div className="flex items-center gap-2.5 border-t border-sidebar-border px-3 py-3">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary text-[12px] font-bold uppercase text-primary-foreground">
-            {initial}
-          </span>
-          <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
-            {userLabel || "Signed in"}
-          </span>
+          <button
+            onClick={() => {
+              onOpenSettings?.();
+              afterPick();
+            }}
+            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg text-left hover:bg-sidebar-accent"
+            aria-label="Open settings"
+            title="Settings"
+          >
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary text-[12px] font-bold uppercase text-primary-foreground">
+              {initial}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
+              {userLabel || "Signed in"}
+            </span>
+          </button>
           <button
             onClick={onToggleTheme}
             className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"

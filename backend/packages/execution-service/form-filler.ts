@@ -149,7 +149,7 @@ export function ruleFor(field: FormField): string | null {
   if (!l) return null;
   // "Mobile OTP" and "Email OTP" are codes sent to you, not your number or address.
   if (isOtpField(l) || isSecretField(l, field.type)) return null;
-  if (/cover letter|pronounc|high school|secondary school|referr(al|ed by)/.test(l)) return null;
+  if (/cover letter|pronounc|high school|secondary school|referr(al|ed|er)\b/.test(l)) return null;
   // A long question that merely mentions "GitHub" or "location" is an open question,
   // not that profile field — only yes/no eligibility rules apply to long text.
   const long = l.split(' ').length > 14;
@@ -298,6 +298,11 @@ export async function planAnswers(
     if (!value && choice && /how did you (hear|find|come to know)|where did you (hear|find|learn)|source of (application|referral)/.test(norm(field.label))) {
       value = sourceOption(field.options) ?? '';
       if (value) source = 'default';
+    }
+    // A box that wants a number of days ("Available to join (in days)").
+    if (value && key === 'noticePeriod' && !choice && (field.type === 'number' || /\bin days\b/i.test(field.label))) {
+      const d = noticeDays(value);
+      if (d !== null) value = String(d);
     }
     // Notice period as a list ("Immediate", "<15 Days", "15-30 Days", "1 Month"): by days, never a loose text match.
     if (value && choice && key === 'noticePeriod') {
