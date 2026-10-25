@@ -80,7 +80,7 @@ export function buildAnswerBook(profile: ProfileData, job: { country?: string | 
     yearsExperience: w.yearsOfExperience !== undefined ? String(w.yearsOfExperience) : '',
     noticePeriod: w.noticePeriod ?? '',
     expectedSalary: w.expectedSalary ?? '',
-    currentSalary: (w as { currentSalary?: string }).currentSalary ?? '',
+    currentSalary: w.currentSalary ?? '',
     needsSponsorship: yesNo(authorized !== undefined ? !authorized : a.needsSponsorship),
     authorized: yesNo(authorized ?? (a.needsSponsorship === undefined ? undefined : !a.needsSponsorship)),
     school: edu?.school ?? '',
@@ -107,13 +107,14 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(website|portfolio|personal site|blog|other url)\b/, 'website'],
   [/\b(sponsor|sponsorship|visa)\b/, 'needsSponsorship'],
   [/\b(authori[sz]ed|authori[sz]ation|eligible|right) to work\b|\bwork authori[sz]ation\b/, 'authorized'],
-  [/\bcurrent (company|employer|organi[sz]ation)\b|\bemployer\b|\bcompany name\b/, 'currentCompany'],
-  [/\bcurrent (job )?(title|role|position|designation)\b|\bjob title\b/, 'currentTitle'],
-  [/\byears? of (relevant |professional |total )?experience\b|\bhow many years\b|\b(total|relevant|overall) (work )?experience\b|\bexperience \(?in years\)?/, 'yearsExperience'],
-  [/\bnotice period\b|\bearliest start\b|\bwhen can you start\b/, 'noticePeriod'],
+  [/\b(current|present|latest|most recent|last|existing)\s+(company|employer|organi[sz]ation|workplace|firm|business)\b|\bemployer\b|^(company|organi[sz]ation|employer)$|\bcompany name\b|\bname of (the |your )?(company|employer|organi[sz]ation)\b|\bwhere do you (currently )?work\b|\bcurrently work(?:ing)? (at|for)\b|\borgani[sz]ation name\b|\bnom de l'?(entreprise|employeur)\b|\bempresa actual\b|\baktueller arbeitgeber\b|\bवर्तमान (कंपनी|नियोक्ता)/, 'currentCompany'],
+  [/\b(current|present|latest|most recent)\s+(job\s+)?(title|role|position|designation|occupation)\b|\bjob title\b|\bdesignation\b|\bposition held\b|\bposte actuel\b|\bcargo actual\b/, 'currentTitle'],
+  [/\brelevant experience\b.*\b(skills|qualifications|role)\b|\byears? of (relevant |professional |total )?experience\b|\bhow many years\b|\b(total|relevant|overall) (work )?experience\b|\bexperience \(?in years\)?/, 'yearsExperience'],
+  [/\bnotice(\s+period)?\b|\bearliest (start|joining)\b|\bwhen can you (start|join)\b|\b(joining|start) (date|time)\b|\bhow soon can you (join|start)\b|\bavailab(le|ility) (to|for) (start|join)\b|\bpréavis\b|\bkündigungsfrist\b|\bpreaviso\b|\bnotice period in days\b/, 'noticePeriod'],
   // Current pay is never filled from the expected figure (or guessed).
-  [/\b(current|present|existing|last drawn)\b.*\b(salary|ctc|compensation|pay)\b/, 'currentSalary'],
-  [/\b(salary|compensation|ctc|pay expectation)\b/, 'expectedSalary'],
+  [/\b(expected|desired|target|ideal|asking)\b.*\b(salary|ctc|compensation|pay|package|remuneration)\b|\b(salary|compensation|ctc|package|remuneration) (expectation|requirement)s?\b|\bpay expectation\b|\bprétentions salariales\b|\bpretensión salarial\b|\bgehaltsvorstellung\b/, 'expectedSalary'],
+  [/\b(current|present|existing|last drawn|drawn|fixed|existing)\b.*\b(salary|ctc|compensation|pay|package|remuneration)\b|\bcurrent (annual )?(salary|ctc)\b|\bsalaire actuel\b|\bsalario actual\b|\baktuelles gehalt\b/, 'currentSalary'],
+  [/\b(expected|desired|target|ideal|asking)\b.*\b(salary|ctc|compensation|pay|package|remuneration)\b|\b(salary|compensation|ctc|package|remuneration) (expectation|requirement)s?\b|\bpay expectation\b|\b(salary|compensation|ctc|package)\b|\bprétentions salariales\b|\bpretensión salarial\b|\bgehaltsvorstellung\b/, 'expectedSalary'],
   [/\b(zip|postal|pin)\s*code\b/, 'postalCode'],
   [/\b(street )?address\b/, 'address'],
   [/^city$|\bcity\b(?! you)/, 'city'],
@@ -155,7 +156,9 @@ export function ruleFor(field: FormField): string | null {
   const gov = long ? null : govRuleFor(l);
   if (gov) return gov;
   for (const [re, key] of RULES) {
-    if (long && key !== 'needsSponsorship' && key !== 'authorized') continue;
+    // "Type of right-to-work document" asks which document, not whether they may work.
+    if (key === 'authorized' && /\b(document|documents|proof|evidence|type of|which)\b/.test(l) && !/^(are|do|will|can)\b/.test(l)) continue;
+    if (long && key !== 'needsSponsorship' && key !== 'authorized' && !(key === 'yearsExperience' && /^(what|how much|how many)\b.{0,30}experience/.test(l))) continue;
     if (re.test(l)) return key;
   }
   return null;
@@ -168,6 +171,59 @@ export function toAmount(v: string): string | null {
   const n = parseFloat(m[1]);
   const mult = !m[2] ? 1 : /^l/.test(m[2]) ? 100_000 : /^c/.test(m[2]) ? 10_000_000 : 1_000;
   return String(Math.round(n * mult));
+}
+
+/** "<1 Yrs" / "1-3 Yrs" / "3-6" / "6+" / "10 or more": the range a number of years falls in. */
+export function rangeOption(options: string[], n: number): string | null {
+  for (const o of options) {
+    const t = o.toLowerCase().replace(/,/g, '');
+    const nums = (t.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
+    if (!nums.length) continue;
+    if (/^\s*(<|less than|under|below|fresher|0\s*[-–]\s*1\b)/.test(t) && n < nums[0] + (/0\s*[-–]\s*1\b/.test(t) ? 1 : 0)) return o;
+    if (/\+|or more|and above|above|more than|over/.test(t) && nums.length === 1 && n >= nums[0]) return o;
+    if (nums.length >= 2 && n >= nums[0] && n <= nums[1]) return o;
+  }
+  return null;
+}
+
+/** "15 days" / "2 weeks" / "1 month" / "immediate" → days. */
+export function noticeDays(v: string): number | null {
+  const t = v.toLowerCase();
+  if (/immediate|none|no notice|serving/.test(t)) return 0;
+  const n = parseFloat(t.match(/\d+(?:\.\d+)?/)?.[0] ?? '');
+  if (!Number.isFinite(n)) return null;
+  return Math.round(/month/.test(t) ? n * 30 : /week/.test(t) ? n * 7 : n);
+}
+
+/** The list entry for a notice of N days: an exact number first, else the range it falls in. */
+export function noticeOption(options: string[], days: number): string | null {
+  const asDays = (o: string): number[] => {
+    const t = o.toLowerCase();
+    const mult = /month/.test(t) ? 30 : /week/.test(t) ? 7 : 1;
+    return (t.match(/\d+(?:\.\d+)?/g) ?? []).map((x) => Math.round(Number(x) * mult));
+  };
+  if (days === 0) { const o = options.find((x) => /immediate|no notice|zero|^0\b/i.test(x)); if (o) return o; }
+  const exact = options.find((o) => !/[<>+\-–]|less|more|up to|within/i.test(o) && asDays(o)[0] === days);
+  if (exact) return exact;
+  for (const o of options) {
+    const nums = asDays(o);
+    const t = o.toLowerCase();
+    if (!nums.length) continue;
+    if (/^\s*(<|less than|within|up to)/.test(t) && days < nums[0]) return o;
+    if (/\+|more than|above|over|or more|and above/.test(t) && nums.length === 1 && days >= nums[0]) return o;
+    if (nums.length >= 2 && days >= nums[0] && days <= nums[1]) return o;
+  }
+  return null;
+}
+
+/** "How did you hear about us?": the honest generic answer a list offers. */
+export function sourceOption(options: string[]): string | null {
+  const want = [/career/i, /company (web)?site|corporate site|official/i, /job (board|portal|site)/i, /online|internet|web/i, /^other/i];
+  for (const re of want) {
+    const hit = options.find((o) => re.test(o));
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** Best option text for a wanted value (exact → yes/no → prefix → contains). */
@@ -196,6 +252,8 @@ export async function planAnswers(
   fields: FormField[],
   book: AnswerBook,
   recall: (question: string) => Promise<string | null>,
+  /** Keys chosen by meaning for fields no rule recognised (see intent.ts). */
+  intents: Map<number, string> = new Map(),
 ): Promise<{ answers: FieldAnswer[]; missing: FormField[] }> {
   const answers: FieldAnswer[] = [];
   const missing: FormField[] = [];
@@ -210,7 +268,7 @@ export async function planAnswers(
       continue;
     }
     const choice = field.tag === 'select' || field.type === 'radio' || field.type === 'checkbox';
-    const key = ruleFor(field);
+    const key = ruleFor(field) ?? intents.get(field.idx) ?? null;
 
     if (key === 'resume' || key === 'photo' || key === 'signature') {
       answers.push({ field, key, value: key, source: 'profile' });
@@ -231,6 +289,20 @@ export async function planAnswers(
     if (!value && field.label) {
       value = (await recall(field.label)) ?? '';
       source = 'memory';
+    }
+    // Experience asked as ranges ("<1 Yrs", "1-3 Yrs"…): the range the profile's years fall in.
+    if (value && choice && key === 'yearsExperience' && Number.isFinite(Number(value))) {
+      value = rangeOption(field.options, Number(value)) ?? value;
+    }
+    // "How did you hear about us?" — never in a profile; a generic true source, not a made-up referrer.
+    if (!value && choice && /how did you (hear|find|come to know)|where did you (hear|find|learn)|source of (application|referral)/.test(norm(field.label))) {
+      value = sourceOption(field.options) ?? '';
+      if (value) source = 'default';
+    }
+    // Notice period as a list ("Immediate", "<15 Days", "15-30 Days", "1 Month"): by days, never a loose text match.
+    if (value && choice && key === 'noticePeriod') {
+      const days = noticeDays(value);
+      if (days !== null) value = noticeOption(field.options, days) ?? value;
     }
     if (value && choice) value = (key === 'category' ? categoryOption(field.options, value) : null) ?? pickOption(field.options, value) ?? '';
     // A date box that is really type=date takes ISO; text boxes take DD/MM/YYYY.

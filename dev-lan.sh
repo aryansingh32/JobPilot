@@ -181,7 +181,7 @@ WEB_API_BASE="http://{host}:$API_PORT"
 [ -n "$PUBLIC_URL" ] && WEB_API_BASE="/api"
 if ! running web; then
   (cd "$FRONTEND"; VITE_API_BASE_URL="$WEB_API_BASE" JP_API_TARGET="http://127.0.0.1:$API_PORT" VITE_ADMIN_API_BASE_URL="http://{host}:$ADMIN_PORT" \
-    VITE_API_KEY="$API_KEY" VITE_GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}" setsid npx vite dev --host 0.0.0.0 --port "$WEB_PORT" --strictPort \
+    VITE_API_KEY="$API_KEY" VITE_GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}" setsid npx vite dev --host :: --port "$WEB_PORT" --strictPort \
     >"$LOGS/web.log" 2>&1 < /dev/null & echo $! >"$RUN/web.pid")
   say "started web (log: .dev-data/logs/web.log)"
 fi

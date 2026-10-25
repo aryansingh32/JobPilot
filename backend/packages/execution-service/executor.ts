@@ -30,6 +30,7 @@ import { fitImage, nearbyText, pressOtpButton } from './gov-runtime.js';
 import { parkApplication, continueParked, type ParkState } from '../shared/applications/apply.js';
 import { getNumber } from '../shared/config/settings.js';
 import { randomBytes } from 'crypto';
+import { classifyIntents } from './intent.js';
 import {
   buildAnswerBook, captchaImageFor, fillField, pickOption, untickedCheckbox, visibleClickChallenge, planAnswers, readComboOptions, readFormErrors, realOptions, ruleFor, scanForm,
   type FieldAnswer, type FormField,
@@ -2512,7 +2513,8 @@ async function fillPage(
 ): Promise<{ filled: FieldAnswer[]; stillMissing: FormField[] }> {
   await loadProfile(ctx);
   const book = buildAnswerBook(ctx.profile!, { country: ctx.jobContext?.country });
-  const { answers, missing } = await planAnswers(fields, book, (q) => answerMemory.recall(ctx.userId, q).catch(() => null));
+  const intents = await classifyIntents(fields, book, ctx.userId).catch(() => new Map<number, string>());
+  const { answers, missing } = await planAnswers(fields, book, (q) => answerMemory.recall(ctx.userId, q).catch(() => null), intents);
 
   const filled: FieldAnswer[] = [];
   for (const a of answers) {

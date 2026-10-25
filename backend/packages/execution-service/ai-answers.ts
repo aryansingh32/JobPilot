@@ -100,7 +100,9 @@ export async function aiAnswers(
     for (const a of data.answers ?? []) {
       const field = todo.find((f) => f.idx === a.id);
       const text = typeof a.answer === 'string' ? a.answer.trim() : '';
-      if (!field || !text || /^(null|n\/a|unknown|not specified)$/i.test(text) || /\[[^\]]+\]|\{\{/.test(text)) continue;
+      // The facts being silent is not proof of a "no": a written denial the profile doesn't state is never sent.
+      const denial = /^(i (have not|haven'?t|do not|don'?t|am not|never)|no\b|none\b|not (yet|applicable))/i.test(text) && !field.options.length;
+      if (!field || !text || denial || /^(null|n\/a|unknown|not specified)$/i.test(text) || /\[[^\]]+\]|\{\{/.test(text)) continue;
       if (field.options.length) {
         const pick = field.options.find((o) => o.toLowerCase() === text.toLowerCase());
         if (pick) out.set(field.idx, pick);

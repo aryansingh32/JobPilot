@@ -31,6 +31,7 @@ export interface ProfileData {
     currentTitle?: string;
     noticePeriod?: string;
     expectedSalary?: string;
+    currentSalary?: string;
     yearsOfExperience?: number;
   };
   authorization?: {

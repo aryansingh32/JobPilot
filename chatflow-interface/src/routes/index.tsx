@@ -399,6 +399,8 @@ function Index() {
     }
   }, [store.activeId, store.hydrated, getEmitter]);
 
+  const [gapsFor, setGapsFor] = useState<{ job: JobListingDTO; gaps: ProfileGapDTO[] } | null>(null);
+
   if (!store.hydrated) {
     return <Splash />;
   }
@@ -523,7 +525,6 @@ function Index() {
       : null;
   };
   // What the profile still lacks for this job: asked once, before a browser starts waiting on it.
-  const [gapsFor, setGapsFor] = useState<{ job: JobListingDTO; gaps: ProfileGapDTO[] } | null>(null);
   const applyToJob = async (job: JobListingDTO, skipGapCheck = false) => {
     if (!skipGapCheck) {
       const { gaps } = await jp.profileGaps(job.id).catch(() => ({ gaps: [] as ProfileGapDTO[] }));
