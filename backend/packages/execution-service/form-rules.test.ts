@@ -90,3 +90,17 @@ describe('defaultYesNo in text boxes', () => {
     expect(defaultYesNo('Describe your previous employee experience', [], {})).toBeNull();
   });
 });
+
+import { answerFromNotes } from './ai-answers.js';
+describe('answerFromNotes', () => {
+  const about = 'Passing out year: 2027\n↳ Are you willing to work from the Bangalore office: Yes\nCGPA / backlogs: 8.0, none';
+  const field = (label: string, options: string[] = []) => ({ ...f(label), options }) as FormField;
+  it('matches a differently worded question to a note line without any model call', () => {
+    expect(answerFromNotes(about, field('Please mention the Passing Out Year'))).toBe('2027');
+    expect(answerFromNotes(about, field('Are you willing to work from the Bangalore office?', ['Yes', 'No']))).toBe('Yes');
+    expect(answerFromNotes(about, field('Please share your CGPA / backlogs details'))).toBe('8.0, none');
+  });
+  it('leaves unrelated questions alone', () => {
+    expect(answerFromNotes(about, field('Why do you want to work here?'))).toBeNull();
+  });
+});

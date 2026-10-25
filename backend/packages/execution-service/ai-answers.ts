@@ -3,8 +3,7 @@ import { answerMemory, type ProfileData } from '../shared/profile/index.js';
 import { completeJSON } from '../shared/llm/gateway.js';
 import { isDummyLLMKey } from '../shared/llm/index.js';
 import { createLogger } from '../shared/logger/index.js';
-import { coverLetterFacts } from './cover-letter.js';
-import type { FormField } from './form-filler.js';
+import { pickOption, type FormField } from './form-filler.js';
 
 // ============================================================
 // AI ANSWERS — the step between "remembered answers" and "ask the user".
@@ -55,6 +54,40 @@ export function answerByRule(profile: ProfileData, f: FormField): string | null 
   return null;
 }
 
+const STOP = new Set('the a an of to in on at for and or is are do you your have has any if so please what which when how with be this that will would can could it as by from my i we us our'.split(' '));
+const words = (t: string) => new Set(t.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((w) => w.length > 1 && !STOP.has(w)));
+
+/** The person's notes as {topic, value} lines: "Passing out year: 2027" and learned "↳ question: answer". */
+export function noteLines(about: string): { topic: string; value: string }[] {
+  const out: { topic: string; value: string }[] = [];
+  for (const raw of about.split('\n')) {
+    const line = raw.replace(/^[\s•*\-↳]+/, '').trim();
+    const i = line.lastIndexOf(': ');
+    if (i < 2 || i > line.length - 2) continue;
+    out.push({ topic: line.slice(0, i), value: line.slice(i + 2).trim() });
+  }
+  return out;
+}
+
+/** Zero-token tier: a question that says the same thing as one of the person's note lines gets that line's value. */
+export function answerFromNotes(about: string, f: FormField): string | null {
+  const q = words(f.label);
+  if (q.size < 1) return null;
+  let best: { value: string; score: number } | null = null;
+  for (const n of noteLines(about)) {
+    const t = words(n.topic);
+    if (!t.size) continue;
+    let hit = 0;
+    for (const w of t) if (q.has(w)) hit++;
+    // Every word of the (short) topic appears in the question, or the two mostly overlap.
+    const score = Math.max(hit / t.size, hit / Math.max(q.size, t.size));
+    if (hit >= Math.min(2, t.size) && score >= 0.75 && (!best || score > best.score)) best = { value: n.value, score };
+  }
+  if (!best) return null;
+  if (!f.options.length) return best.value;
+  return pickOption(f.options, best.value);
+}
+
 /** Cached AI answers are keyed to the facts they were written from, so an edited profile re-asks. */
 const factsKey = (facts: string[], label: string) =>
   `ai:${createHash('sha256').update(facts.join('\n')).digest('hex').slice(0, 12)}:${label}`;
@@ -69,10 +102,11 @@ export async function aiAnswers(
   const out = new Map<number, string>();
   const about = profile.about?.trim() ?? '';
   const eligible = fields.filter((f) => eligibleForAi(f) && (!notesOnly(f) || about)).slice(0, 30);
-  const facts = coverLetterFacts(profile);
+  // The model reads only what the person wrote about themselves (their notes) — never the rest of the profile.
+  const facts = about ? [about.slice(0, 4000)] : [];
   const todo: FormField[] = [];
   for (const f of eligible) {
-    const rule = answerByRule(profile, f);
+    const rule = answerByRule(profile, f) ?? (about ? answerFromNotes(about, f) : null);
     if (rule) {
       out.set(f.idx, rule);
       continue;
@@ -95,7 +129,7 @@ export async function aiAnswers(
         {
           role: 'system',
           content:
-            'You fill in a job application for the candidate. Answer each question using ONLY the facts provided. If the facts do not clearly answer it, answer null — never guess or invent employers, numbers, dates, skills or achievements. Questions about identity, legal status, disability, gender or similar may be answered ONLY from the line "In their own words"; otherwise null. For a question with options, answer with exactly one option, copied verbatim. For free text, write 1–3 plain first-person sentences. Return JSON: {"answers":[{"id":<id>,"answer":<string|null>}]}.',
+            'You fill in a job application for the candidate. Answer each question using ONLY the facts provided. If the facts do not clearly answer it, answer null — never guess or invent employers, numbers, dates, skills or achievements. Questions about identity, legal status, disability, gender or similar may be answered ONLY if the notes state it; otherwise null. For a question with options, answer with exactly one option, copied verbatim. For free text, write 1–3 plain first-person sentences. Return JSON: {"answers":[{"id":<id>,"answer":<string|null>}]}.',
         },
         {
           role: 'user',

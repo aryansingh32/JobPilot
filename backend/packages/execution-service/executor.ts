@@ -30,7 +30,6 @@ import { fitImage, nearbyText, pressOtpButton } from './gov-runtime.js';
 import { parkApplication, continueParked, type ParkState } from '../shared/applications/apply.js';
 import { getNumber } from '../shared/config/settings.js';
 import { randomBytes } from 'crypto';
-import { classifyIntents } from './intent.js';
 import {
   buildAnswerBook, captchaImageFor, fillField, pickOption, untickedCheckbox, visibleClickChallenge, planAnswers, readComboOptions, readFormErrors, realOptions, ruleFor, scanForm,
   type FieldAnswer, type FormField,
@@ -2399,13 +2398,27 @@ async function openVerifyLink(ctx: ExecutionContext, link: string): Promise<bool
 }
 
 
-/** Sender domains a site's own mail comes from: its host, its parent domain, and the government mail domains. */
+/** Where each applicant system's mail really comes from (it is rarely the domain of its job pages). */
+const MAILERS: Array<[RegExp, string[]]> = [
+  [/myworkday|workday/, ['myworkday.com', 'workday.com', 'myworkdayjobs.com']],
+  [/oraclecloud|oracle\.com/, ['oracle.com', 'oraclecloud.com', 'oraclecloudmail.com', 'oracleemaildelivery.com']],
+  [/successfactors|sapsf|sap\.com/, ['successfactors.com', 'successfactors.eu', 'sap.com', 'sapsf.com', 'sapsf.eu']],
+  [/zoho/, ['zoho.com', 'zohorecruit.com', 'zohomail.com', 'zohorecruit.in', 'zoho.in']],
+  [/keka/, ['keka.com', 'kekahire.com', 'keka.in']],
+  [/lever\.co/, ['lever.co', 'hire.lever.co']],
+  [/ashbyhq/, ['ashbyhq.com', 'ashby.email']],
+  [/greenhouse/, ['greenhouse-mail.io', 'greenhouse.io', 'greenhouse.com']],
+  [/icims/, ['icims.com']],
+  [/smartrecruiters/, ['smartrecruiters.com']],
+  [/freshteam|freshworks/, ['freshteam.com', 'freshworks.com']],
+];
+
+/** Sender domains a site's own mail comes from: its host, its parent domain, its applicant system's mailer, and the government mail domains. */
 function senderDomains(host: string): string[] {
   const parts = host.split('.');
   const parent = parts.slice(-2).join('.');
   const gov = /\.(gov|nic)\.in$/.test(host) ? ['gov.in', 'nic.in'] : [];
-  // Some applicant systems mail from a different domain than their job pages.
-  const mailer = /greenhouse\.io$/.test(host) ? ['greenhouse-mail.io'] : [];
+  const mailer = MAILERS.find(([re]) => re.test(host))?.[1] ?? [];
   return [...new Set([host, parent, ...(parts.length > 3 ? [parts.slice(-3).join('.')] : []), ...gov, ...mailer])];
 }
 
@@ -2420,12 +2433,14 @@ export async function waitForMail(ctx: ExecutionContext, kind: 'code' | 'link', 
   const col = kind === 'code' ? 'extracted_code' : 'extracted_link';
   const deadline = Date.now() + timeoutMs;
   let lastSync = 0;
+  const startedAt = Date.now();
   // What the island's pill says while this quiet wait runs (no question is shown).
   await applicationsService.updateByExecJob(ctx.jobId, { status: 'running', detail: kind === 'code' ? 'Waiting for the code in your inbox…' : 'Waiting for the verification email…' }).catch(() => {});
   while (Date.now() < deadline) {
     if (ctx.emailVia === 'gmail' && Date.now() - lastSync > 7000) {
       lastSync = Date.now();
-      await gmailService.sync(ctx.userId, { since: new Date(sinceMs - 60_000), allowFrom }).catch(() => 0);
+      // Known mailer domains first; after 25 s the site may be mailing from somewhere unexpected: accept any code/verify mail.
+      await gmailService.sync(ctx.userId, { since: new Date(sinceMs - 60_000), allowFrom, broad: Date.now() - startedAt > 25_000 }).catch(() => 0);
     }
     const { rows } = await pool.query(
       `SELECT ${col} AS v FROM emails WHERE user_id = $1 AND ${col} IS NOT NULL AND received_at > $2 ORDER BY received_at DESC LIMIT 1`,
@@ -2445,9 +2460,19 @@ export async function waitForMail(ctx: ExecutionContext, kind: 'code' | 'link', 
  * split boxes. Read it from the inbox; ask the person only if it never shows up.
  * Returns true when a code was entered (the caller presses Submit again).
  */
+/** The boxes a site wants its emailed code typed into: Greenhouse's split boxes, or any single code/OTP box on a verification page. */
+async function codeBoxes(page: Page): Promise<string | null> {
+  const greenhouse = 'input[id^="security-input"]';
+  if (await page.locator(greenhouse).first().isVisible().catch(() => false)) return greenhouse;
+  const text = await page.evaluate(() => (document.body?.innerText ?? '').slice(0, 3000)).catch(() => '');
+  if (!/(verification|security|confirmation|one[- ]time|login|sign[- ]?in) code|verify your (e-?mail|account|identity)|enter the (\d+[- ]digit )?code/i.test(text)) return null;
+  const generic = 'input[autocomplete="one-time-code"], input[name*="otp" i], input[id*="otp" i], input[name*="verification" i], input[id*="verification" i], input[name*="code" i]:not([name*="zip" i]):not([name*="postal" i]):not([name*="country" i]), input[placeholder*="code" i]';
+  return (await page.locator(generic).first().isVisible().catch(() => false)) ? generic : null;
+}
+
 async function enterEmailedSecurityCode(ctx: ExecutionContext, sentAt: number, attempt: number): Promise<boolean> {
-  const boxes = 'input[id^="security-input"]';
-  if (!(await ctx.page.locator(boxes).first().isVisible().catch(() => false))) return false;
+  const boxes = await codeBoxes(ctx.page);
+  if (!boxes) return false;
   const site = await siteName(ctx, new URL(ctx.page.url()).hostname);
   let code = mailReadForUser(ctx) ? await waitForMailedCode(ctx, sentAt, 90_000) : null;
   if (code) await stage(ctx, 'account', { site, action: 'security code read from inbox' });
@@ -2533,8 +2558,7 @@ async function fillPage(
 ): Promise<{ filled: FieldAnswer[]; stillMissing: FormField[] }> {
   await loadProfile(ctx);
   const book = buildAnswerBook(ctx.profile!, { country: ctx.jobContext?.country });
-  const intents = await classifyIntents(fields, book, ctx.userId).catch(() => new Map<number, string>());
-  const { answers, missing } = await planAnswers(fields, book, (q) => answerMemory.recall(ctx.userId, q).catch(() => null), intents);
+  const { answers, missing } = await planAnswers(fields, book, (q) => answerMemory.recall(ctx.userId, q).catch(() => null));
 
   const filled: FieldAnswer[] = [];
   for (const a of answers) {

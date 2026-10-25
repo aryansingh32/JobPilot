@@ -130,20 +130,13 @@ async function forwardReply(userId: string, mail: InboundMail, subject: string, 
  */
 export async function applicationEmail(userId: string, personal: { email?: string; firstName?: string; fullName?: string } | undefined,
   mode: string | undefined): Promise<{ email: string | null; via: 'inbox' | 'gmail' | 'personal' }> {
-  if (mode === 'jobpilot-inbox' && (await getBool('features.inbox')) && (await getBool('inbox.live'))) {
+  // A connected Gmail is the account address for every employer portal: its codes and verification links are read from it.
+  const { rows } = await getPgPool().query(
+    `SELECT address FROM mail_connections WHERE user_id = $1 AND provider = 'gmail' AND status = 'active'`, [userId]);
+  if (rows[0] && mode !== 'personal') return { email: rows[0].address, via: 'gmail' };
+  // No Gmail: the private inbox, once it is live (needs our own mail domain).
+  if ((await getBool('features.inbox')) && (await getBool('inbox.live'))) {
     return { email: await inboxService.ensureAddress(userId, personal?.firstName ?? personal?.fullName), via: 'inbox' };
-  }
-  if (mode === 'gmail') {
-    const { rows } = await getPgPool().query(
-      `SELECT address FROM mail_connections WHERE user_id = $1 AND provider = 'gmail' AND status = 'active'`, [userId]);
-    if (rows[0]) return { email: rows[0].address, via: 'gmail' };
-  }
-  // The application email is the connected Gmail address even if the mode was never switched: read it.
-  if (personal?.email) {
-    const { rows } = await getPgPool().query(
-      `SELECT 1 FROM mail_connections WHERE user_id = $1 AND provider = 'gmail' AND status = 'active' AND lower(address) = lower($2)`,
-      [userId, personal.email]);
-    if (rows[0]) return { email: personal.email, via: 'gmail' };
   }
   return { email: personal?.email ?? null, via: 'personal' };
 }
@@ -217,7 +210,7 @@ export const inboxService = {
    * `strict` (a connected personal mailbox): keep only mail that belongs to
    * one of the user's applications — everything else is dropped unread.
    */
-  async ingestForUser(userId: string, mail: InboundMail, opts: { source?: 'inbox' | 'gmail'; externalId?: string; strict?: boolean; /** sender domains of a site a run is waiting on (a gov portal's own code mail) */ allowFrom?: string[]; /** when the mail really arrived (Gmail's date), not when we fetched it */ receivedAt?: Date } = {}) {
+  async ingestForUser(userId: string, mail: InboundMail, opts: { source?: 'inbox' | 'gmail'; externalId?: string; strict?: boolean; /** sender domains of a site a run is waiting on (a gov portal's own code mail) */ allowFrom?: string[]; /** a run is waiting on a code and the site's mail domain is unknown: any code/link mail counts */ broad?: boolean; /** when the mail really arrived (Gmail's date), not when we fetched it */ receivedAt?: Date } = {}) {
     const pool = getPgPool();
     const to = mail.to.trim().toLowerCase();
     const subject = (mail.subject ?? '').slice(0, 500);
@@ -248,7 +241,7 @@ export const inboxService = {
       }
     }
     // A code or verification link from an applicant system goes to the application waiting for one.
-    const fromAts = ATS_SENDERS.test(`${sender} ${subject}`) || !!opts.allowFrom?.some((d) => sender.includes(d.toLowerCase()));
+    const fromAts = !!opts.broad || ATS_SENDERS.test(`${sender} ${subject}`) || !!opts.allowFrom?.some((d) => sender.includes(d.toLowerCase()));
     if (!match && (category === 'code' || link) && (!opts.strict || fromAts)) {
       // Waiting for it, or about to (sites mail while the run is still on their page).
       match = apps.rows.find((a) => a.status === 'needs_input') ?? apps.rows.find((a) => a.status === 'running');

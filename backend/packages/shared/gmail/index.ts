@@ -151,9 +151,12 @@ export function searchQuery(companies: string[], since: Date): string {
 }
 
 /** A run is waiting on a code / link from one site: look only for that site's mail, in the last few minutes. */
-export function urgentQuery(since: Date, allowFrom: string[]): string {
+export function urgentQuery(since: Date, allowFrom: string[], broad = false): string {
+  const after = `after:${Math.floor(since.getTime() / 1000)}`;
   const from = allowFrom.filter(Boolean).map((d) => `from:${d}`).join(' ');
-  return `after:${Math.floor(since.getTime() / 1000)} {${from}}`;
+  // Broad: the site mails from a domain we don't know — any fresh mail that looks like a code or a verification.
+  const looks = '{subject:verify subject:verification subject:code subject:confirm subject:"security code" subject:"one-time" subject:activate}';
+  return broad || !from ? `${after} ${looks}` : `${after} {${from}}`;
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────
@@ -224,7 +227,7 @@ export const gmailService = {
   },
 
   /** Read new job mail for one user. Returns how many were kept. */
-  async sync(userId: string, urgent?: { since: Date; allowFrom: string[] }, backfillDays?: number): Promise<number> {
+  async sync(userId: string, urgent?: { since: Date; allowFrom: string[]; broad?: boolean }, backfillDays?: number): Promise<number> {
     const pool = getPgPool();
     const { rows } = await pool.query<Connection>(
       `SELECT * FROM mail_connections WHERE user_id = $1 AND provider = 'gmail' AND status = 'active'`, [userId]);
@@ -247,7 +250,7 @@ export const gmailService = {
     try {
       const token = await accessToken(c);
       const list = await api<{ messages?: { id: string }[] }>(token,
-        `/users/me/messages?maxResults=100&q=${encodeURIComponent(urgent ? urgentQuery(since, urgent.allowFrom) : searchQuery(apps.rows.map((r) => r.company), since))}`);
+        `/users/me/messages?maxResults=100&q=${encodeURIComponent(urgent ? urgentQuery(since, urgent.allowFrom, urgent.broad) : searchQuery(apps.rows.map((r) => r.company), since))}`);
       for (const { id } of list.messages ?? []) {
         const seen = await pool.query(`SELECT 1 FROM emails WHERE user_id = $1 AND source = 'gmail' AND external_id = $2`, [userId, id]);
         if (seen.rowCount) continue;
@@ -256,7 +259,7 @@ export const gmailService = {
         const from = parseFrom(h('from'));
         const email = await inboxService.ingestForUser(userId, {
           to: c.address, fromAddress: from.address, fromName: from.name, subject: h('subject'), text: messageText(msg.payload),
-        }, { source: 'gmail', externalId: id, strict: true, allowFrom: urgent?.allowFrom, receivedAt: msg.internalDate ? new Date(Number(msg.internalDate)) : undefined });
+        }, { source: 'gmail', externalId: id, strict: true, allowFrom: urgent?.allowFrom, broad: urgent?.broad, receivedAt: msg.internalDate ? new Date(Number(msg.internalDate)) : undefined });
         if (email) kept++;
       }
       await pool.query('UPDATE mail_connections SET last_sync_at = NOW(), last_error = NULL, messages_kept = messages_kept + $2 WHERE id = $1', [c.id, kept]);
