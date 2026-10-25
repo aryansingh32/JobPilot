@@ -24,6 +24,8 @@ export interface ProfileData {
     github?: string;
     website?: string;
     summary?: string;
+    /** Where the person is a citizen; guessed from their network location until they say otherwise. */
+    nationality?: string;
   };
   work?: {
     experienceLevel?: string;
@@ -69,6 +71,7 @@ export interface ProfileData {
   skills?: string[];
   /** Tell us more about you: free text in the person's own words. The AI answers form questions from it. */
   about?: string;
+  certifications?: string[];
   projects?: Array<{ name: string; description?: string; url?: string; tech?: string[] }>;
   /** What recruitment portals of the government ask for. Filled once (asked on the first application), then reused. */
   government?: {

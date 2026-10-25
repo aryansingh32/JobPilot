@@ -1,3 +1,4 @@
+import { learnAnswer } from '../shared/profile/learned.js';
 import { randomUUID, timingSafeEqual } from 'crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerHookHandler } from 'fastify';
 import { getPgPool } from '../shared/db/index.js';
@@ -156,6 +157,15 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
     return profileService.patch(uid(req), patch);
   });
 
+  // First guess of country and nationality from where the person connects (only used to prefill, always editable).
+  app.get('/me/geo', auth, async (req) => {
+    const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+    const header = String(req.headers['cf-ipcountry'] ?? '').toUpperCase();
+    if (/^[A-Z]{2}$/.test(header) && header !== 'XX') return { country: header, nationality: (await import('../shared/profile/geo.js')).nationalityOf(header) };
+    const { geoFromIp } = await import('../shared/profile/geo.js');
+    return (await geoFromIp(fwd || req.ip)) ?? { country: null, nationality: null };
+  });
+
   app.get('/me/profile/versions', auth, async (req) => ({ versions: await profileService.versions(uid(req)) }));
 
   app.post('/me/onboarding', auth, async (req, reply) => {
@@ -241,6 +251,7 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
   app.post('/me/answers', auth, async (req, reply) => {
     const { question, answer } = (req.body ?? {}) as { question?: string; answer?: string };
     if (!question?.trim() || !answer?.trim()) return reply.status(400).send({ error: 'question and answer are required' });
+    await learnAnswer(uid(req), question, answer).catch(() => {});
     return { answer: await answerMemory.remember(uid(req), question, answer) };
   });
   app.delete('/me/answers/:id', auth, async (req, reply) => {

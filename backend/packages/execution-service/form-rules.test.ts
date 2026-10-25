@@ -81,3 +81,12 @@ describe('defaultYesNo', () => {
     expect(ruleFor(f('Please mention the Passing Out Year'))).toBe('graduationYear');
   });
 });
+
+describe('defaultYesNo in text boxes', () => {
+  it('answers yes/no questions with the word, ignores open questions', () => {
+    expect(defaultYesNo('Are you a previous Weave employee?', [], {})).toBe('No');
+    expect(defaultYesNo('Are you related to anyone who currently works at Weave? If so, please list their name!', [], {})).toBe('No');
+    expect(defaultYesNo('Are you currently an Imagine Worldwide employee?', ['Yes', 'No'], {})).toBe('No');
+    expect(defaultYesNo('Describe your previous employee experience', [], {})).toBeNull();
+  });
+});

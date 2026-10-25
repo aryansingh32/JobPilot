@@ -1,3 +1,4 @@
+import { learnAnswer } from '../profile/learned.js';
 import { randomUUID } from 'crypto';
 import { getPgPool, getRedisClient, CacheKeys } from '../db/index.js';
 import { enqueueJob, acquireTaskLock, releaseTaskLock, DuplicateTaskError } from '../queue/index.js';
@@ -411,11 +412,15 @@ export async function continueParked(applicationId: string, value: string): Prom
     // Several questions answered together: each is remembered under its own wording.
     try {
       const given = JSON.parse(value) as Record<string, string>;
-      for (const q of state.questions) if (given[q.id]?.trim()) await answerMemory.remember(userId, q.question, given[q.id].trim());
+      for (const q of state.questions) if (given[q.id]?.trim()) {
+        await answerMemory.remember(userId, q.question, given[q.id].trim());
+        await learnAnswer(userId, q.question, given[q.id].trim()).catch(() => {});
+      }
     } catch { /* not JSON: nothing to remember */ }
   } else if (state.question && value.trim()) {
     // Autofill recalls it on the re-run, like any remembered answer.
     await answerMemory.remember(userId, state.question, value.trim());
+    await learnAnswer(userId, state.question, value.trim()).catch(() => {});
   }
 
   const job: ExecuteJob = {

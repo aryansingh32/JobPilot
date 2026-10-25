@@ -1,4 +1,5 @@
 import { AboutYouField } from "@/components/chat/AboutYouCard";
+import { jp } from "@/lib/api-client";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { GmailConnect } from "@/components/chat/GmailConnect";
 import { useIntegrations } from "@/lib/live";
@@ -703,6 +704,9 @@ function AboutStep({
             }
           />
         </Field>
+        <Field label="Nationality">
+          <NationalityBox value={data.nationality ?? ""} onChange={(v) => set({ nationality: v })} />
+        </Field>
         <Field label="Tell us more about you (optional)">
           <p className="mb-2 text-[12px] text-muted-foreground">
             Passing-out year, CGPA, relocation, anything employers ask — I answer from this so I rarely need to stop and ask.
@@ -1214,4 +1218,21 @@ function timeLeft(stepsLeft: number): string {
 function normalizeMobile(v?: string): string {
   const digits = (v ?? "").replace(/[^\d+]/g, "");
   return digits.startsWith("+") ? digits : digits.length === 10 ? `+91${digits}` : digits;
+}
+
+/** Nationality, guessed from where the person connects from; they can change it. */
+function NationalityBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  useEffect(() => {
+    if (value) return;
+    jp.geo().then((g) => g.nationality && onChange(g.nationality)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder="e.g. Indian"
+      className="h-11 w-full rounded-xl border border-border bg-background px-3 text-[14px] text-foreground outline-none focus:border-primary"
+    />
+  );
 }

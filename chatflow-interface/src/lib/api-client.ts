@@ -554,6 +554,7 @@ export const jp = {
   me: () => get<MeResponse>("/me"),
 
   profile: () => get<ProfileDTO>("/me/profile"),
+  geo: () => get<{ country: string | null; nationality: string | null }>("/me/geo"),
   patchProfile: (patch: ProfileDataDTO) => put<ProfileDTO>("/me/profile", patch),
   setOnboarding: (status: "done" | "skipped" | "pending") =>
     post<ProfileDTO>("/me/onboarding", { status }),

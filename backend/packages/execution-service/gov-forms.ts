@@ -35,7 +35,7 @@ export function governmentBook(profile: ProfileData): Record<string, string> {
     dobIso: g.dateOfBirth ?? '',
     gender: g.gender ?? '',
     category: g.category ?? '',
-    nationality: g.nationality ?? '',
+    nationality: g.nationality ?? profile.personal?.nationality ?? '',
     maritalStatus: g.maritalStatus ?? '',
     domicile: g.domicileState ?? '',
     pwd: bool(g.pwd),

@@ -123,6 +123,7 @@ const SCHEMA_HINT = `Return ONLY a JSON object with this shape (omit unknown fie
   "education": [{ "school": "", "degree": "", "field": "", "start": "YYYY-MM", "end": "YYYY-MM", "current": false, "grade": "" }],
   "experience": [{ "company": "", "title": "", "location": "", "start": "YYYY-MM", "end": "YYYY-MM", "current": false, "highlights": ["…"] }],
   "skills": ["…"],
+  "certifications": ["…"],
   "projects": [{ "name": "", "description": "", "url": "", "tech": ["…"] }]
 }`;
 

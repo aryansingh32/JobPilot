@@ -41,6 +41,8 @@ export function coverLetterFacts(p: ProfileData): string[] {
   if (edu?.grade) out.push(`Grade / CGPA: ${edu.grade}`);
   const loc = [p.personal?.city, p.personal?.state, p.personal?.country].filter(Boolean).join(', ');
   if (loc) out.push(`Lives in: ${loc}`);
+  if (p.personal?.nationality) out.push(`Nationality: ${p.personal.nationality}`);
+  if (p.certifications?.length) out.push(`Certifications: ${p.certifications.slice(0, 8).join('; ')}`);
   if (p.authorization?.statement) out.push(`Work authorization: ${p.authorization.statement}`);
   if (p.about?.trim()) out.push(`In their own words: ${p.about.trim().slice(0, 4000)}`);
   return out;

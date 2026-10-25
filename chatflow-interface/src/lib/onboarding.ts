@@ -38,6 +38,7 @@ export interface OnboardingData {
   reviewBeforeSubmit?: "on" | "off";
   resumeTailoring?: "off" | "honest" | "aggressive";
   about?: string;
+  nationality?: string;
   [ONBOARDED_KEY]?: "done" | "skipped";
 }
 
@@ -81,6 +82,7 @@ export function profileToFlat(d: ProfileDataDTO, status?: string): Flat {
       set.reviewBeforeSubmit === undefined ? undefined : set.reviewBeforeSubmit ? "on" : "off",
     resumeTailoring: set.resumeTailoring as string | undefined,
     about: d.about,
+    nationality: p.nationality as string | undefined,
     [ONBOARDED_KEY]: status === "done" || status === "skipped" ? status : undefined,
   };
   return Object.fromEntries(Object.entries(flat).filter(([, v]) => v)) as Flat;
@@ -99,6 +101,7 @@ export function flatToProfile(f: Flat): ProfileDataDTO {
       phone: f.mobile,
       phoneVerified: f.mobileVerified === "yes" || undefined,
       city: f.city,
+      nationality: f.nationality,
     },
     work: {
       experienceLevel: f.experienceLevel,

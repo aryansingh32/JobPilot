@@ -12,6 +12,19 @@ export const ABOUT_PLACEHOLDER = `Anything employers tend to ask, in your own wo
 • Pronouns: prefer not to say
 • How I heard about jobs: LinkedIn`;
 
+/** Lines employers ask again and again: one tap adds the line to fill in. */
+const SUGGESTIONS = [
+  "Passing out year: ",
+  "CGPA / backlogs: ",
+  "Certifications: ",
+  "Open to relocate: Yes",
+  "Fine with hybrid / office: Yes",
+  "Pronouns: prefer not to say",
+  "Gender: ",
+  "How I heard about jobs: LinkedIn",
+  "Anyone I know at the company: No",
+];
+
 /** The free-text box itself — used in onboarding and Settings. */
 export function AboutYouField({
   value,
@@ -22,14 +35,31 @@ export function AboutYouField({
   onChange: (v: string) => void;
   rows?: number;
 }) {
+  const left = SUGGESTIONS.filter((s) => !value.toLowerCase().includes(s.split(":")[0].toLowerCase()));
   return (
-    <textarea
-      value={value}
-      onChange={(e) => onChange(e.target.value.slice(0, 4000))}
-      rows={rows}
-      placeholder={ABOUT_PLACEHOLDER}
-      className="w-full resize-y rounded-xl border border-border bg-background p-3 text-[13.5px] leading-relaxed text-foreground outline-none placeholder:text-faint focus:border-primary"
-    />
+    <div>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value.slice(0, 4000))}
+        rows={rows}
+        placeholder={ABOUT_PLACEHOLDER}
+        className="w-full resize-y rounded-xl border border-border bg-background p-3 text-[13.5px] leading-relaxed text-foreground outline-none placeholder:text-faint focus:border-primary"
+      />
+      {left.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {left.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => onChange(`${value.trimEnd()}${value.trim() ? "\n" : ""}${s}`.slice(0, 4000))}
+              className="rounded-full border border-border bg-card px-2.5 py-1 text-[11.5px] text-muted-foreground hover:border-primary hover:text-foreground"
+            >
+              + {s.split(":")[0]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -40,12 +70,20 @@ export function AboutYouCard() {
   const saved = data?.data.about ?? "";
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [nat, setNat] = useState("");
+  const savedNat = (data?.data.personal?.nationality as string | undefined) ?? "";
   useEffect(() => setText(saved), [saved]);
+  // First guess from where they connect from; only prefilled, they confirm by saving.
+  useEffect(() => {
+    if (!data) return;
+    if (savedNat) return setNat(savedNat);
+    jp.geo().then((g) => g.nationality && setNat(g.nationality)).catch(() => {});
+  }, [data, savedNat]);
 
   const save = async () => {
     setBusy(true);
     try {
-      await jp.patchProfile({ about: text.trim() });
+      await jp.patchProfile({ about: text.trim(), personal: { nationality: nat.trim() || undefined } });
       await qc.invalidateQueries({ queryKey: ["profile"] });
       toast.success("Saved — I'll use this to answer application questions");
     } catch (e) {
@@ -67,6 +105,15 @@ export function AboutYouCard() {
             Write whatever employers usually ask. I answer application questions from this instead of stopping to ask you.
             Only used on applications you send.
           </p>
+          <label className="mt-3 block text-[12px] font-medium text-muted-foreground">
+            Nationality
+            <input
+              value={nat}
+              onChange={(e) => setNat(e.target.value)}
+              placeholder="e.g. Indian"
+              className="mt-1 h-9 w-full rounded-xl border border-border bg-background px-3 text-[13.5px] text-foreground outline-none focus:border-primary"
+            />
+          </label>
           <div className="mt-3">
             <AboutYouField value={text} onChange={setText} />
           </div>
@@ -74,7 +121,7 @@ export function AboutYouCard() {
             <span className="text-[11px] text-faint">{text.length}/4000</span>
             <button
               onClick={save}
-              disabled={busy || text.trim() === saved.trim()}
+              disabled={busy || (text.trim() === saved.trim() && nat.trim() === savedNat)}
               className="inline-flex h-9 items-center gap-1.5 rounded-full bg-primary px-4 text-[13px] font-semibold text-primary-foreground disabled:opacity-50"
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Save

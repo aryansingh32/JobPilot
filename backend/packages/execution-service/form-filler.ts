@@ -89,6 +89,8 @@ export function buildAnswerBook(profile: ProfileData, job: { country?: string | 
     graduationYear: edu?.end?.match(/\d{4}/)?.[0] ?? '',
     skills: (profile.skills ?? []).join(', '),
     workplace: (profile.preferences?.workplace ?? []).join(', '),
+    nationality: profile.personal?.nationality ?? profile.government?.nationality ?? '',
+    certifications: (profile.certifications ?? []).join(', '),
     preferredLocation: profile.preferences?.locations?.find((l) => !/remote/i.test(l)) ?? '',
     ...governmentBook(profile),
   };
@@ -127,6 +129,8 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(school|university|college|institution)\b/, 'school'],
   [/\bdegree\b|\b(highest )?qualification\b/, 'degree'],
   [/\b(discipline|major|field of study)\b/, 'field'],
+  [/\bnationality\b|\bcitizenship\b(?! status)/, 'nationality'],
+  [/\bcertifications?\b/, 'certifications'],
   [/\bgraduat|\bpassing[- ]?out\b|\byear of passing\b|\bpass[- ]?out year\b/, 'graduationYear'],
   [/\b(summary|about (yourself|you))\b/, 'summary'],
 ];
@@ -194,15 +198,17 @@ export function rangeOption(options: string[], n: number): string | null {
 export function defaultYesNo(label: string, options: string[], book: { currentCompany?: string; workplace?: string }): string | null {
   const l = norm(label);
   const opt = (re: RegExp) => options.find((o) => re.test(o.trim()));
-  const yes = opt(/^(yes|y|true)\b/i);
-  const no = opt(/^(no|n|false)\b/i);
+  // A text box takes the word itself; a list needs its own wording of it.
+  const yes = options.length ? opt(/^(yes|y|true)\b/i) : 'Yes';
+  const no = options.length ? opt(/^(no|n|false)\b/i) : 'No';
+  if (!options.length && !/^(are|is|do|does|did|have|has|will|would|can|could)\b/.test(l)) return null;
   const cur = norm(book.currentCompany ?? '');
   // "Have you previously worked for X?" / "Are you currently an employee of X?" — No, unless X is where they work now.
-  if (/\b(previously|formerly|ever|before|currently|now)\b.{0,40}\b(work(ed|ing)?|employ(ed|ee)|an employee|contractor|intern(ed)?)\b.{0,30}\b(for|at|with|of|by)\b|\bformer (employee|intern)\b|\bcurrent(ly)? (an )?employee\b/.test(l)) {
+  if (/\b(previously|formerly|ever|before|currently|now)\b.{0,40}\b(work(ed|ing)?|employ(ed|ee)|an employee|contractor|intern(ed)?)\b.{0,30}\b(for|at|with|of|by)\b|\bformer (employee|intern)\b|\bcurrent(ly)? (an )?employee\b|\b(previous|former|current|currently|ex)\b.{0,40}\b(employee|employed)\b|\bemployee of\b/.test(l)) {
     return cur && l.includes(cur) ? yes ?? null : no ?? null;
   }
   // "Do you know anyone who works at X?" — No (a referrer's name is never made up).
-  if (/\b(know|knows|acquaint\w*|friends?|relatives?|family members?)\b.{0,50}\b(work|employ|interview)/.test(l) || /\b(referred|referral)\b.{0,30}\b(by|from) (an? )?(current )?(employee|team member)/.test(l)) return no ?? null;
+  if (/\brelated to (anyone|any one|someone)\b/.test(l) || /\b(know|knows|acquaint\w*|friends?|relatives?|family members?)\b.{0,50}\b(work|employ|interview)/.test(l) || /\b(referred|referral)\b.{0,30}\b(by|from) (an? )?(current )?(employee|team member)/.test(l)) return no ?? null;
   // Relocating / office / hybrid — Yes, unless they said they only want remote.
   if (/\b(relocat\w*|hybrid|on-?site|in-?office|work from (our|the) \w+ office|(work|working) (from|in|at) (the |our )?(office|[a-z]+ office))\b/.test(l)) {
     const w = (book.workplace ?? '').toLowerCase();
@@ -321,13 +327,13 @@ export async function planAnswers(
       value = rangeOption(field.options, Number(value)) ?? value;
     }
     // Same answer for nearly everyone (never worked there, knows nobody there, fine with an office) — see defaultYesNo.
-    if (!value && choice && field.options.length && field.label) {
+    if (!value && field.label && (choice ? field.options.length > 0 : field.type === 'text' || field.tag === 'textarea')) {
       value = defaultYesNo(field.label, field.options, book) ?? '';
       if (value) source = 'default';
     }
     // "How did you hear about us?" — never in a profile; a generic true source, not a made-up referrer.
-    if (!value && choice && /how did you (hear|find|come to know)|where did you (hear|find|learn)|source of (application|referral)/.test(norm(field.label))) {
-      value = sourceOption(field.options) ?? '';
+    if (!value && (choice || field.type === 'text') && /how did you (hear|find|come to know)|where did you (hear|find|learn)|source of (application|referral)/.test(norm(field.label))) {
+      value = (choice ? sourceOption(field.options) : 'Online job board') ?? '';
       if (value) source = 'default';
     }
     // A box that wants a number of days ("Available to join (in days)").
