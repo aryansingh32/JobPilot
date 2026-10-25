@@ -88,6 +88,7 @@ export function buildAnswerBook(profile: ProfileData, job: { country?: string | 
     field: edu?.field ?? '',
     graduationYear: edu?.end?.match(/\d{4}/)?.[0] ?? '',
     skills: (profile.skills ?? []).join(', '),
+    workplace: (profile.preferences?.workplace ?? []).join(', '),
     preferredLocation: profile.preferences?.locations?.find((l) => !/remote/i.test(l)) ?? '',
     ...governmentBook(profile),
   };
@@ -126,7 +127,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(school|university|college|institution)\b/, 'school'],
   [/\bdegree\b|\b(highest )?qualification\b/, 'degree'],
   [/\b(discipline|major|field of study)\b/, 'field'],
-  [/\bgraduat/, 'graduationYear'],
+  [/\bgraduat|\bpassing[- ]?out\b|\byear of passing\b|\bpass[- ]?out year\b/, 'graduationYear'],
   [/\b(summary|about (yourself|you))\b/, 'summary'],
 ];
 
@@ -149,7 +150,7 @@ export function ruleFor(field: FormField): string | null {
   if (!l) return null;
   // "Mobile OTP" and "Email OTP" are codes sent to you, not your number or address.
   if (isOtpField(l) || isSecretField(l, field.type)) return null;
-  if (/cover letter|pronounc|high school|secondary school|referr(al|ed|er)\b/.test(l)) return null;
+  if (/cover letter|pronounc|high school|secondary school|\breferr(al|ed|er)\b/.test(l)) return null;
   // A long question that merely mentions "GitHub" or "location" is an open question,
   // not that profile field — only yes/no eligibility rules apply to long text.
   const long = l.split(' ').length > 14;
@@ -182,6 +183,31 @@ export function rangeOption(options: string[], n: number): string | null {
     if (/^\s*(<|less than|under|below|fresher|0\s*[-–]\s*1\b)/.test(t) && n < nums[0] + (/0\s*[-–]\s*1\b/.test(t) ? 1 : 0)) return o;
     if (/\+|or more|and above|above|more than|over/.test(t) && nums.length === 1 && n >= nums[0]) return o;
     if (nums.length >= 2 && n >= nums[0] && n <= nums[1]) return o;
+  }
+  return null;
+}
+
+/**
+ * Yes/No questions that are the same for nearly everyone, answered without asking: never worked there before,
+ * knows nobody there, fine with an office or hybrid week. Returns the matching option, or null (then it is asked).
+ */
+export function defaultYesNo(label: string, options: string[], book: { currentCompany?: string; workplace?: string }): string | null {
+  const l = norm(label);
+  const opt = (re: RegExp) => options.find((o) => re.test(o.trim()));
+  const yes = opt(/^(yes|y|true)\b/i);
+  const no = opt(/^(no|n|false)\b/i);
+  const cur = norm(book.currentCompany ?? '');
+  // "Have you previously worked for X?" / "Are you currently an employee of X?" — No, unless X is where they work now.
+  if (/\b(previously|formerly|ever|before|currently|now)\b.{0,40}\b(work(ed|ing)?|employ(ed|ee)|an employee|contractor|intern(ed)?)\b.{0,30}\b(for|at|with|of|by)\b|\bformer (employee|intern)\b|\bcurrent(ly)? (an )?employee\b/.test(l)) {
+    return cur && l.includes(cur) ? yes ?? null : no ?? null;
+  }
+  // "Do you know anyone who works at X?" — No (a referrer's name is never made up).
+  if (/\b(know|knows|acquaint\w*|friends?|relatives?|family members?)\b.{0,50}\b(work|employ|interview)/.test(l) || /\b(referred|referral)\b.{0,30}\b(by|from) (an? )?(current )?(employee|team member)/.test(l)) return no ?? null;
+  // Relocating / office / hybrid — Yes, unless they said they only want remote.
+  if (/\b(relocat\w*|hybrid|on-?site|in-?office|work from (our|the) \w+ office|(work|working) (from|in|at) (the |our )?(office|[a-z]+ office))\b/.test(l)) {
+    const w = (book.workplace ?? '').toLowerCase();
+    const onlyRemote = w && !/hybrid|on-?site|office|any/.test(w);
+    return onlyRemote ? null : yes ?? null;
   }
   return null;
 }
@@ -293,6 +319,11 @@ export async function planAnswers(
     // Experience asked as ranges ("<1 Yrs", "1-3 Yrs"…): the range the profile's years fall in.
     if (value && choice && key === 'yearsExperience' && Number.isFinite(Number(value))) {
       value = rangeOption(field.options, Number(value)) ?? value;
+    }
+    // Same answer for nearly everyone (never worked there, knows nobody there, fine with an office) — see defaultYesNo.
+    if (!value && choice && field.options.length && field.label) {
+      value = defaultYesNo(field.label, field.options, book) ?? '';
+      if (value) source = 'default';
     }
     // "How did you hear about us?" — never in a profile; a generic true source, not a made-up referrer.
     if (!value && choice && /how did you (hear|find|come to know)|where did you (hear|find|learn)|source of (application|referral)/.test(norm(field.label))) {

@@ -447,6 +447,7 @@ export interface ProfileDataDTO {
   education?: unknown[];
   experience?: unknown[];
   skills?: string[];
+  about?: string;
   projects?: unknown[];
   documents?: {
     resumeFileId?: string;

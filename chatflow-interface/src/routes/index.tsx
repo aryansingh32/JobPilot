@@ -24,6 +24,7 @@ import { AutoApplyView } from "@/components/chat/AutoApplyView";
 import { BuyCreditsDialog } from "@/components/chat/BuyCredits";
 import { ProfileGapsDialog } from "@/components/chat/ProfileGapsDialog";
 import { PortalPasswordCard } from "@/components/chat/PortalPasswordCard";
+import { AboutYouCard } from "@/components/chat/AboutYouCard";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { taskStatus } from "@/lib/task-status";
 import {
@@ -623,9 +624,12 @@ function Index() {
       )}
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-xl">
           <DialogTitle>Settings</DialogTitle>
-          <PortalPasswordCard />
+          <div className="max-h-[70vh] space-y-3 overflow-y-auto">
+            <AboutYouCard />
+            <PortalPasswordCard />
+          </div>
         </DialogContent>
       </Dialog>
       <ProfileGapsDialog

@@ -37,6 +37,12 @@ export function coverLetterFacts(p: ProfileData): string[] {
   }
   if (p.personal?.summary) out.push(`Summary: ${p.personal.summary.slice(0, 400)}`);
   if (w.noticePeriod) out.push(`Notice period: ${w.noticePeriod}`);
+  if (edu?.end) out.push(`Education ${edu.current ? 'expected end' : 'ended'}: ${edu.end}`);
+  if (edu?.grade) out.push(`Grade / CGPA: ${edu.grade}`);
+  const loc = [p.personal?.city, p.personal?.state, p.personal?.country].filter(Boolean).join(', ');
+  if (loc) out.push(`Lives in: ${loc}`);
+  if (p.authorization?.statement) out.push(`Work authorization: ${p.authorization.statement}`);
+  if (p.about?.trim()) out.push(`In their own words: ${p.about.trim().slice(0, 4000)}`);
   return out;
 }
 

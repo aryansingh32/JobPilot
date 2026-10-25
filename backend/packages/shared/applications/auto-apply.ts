@@ -97,7 +97,7 @@ async function loadGuards(userId: string): Promise<Guards> {
               COUNT(*) FILTER (WHERE a.status = 'failed')::int AS failed,
               COUNT(*) FILTER (WHERE a.status IN ('submitted','completed'))::int AS ok
          FROM applications a JOIN jobs j ON j.id = a.job_id JOIN job_boards b ON b.id = j.board_id
-        WHERE a.created_at > NOW() - INTERVAL '7 days'
+        WHERE a.created_at > NOW() - INTERVAL '48 hours'
         GROUP BY b.ats_type`,
     ),
   ]);

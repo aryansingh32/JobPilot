@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ruleFor, type FormField } from './form-filler.js';
+import { ruleFor, defaultYesNo, type FormField } from './form-filler.js';
 
 const f = (label: string): FormField => ({ idx: 0, label, name: '', type: 'text', tag: 'input', options: [], required: true, value: '' } as unknown as FormField);
 
@@ -61,5 +61,23 @@ describe('referrer and numeric notice', () => {
   it('a referrer is never the applicant', () => {
     expect(ruleFor(f('Referrer work email'))).toBeNull();
     expect(ruleFor(f('Referrer name'))).toBeNull();
+  });
+});
+
+describe('defaultYesNo', () => {
+  const yn = ['Yes', 'No'];
+  it('never worked there before → No, unless it is the current employer', () => {
+    expect(defaultYesNo('Have you previously worked for Databricks?', yn, { currentCompany: 'Nexora' })).toBe('No');
+    expect(defaultYesNo('Are you currently an employee of a WPP agency?', yn, {})).toBe('No');
+    expect(defaultYesNo('Are you currently an employee of Nexora?', yn, { currentCompany: 'Nexora' })).toBe('Yes');
+  });
+  it('knows nobody there → No; open to office/hybrid → Yes unless remote-only', () => {
+    expect(defaultYesNo('Do you know anyone currently working at ConveGenius?', yn, {})).toBe('No');
+    expect(defaultYesNo('Are you open to a hybrid role based in Bangalore?', yn, {})).toBe('Yes');
+    expect(defaultYesNo('Are you open to a hybrid role based in Bangalore?', yn, { workplace: 'Remote' })).toBeNull();
+    expect(defaultYesNo('What is your favourite colour?', yn, {})).toBeNull();
+  });
+  it('passing-out year is the graduation year', () => {
+    expect(ruleFor(f('Please mention the Passing Out Year'))).toBe('graduationYear');
   });
 });

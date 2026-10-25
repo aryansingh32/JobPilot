@@ -37,6 +37,7 @@ export interface OnboardingData {
   smsCodeAutofill?: "supported" | "unsupported";
   reviewBeforeSubmit?: "on" | "off";
   resumeTailoring?: "off" | "honest" | "aggressive";
+  about?: string;
   [ONBOARDED_KEY]?: "done" | "skipped";
 }
 
@@ -79,6 +80,7 @@ export function profileToFlat(d: ProfileDataDTO, status?: string): Flat {
     reviewBeforeSubmit:
       set.reviewBeforeSubmit === undefined ? undefined : set.reviewBeforeSubmit ? "on" : "off",
     resumeTailoring: set.resumeTailoring as string | undefined,
+    about: d.about,
     [ONBOARDED_KEY]: status === "done" || status === "skipped" ? status : undefined,
   };
   return Object.fromEntries(Object.entries(flat).filter(([, v]) => v)) as Flat;
@@ -88,6 +90,7 @@ export function profileToFlat(d: ProfileDataDTO, status?: string): Flat {
 export function flatToProfile(f: Flat): ProfileDataDTO {
   const name = f.fullName?.trim();
   return {
+    about: f.about,
     personal: {
       fullName: name,
       firstName: name?.split(/\s+/)[0],

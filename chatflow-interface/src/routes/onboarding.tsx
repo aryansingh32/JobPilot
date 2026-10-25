@@ -1,3 +1,4 @@
+import { AboutYouField } from "@/components/chat/AboutYouCard";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { GmailConnect } from "@/components/chat/GmailConnect";
 import { useIntegrations } from "@/lib/live";
@@ -701,6 +702,12 @@ function AboutStep({
               })
             }
           />
+        </Field>
+        <Field label="Tell us more about you (optional)">
+          <p className="mb-2 text-[12px] text-muted-foreground">
+            Passing-out year, CGPA, relocation, anything employers ask — I answer from this so I rarely need to stop and ask.
+          </p>
+          <AboutYouField value={data.about ?? ""} onChange={(v) => set({ about: v })} />
         </Field>
       </div>
     </>

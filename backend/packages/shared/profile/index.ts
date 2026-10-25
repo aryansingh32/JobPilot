@@ -67,6 +67,8 @@ export interface ProfileData {
     highlights?: string[];
   }>;
   skills?: string[];
+  /** Tell us more about you: free text in the person's own words. The AI answers form questions from it. */
+  about?: string;
   projects?: Array<{ name: string; description?: string; url?: string; tech?: string[] }>;
   /** What recruitment portals of the government ask for. Filled once (asked on the first application), then reused. */
   government?: {

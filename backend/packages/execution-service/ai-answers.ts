@@ -22,13 +22,20 @@ const logger = createLogger('ai-answers');
 const NEVER_GUESS = new RegExp(
   [
     'aadhaar|aadhar|\\bpan\\b|passport|\\bssn\\b|social security|password|\\botp\\b|\\bcvv\\b|card number|bank|account number|ifsc',
-    'religion|caste|category|community|disabilit|handicap|veteran|ethnic|race\\b|gender|sex\\b|marital|orientation',
-    'criminal|convict|arrest|court|background check|visa|sponsor|work authori[sz]|right to work|citizen',
     'date of birth|\\bdob\\b|signature|photo|declaration|i (hereby )?(declare|agree|certify|confirm)|terms|consent|privacy|acknowledg',
     'expected (salary|ctc|compensation)|current (salary|ctc)|salary expectation',
   ].join('|'),
   'i',
 );
+/** Personal or legal matters: answered only when the person's own notes ("about") say so, never inferred. */
+const NOTES_ONLY = new RegExp(
+  [
+    'religion|caste|category|community|disabilit|handicap|veteran|ethnic|race\\b|gender|sex\\b|marital|orientation|pronoun',
+    'criminal|convict|arrest|court|background check|visa|sponsor|work authori[sz]|right to work|citizen',
+  ].join('|'),
+  'i',
+);
+const notesOnly = (f: FormField) => NOTES_ONLY.test(`${f.label} ${f.name}`);
 
 export function eligibleForAi(f: FormField): boolean {
   if (f.type === 'file' || f.type === 'password' || f.type === 'checkbox') return false;
@@ -60,7 +67,8 @@ export async function aiAnswers(
   ids: { userId: string; jobId: string },
 ): Promise<Map<number, string>> {
   const out = new Map<number, string>();
-  const eligible = fields.filter(eligibleForAi).slice(0, 12);
+  const about = profile.about?.trim() ?? '';
+  const eligible = fields.filter((f) => eligibleForAi(f) && (!notesOnly(f) || about)).slice(0, 30);
   const facts = coverLetterFacts(profile);
   const todo: FormField[] = [];
   for (const f of eligible) {
@@ -80,14 +88,14 @@ export async function aiAnswers(
       purpose: 'field_answers',
       userId: ids.userId,
       jobId: ids.jobId,
-      maxTokens: 900,
+      maxTokens: 1800,
       temperature: 0.2,
       timeoutMs: 30_000,
       messages: [
         {
           role: 'system',
           content:
-            'You fill in a job application for the candidate. Answer each question using ONLY the facts provided. If the facts do not clearly answer it, answer null — never guess or invent employers, numbers, dates, skills or achievements. For a question with options, answer with exactly one option, copied verbatim. For free text, write 1–3 plain first-person sentences. Return JSON: {"answers":[{"id":<id>,"answer":<string|null>}]}.',
+            'You fill in a job application for the candidate. Answer each question using ONLY the facts provided. If the facts do not clearly answer it, answer null — never guess or invent employers, numbers, dates, skills or achievements. Questions about identity, legal status, disability, gender or similar may be answered ONLY from the line "In their own words"; otherwise null. For a question with options, answer with exactly one option, copied verbatim. For free text, write 1–3 plain first-person sentences. Return JSON: {"answers":[{"id":<id>,"answer":<string|null>}]}.',
         },
         {
           role: 'user',
