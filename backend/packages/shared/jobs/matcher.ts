@@ -1,5 +1,5 @@
 import { getPgPool } from '../db/index.js';
-import { getNumber } from '../config/settings.js';
+import { getNumber, getBool, getSetting } from '../config/settings.js';
 import type { ProfileData } from '../profile/index.js';
 
 // ============================================================
@@ -191,6 +191,13 @@ export function scoreJob(p: ProfileData, j: JobRow): { score: number; reasons: s
   return { score: Math.max(0, Math.round(score)), reasons, eligible, matchedSkills: overlap };
 }
 
+/** Systems whose applications go through cleanly; null = show everything. */
+async function applyReadySystems(): Promise<string[] | null> {
+  if (!(await getBool('jobs.apply_ready_only'))) return null;
+  const list = await getSetting('jobs.apply_ready_systems');
+  return Array.isArray(list) ? list.map((x) => String(x).toLowerCase()) : null;
+}
+
 const JOB_COLUMNS = `
   j.id, j.title, c.name AS company, j.url, j.location, j.country, j.workplace, j.employment_type,
   j.salary_min, j.salary_max, j.salary_currency, j.salary_period, j.posted_at, j.skills, j.seniority, b.ats_type,
@@ -214,19 +221,21 @@ async function rankedMatches(userId: string, profile: ProfileData) {
         .map((c) => c.toUpperCase()),
     ),
   ];
+  const ready = await applyReadySystems();
   const { rows } = await getPgPool().query<JobRow>(
     `SELECT ${JOB_COLUMNS}
        FROM jobs j
        JOIN job_boards b ON b.id = j.board_id
        LEFT JOIN companies c ON c.id = j.company_id
       WHERE j.status = 'active' AND (j.closes_at IS NULL OR j.closes_at > NOW())
+        AND ($4::text[] IS NULL OR b.ats_type = ANY($4))
         AND (j.posted_at IS NULL OR j.posted_at > NOW() - ($2 || ' days')::interval)
         AND ($3::text[] IS NULL OR j.country = ANY($3) OR j.country IS NULL OR j.workplace = 'Remote')
         AND NOT EXISTS (SELECT 1 FROM job_feedback f WHERE f.user_id = $1 AND f.job_id = j.id)
         AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.user_id = $1 AND a.job_id = j.id)
       ORDER BY j.posted_at DESC NULLS LAST
       LIMIT 5000`,
-    [userId, maxAge, countries.length ? countries : null],
+    [userId, maxAge, countries.length ? countries : null, ready],
   );
   // One card per role: big employers post the same title/location as several requisitions.
   const seen = new Set<string>();
@@ -313,10 +322,11 @@ export async function jobPulse(userId: string, profile: ProfileData): Promise<Jo
   if (home) {
     const aliases = cityAliases(home);
     const { rows } = await getPgPool().query(
-      `SELECT COUNT(*)::int AS roles, COUNT(DISTINCT company_id)::int AS companies,
-              COUNT(*) FILTER (WHERE COALESCE(posted_at, first_seen_at) > NOW() - INTERVAL '1 day')::int AS new_today
-         FROM jobs WHERE status = 'active' AND location ILIKE ANY($1)`,
-      [aliases.map((a) => `%${a}%`)],
+      `SELECT COUNT(*)::int AS roles, COUNT(DISTINCT j.company_id)::int AS companies,
+              COUNT(*) FILTER (WHERE COALESCE(j.posted_at, j.first_seen_at) > NOW() - INTERVAL '1 day')::int AS new_today
+         FROM jobs j JOIN job_boards b ON b.id = j.board_id
+        WHERE j.status = 'active' AND j.location ILIKE ANY($1) AND ($2::text[] IS NULL OR b.ats_type = ANY($2))`,
+      [aliases.map((a) => `%${a}%`), await applyReadySystems()],
     );
     // "Bangalore" → "Bengaluru": the city's own name when we know it.
     const name = /bangalore/i.test(home) ? 'Bengaluru' : /gurgaon/i.test(home) ? 'Gurugram' : /bombay/i.test(home) ? 'Mumbai' : titleCase(home.trim());
@@ -349,6 +359,11 @@ export async function searchJobs(q: {
 }) {
   const params: unknown[] = [];
   const where = [`j.status = 'active'`, `(j.closes_at IS NULL OR j.closes_at > NOW())`];
+  const ready = await applyReadySystems();
+  if (ready) {
+    params.push(ready);
+    where.push(`b.ats_type = ANY($${params.length})`);
+  }
   const text = q.text?.trim();
   if (text) {
     // Every word has to hit the title, the company or the skills.

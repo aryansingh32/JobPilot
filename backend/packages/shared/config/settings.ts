@@ -91,6 +91,8 @@ export const SETTINGS = {
   'jobs.poll.max_backoff': { kind: 'number', default: 4, min: 1, max: 16, group: 'Jobs', description: 'Boards that keep not changing are polled up to this many times less often.' },
   'jobs.max_age_days': { kind: 'number', default: 45, min: 1, max: 365, group: 'Jobs', description: 'Hide jobs posted longer ago than this.' },
   'jobs.match.min_score': { kind: 'number', default: 35, min: 0, max: 100, group: 'Jobs', description: 'Minimum match score shown in Top matches.' },
+  'jobs.apply_ready_only': { kind: 'boolean', default: true, group: 'Jobs', description: 'Browse and search only list jobs from systems we have applied through end to end (see the list below).' },
+  'jobs.apply_ready_systems': { kind: 'json', default: ['greenhouse', 'ashby'], group: 'Jobs', description: 'Systems with a confirmed clean submit. Add one only after a real application through it succeeded.' },
   // ── Features ───────────────────────────────────────
   'features.signups': { kind: 'boolean', default: true, group: 'Features', description: 'Allow new accounts.' },
   'features.resume_parse': { kind: 'boolean', default: true, group: 'Features', description: 'Parse uploaded resumes into the profile.' },

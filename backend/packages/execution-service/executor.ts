@@ -1456,7 +1456,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
     // Whichever shows first: the account screen, or the form (already signed in / no account).
     for (let waited = 0; waited < 20_000; waited += 1000) {
-      if ((await isDone()) || (await shown(sel.email)) || (await shown(sel.createLink)) || (await shown(sel.signInLink))) break;
+      if ((await isDone()) || (await shown(sel.email)) || (await shown(sel.createLink)) || (await shown(sel.signInLink)) || (await shown('[data-automation-id="SignInWithEmailButton"]'))) break;
       await ctx.page.waitForTimeout(1000);
     }
     await declineCookieBanner(ctx.page);
@@ -1492,7 +1492,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
     // Some tenants open on Google / LinkedIn buttons; the email form hides behind "Sign in with email".
     const revealEmailForm = async () => {
-      const viaEmail = ctx.page.locator('button:has-text("Sign in with email"), [role="button"]:has-text("Sign in with email")').first();
+      const viaEmail = ctx.page.locator('[data-automation-id="SignInWithEmailButton"], button:has-text("Sign in with email"), [role="button"]:has-text("Sign in with email")').first();
       // The screen renders after the step bar: wait for whichever of the two shows.
       for (let waited = 0; waited < 10_000; waited += 500) {
         if ((await shown(sel.email)) || (await viaEmail.isVisible().catch(() => false))) break;
@@ -3326,6 +3326,12 @@ export class ExecutionEngine {
           await page.screenshot({ path });
           screenshots.push(path);
         } catch {}
+      }
+
+      // The raw engine error (the app shows a one-line summary): which control or step timed out.
+      if (!wasCancelled) {
+        const raw = error.replace(/\u001b\[[0-9;]*m/g, '').split('\n').filter((l) => l.trim()).slice(0, 6).join(' | ').slice(0, 600);
+        await applicationsService.eventByExecJob(job.id, 'diagnostic', { why: 'raw error', raw }).catch(() => {});
       }
 
       // What was really on the page when it failed: the next fix starts from facts, not guesses.
