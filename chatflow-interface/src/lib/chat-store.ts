@@ -17,7 +17,9 @@ function loadThreads(): Thread[] {
     const raw = window.localStorage.getItem(KEY());
     if (!raw) return [];
     // Chats nobody wrote in aren't history (older builds saved them).
-    return (JSON.parse(raw) as Thread[]).filter((t) => t.messages.length > 0);
+    return (JSON.parse(raw) as Thread[])
+      .filter((t) => t.messages.length > 0)
+      .map((t) => (/https?:|[`*#]/.test(t.title) ? { ...t, title: titleFrom(t.title) } : t));
   } catch {
     return [];
   }
