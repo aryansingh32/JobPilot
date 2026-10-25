@@ -679,7 +679,7 @@ function Index() {
                     ? "Auto Apply"
                     : showEmpty
                       ? ""
-                      : store.activeThread?.title || "New task"
+                      : store.activeThread?.title || "New chat"
           }
           status={view === "chat" && store.activeThread ? taskStatus(store.activeThread) : null}
           detail={busy ? progress : undefined}

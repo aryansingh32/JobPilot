@@ -261,7 +261,11 @@ export function DynamicIsland({
                 app={ask}
                 pending={pending}
                 queued={asks.length - 1}
-                onOpen={() => go("tasks", ask.id)}
+                onOpen={() => {
+                  setSnoozed(askKey);
+                  setExpanded(false);
+                  go("tasks", ask.id);
+                }}
               />
             )}
           </IslandShell>
@@ -545,6 +549,31 @@ function AskBody({
         continuing your application…
       </div>
     );
+
+  // Several questions at once: summarise, answer them together on the Applications page.
+  if (pending.questions?.length) {
+    const qs = pending.questions;
+    return (
+      <>
+        {head(
+          <Bell className="h-4 w-4" />,
+          `${qs.length} questions`,
+          `This application needs ${qs.length} answers from you`,
+          "Answer them together — I'll remember them for next time.",
+        )}
+        <ul className="mb-3 space-y-1 rounded-2xl bg-white/5 p-3 text-[12.5px]">
+          {qs.slice(0, 4).map((q) => (
+            <li key={q.id} className="truncate text-white/80">{q.question}</li>
+          ))}
+          {qs.length > 4 && <li className="text-white/50">+{qs.length - 4} more</li>}
+        </ul>
+        <button onClick={onOpen} className={`${SEND} w-full`}>
+          Answer {qs.length} questions
+        </button>
+        {foot}
+      </>
+    );
+  }
 
   // Review before submit: summarise, send the user to the full review.
   if (type === "review") {

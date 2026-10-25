@@ -39,6 +39,20 @@ function saveActive(id: string) {
   window.localStorage.setItem(ACTIVE_KEY(), id);
 }
 
+/** A short readable title from the first message: no URLs/markdown, cut at a word. */
+function titleFrom(text: string): string {
+  const t = text
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/[`*_#>]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return "New chat";
+  const up = t[0].toUpperCase() + t.slice(1);
+  if (up.length <= 40) return up;
+  const cut = up.slice(0, 40);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), 20))}…`;
+}
+
 function makeThread(title = "New chat"): Thread {
   return { id: uid(), title, updatedAt: Date.now(), messages: [] };
 }
@@ -145,7 +159,7 @@ export function useChatStore(userId: string | null) {
           const messages = [...t.messages, msg];
           let title = t.title;
           if (autoTitle && t.title === "New chat" && msg.role === "user" && msg.type === "text") {
-            title = msg.content.slice(0, 48) || "New chat";
+            title = titleFrom(msg.content);
           }
           return { ...t, messages, updatedAt: Date.now(), title };
         }),
