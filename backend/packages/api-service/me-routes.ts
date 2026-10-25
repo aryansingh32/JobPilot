@@ -450,7 +450,7 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
     const user = await userAccountService.findById(uid(req));
     return { url: await gmailService.connectUrl(uid(req), user?.email) };
   });
-  app.post('/me/integrations/gmail/sync', auth, async (req) => ({ kept: await gmailService.sync(uid(req)) }));
+  app.post('/me/integrations/gmail/sync', auth, async (req) => ({ kept: await gmailService.sync(uid(req), undefined, 30) }));
   app.delete('/me/integrations/gmail', auth, async (req, reply) =>
     (await gmailService.disconnect(uid(req))) ? { ok: true } : reply.status(404).send({ error: 'Gmail is not connected' }));
   // Google sends the browser back here (no session header on a redirect: the signed state names the user).

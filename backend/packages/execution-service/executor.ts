@@ -1367,7 +1367,11 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
         }
       }
     }
-    if (!fields.length) throw new Error('No application form found on this page');
+    if (!fields.length) {
+      // A bot-wall (DataDome etc.) in front of the form is a person's job, not a missing form.
+      if (ctx.page.frames().some((f) => /captcha-delivery\.com|datadome/i.test(f.url()))) throw new Error('DATADOME_BLOCK: a human check stands in front of the form');
+      throw new Error('No application form found on this page');
+    }
     await stage(ctx, 'parse', { fields: fields.length, required: fields.filter((f) => f.required).length, url: ctx.page.url() });
     if (!ctx.jobContext?.title || ctx.jobContext.title === 'Job application') {
       await applicationsService.nameFromPage(ctx.jobId, await ctx.page.title().catch(() => '')).catch(() => {});
@@ -2176,7 +2180,8 @@ async function acceptSignupTerms(ctx: ExecutionContext, termsSel: string, accept
 
 /** Tick a consent box that may be a real checkbox, a role="checkbox" widget, or a clickable label. */
 async function tickBox(page: Page, containerSel: string): Promise<void> {
-  await tickBoxOnce(page, containerSel);
+  // The first attempt may fail on a hidden/overlaid box; the visible-text fallbacks below take over.
+  await tickBoxOnce(page, containerSel).catch(() => {});
   const box = page.locator(containerSel).first();
   const ticked = async () =>
     box
@@ -2202,7 +2207,7 @@ async function tickBoxOnce(page: Page, containerSel: string): Promise<void> {
   if (!(await box.count())) return;
   const input = box.locator('input[type="checkbox"]').first();
   if (await input.count()) {
-    if (!(await input.isChecked().catch(() => true))) await input.check({ force: true }).catch(() => box.click());
+    if (!(await input.isChecked().catch(() => true))) await input.check({ force: true, timeout: 5_000 }).catch(() => box.click({ timeout: 5_000, force: true }));
     return;
   }
   const widget = box.locator('[role="checkbox"]').first();

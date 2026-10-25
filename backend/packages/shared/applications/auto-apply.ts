@@ -75,6 +75,8 @@ interface Guards {
   unhealthyAts: Set<string>;
 }
 
+const HUMAN_CHECK_ATS = new Set(['smartrecruiters']);
+
 async function loadGuards(userId: string): Promise<Guards> {
   const pool = getPgPool();
   const [busy, failed, ats] = await Promise.all([
@@ -173,7 +175,8 @@ export const autoApplyService = {
     if (affordable === 0) blockers.push('Out of credits');
     const now = Math.min(leftToday, freeSlots, dailyLimitLeft, affordable ?? Number.POSITIVE_INFINITY);
 
-    const supported = await dedicatedAtsTypes();
+    // SmartRecruiters puts a human check (DataDome) in front of its form: it needs a person, never the background bot.
+    const supported = new Set([...(await dedicatedAtsTypes())].filter((t) => !HUMAN_CHECK_ATS.has(t)));
     const excluded = new Set(s.excludeCompanies.map((c) => c.toLowerCase()));
     const recs = await recommendJobs(userId, profile.data, 100);
     const guards = await loadGuards(userId);

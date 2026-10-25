@@ -48,6 +48,7 @@ const FRIENDLY: [RegExp, string][] = [
   [/Invalid Username\/Password/i, "The saved sign-in for this company's portal no longer works. Nothing was sent — reset the portal password in Settings and try again."],
   [/File exceeds the maximum upload size/i, 'The résumé is larger than this site accepts. Upload a smaller PDF (under 2 MB) in your profile and try again.'],
   [/Circuit breaker open/i, 'This site has been failing repeatedly, so I paused it to protect your account. It will be retried automatically shortly.'],
+  [/DATADOME_BLOCK|captcha-delivery/i, 'This site shows a human check before its form that I can\'t pass. Open the page and apply yourself, then mark it as applied.'],
   [/No application form found/i, "I couldn't find an application form on that page — the posting may have moved or need a sign-in. Nothing was sent."],
   [/never confirmed the application/i, "The form was submitted but the site didn't confirm it. Check your email for a confirmation before applying again — I won't resend automatically."],
   [/outside of the viewport|not visible|intercepts pointer|detached from the DOM/i, 'The form changed while I was filling it in. Nothing was sent — try again.'],

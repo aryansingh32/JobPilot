@@ -224,34 +224,39 @@ export const gmailService = {
   },
 
   /** Read new job mail for one user. Returns how many were kept. */
-  async sync(userId: string, urgent?: { since: Date; allowFrom: string[] }): Promise<number> {
+  async sync(userId: string, urgent?: { since: Date; allowFrom: string[] }, backfillDays?: number): Promise<number> {
     const pool = getPgPool();
     const { rows } = await pool.query<Connection>(
       `SELECT * FROM mail_connections WHERE user_id = $1 AND provider = 'gmail' AND status = 'active'`, [userId]);
     const c = rows[0];
     if (!c) return 0;
     const apps = await pool.query(
-      `SELECT DISTINCT company FROM applications WHERE user_id = $1 AND updated_at > NOW() - INTERVAL '30 days' AND company IS NOT NULL`, [userId]);
+      `SELECT DISTINCT company, MAX(created_at) OVER () AS newest FROM applications WHERE user_id = $1 AND updated_at > NOW() - INTERVAL '30 days' AND company IS NOT NULL`, [userId]);
     // No applications lately: nothing of ours can be in the mailbox, so don't look.
     if (!apps.rowCount) {
       await pool.query('UPDATE mail_connections SET last_sync_at = NOW() WHERE id = $1', [c.id]);
       return 0;
     }
-    const since = urgent?.since ?? new Date(Math.max((c.last_sync_at?.getTime() ?? Date.now()) - 10 * 60_000, Date.now() - 3 * 86_400_000));
+    // Normally only what arrived since the last look. But mail about an application can predate a look made
+    // before that application existed (or while it was being created), so the window reaches back to
+    // just before the newest application; a manual sync can reach further.
+    const newestApp = (apps.rows[0]?.newest as Date | undefined)?.getTime() ?? Date.now();
+    const incremental = Math.min((c.last_sync_at?.getTime() ?? Date.now()) - 10 * 60_000, newestApp - 3_600_000);
+    const since = urgent?.since ?? new Date(Math.max(backfillDays ? Date.now() - backfillDays * 86_400_000 : incremental, Date.now() - 30 * 86_400_000));
     let kept = 0;
     try {
       const token = await accessToken(c);
       const list = await api<{ messages?: { id: string }[] }>(token,
-        `/users/me/messages?maxResults=40&q=${encodeURIComponent(urgent ? urgentQuery(since, urgent.allowFrom) : searchQuery(apps.rows.map((r) => r.company), since))}`);
+        `/users/me/messages?maxResults=100&q=${encodeURIComponent(urgent ? urgentQuery(since, urgent.allowFrom) : searchQuery(apps.rows.map((r) => r.company), since))}`);
       for (const { id } of list.messages ?? []) {
         const seen = await pool.query(`SELECT 1 FROM emails WHERE user_id = $1 AND source = 'gmail' AND external_id = $2`, [userId, id]);
         if (seen.rowCount) continue;
-        const msg = await api<{ payload: Part }>(token, `/users/me/messages/${id}?format=full`);
+        const msg = await api<{ payload: Part; internalDate?: string }>(token, `/users/me/messages/${id}?format=full`);
         const h = (n: string) => msg.payload.headers?.find((x) => x.name.toLowerCase() === n)?.value ?? '';
         const from = parseFrom(h('from'));
         const email = await inboxService.ingestForUser(userId, {
           to: c.address, fromAddress: from.address, fromName: from.name, subject: h('subject'), text: messageText(msg.payload),
-        }, { source: 'gmail', externalId: id, strict: true, allowFrom: urgent?.allowFrom });
+        }, { source: 'gmail', externalId: id, strict: true, allowFrom: urgent?.allowFrom, receivedAt: msg.internalDate ? new Date(Number(msg.internalDate)) : undefined });
         if (email) kept++;
       }
       await pool.query('UPDATE mail_connections SET last_sync_at = NOW(), last_error = NULL, messages_kept = messages_kept + $2 WHERE id = $1', [c.id, kept]);

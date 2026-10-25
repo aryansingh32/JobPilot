@@ -217,14 +217,15 @@ export const inboxService = {
    * `strict` (a connected personal mailbox): keep only mail that belongs to
    * one of the user's applications — everything else is dropped unread.
    */
-  async ingestForUser(userId: string, mail: InboundMail, opts: { source?: 'inbox' | 'gmail'; externalId?: string; strict?: boolean; /** sender domains of a site a run is waiting on (a gov portal's own code mail) */ allowFrom?: string[] } = {}) {
+  async ingestForUser(userId: string, mail: InboundMail, opts: { source?: 'inbox' | 'gmail'; externalId?: string; strict?: boolean; /** sender domains of a site a run is waiting on (a gov portal's own code mail) */ allowFrom?: string[]; /** when the mail really arrived (Gmail's date), not when we fetched it */ receivedAt?: Date } = {}) {
     const pool = getPgPool();
     const to = mail.to.trim().toLowerCase();
     const subject = (mail.subject ?? '').slice(0, 500);
     const text = (mail.text ?? '').slice(0, 50_000);
     const code = extractCode(`${subject}\n${text}`);
     const link = code ? null : extractVerifyLink(text);
-    const intent = code ? null : classifyIntent(subject, text);
+    const received = /received your application|thank you for (applying|your application)|application (was )?(received|submitted)|we('ve| have) received your/i.test(subject);
+    const intent = code || received ? null : classifyIntent(subject, text);
     const category = intent ? 'reply' : categorize(subject, text, code, link);
 
     // Match: the most recent open application whose company appears in the
@@ -258,11 +259,11 @@ export const inboxService = {
 
     const { rows } = await pool.query(
       `INSERT INTO emails (user_id, to_address, from_name, from_address, subject, snippet, body_text, category,
-                           extracted_code, application_id, match_method, intent, source, external_id, extracted_link)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                           extracted_code, application_id, match_method, intent, source, external_id, extracted_link, received_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,COALESCE($16, NOW()))
        ON CONFLICT (user_id, source, external_id) WHERE external_id IS NOT NULL DO NOTHING RETURNING *`,
       [userId, to, mail.fromName ?? null, mail.fromAddress, subject, text.replace(/\s+/g, ' ').slice(0, 280), text,
-        category, code, match?.id ?? null, matchMethod, intent, opts.source ?? 'inbox', opts.externalId ?? null, link],
+        category, code, match?.id ?? null, matchMethod, intent, opts.source ?? 'inbox', opts.externalId ?? null, link, opts.receivedAt ?? null],
     );
     const email = rows[0];
     if (!email) return null; // seen before (Gmail re-sync)
