@@ -92,9 +92,11 @@ export function extractVerifyLink(text: string): string | null {
 /** Applicant systems that send codes and links for employers (their mail rarely names the company). */
 const ATS_SENDERS = /workday|myworkday|successfactors|sapsf|oracle|taleo|icims|greenhouse|lever|ashby|smartrecruiters|zoho|freshteam|keka|darwinbox|jobvite|recruitee|workable|eightfold|phenom/i;
 
-export function categorize(subject: string, body: string, code: string | null): EmailCategory {
+export function categorize(subject: string, body: string, code: string | null, link: string | null = null): EmailCategory {
   const s = `${subject}\n${body.slice(0, 2000)}`.toLowerCase();
   if (code && /otp|code|verif|one[- ]time|passcode/.test(s)) return 'code';
+  // "Verify your candidate account" with a link instead of a number: handled like a code (shown as one, delivered to the waiting run).
+  if (link && /verif|activat|confirm your (email|account)|candidate account/.test(s)) return 'code';
   if (/thank you for (applying|your application)|application (was )?received|we('ve| have) received your application|application submitted|confirm(ed|ation)/.test(s)) {
     return 'confirmation';
   }
@@ -223,7 +225,7 @@ export const inboxService = {
     const code = extractCode(`${subject}\n${text}`);
     const link = code ? null : extractVerifyLink(text);
     const intent = code ? null : classifyIntent(subject, text);
-    const category = intent ? 'reply' : categorize(subject, text, code);
+    const category = intent ? 'reply' : categorize(subject, text, code, link);
 
     // Match: the most recent open application whose company appears in the
     // sender name/domain or subject; else the most recent paused one for codes.

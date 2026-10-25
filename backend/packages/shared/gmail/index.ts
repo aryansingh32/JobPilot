@@ -35,7 +35,10 @@ const env = {
 
 /** Applicant systems whose mail carries codes and links (their mail rarely names the company). */
 const ATS_FROM = ['greenhouse-mail.io', 'myworkday.com', 'myworkdayjobs.com', 'successfactors.com', 'successfactors.eu', 'sapsf.eu', 'oraclecloud.com', 'taleo.net',
-  'greenhouse.io', 'lever.co', 'ashbyhq.com', 'smartrecruiters.com', 'zohorecruit.com', 'zohorecruit.in', 'freshteam.com', 'keka.com', 'icims.com'];
+  'greenhouse.io', 'lever.co', 'ashbyhq.com', 'smartrecruiters.com', 'zohorecruit.com', 'zohorecruit.in', 'freshteam.com', 'keka.com', 'icims.com',
+  // Workday also mails from workday.com (otp.workday.com); the rest of the common applicant systems.
+  'workday.com', 'jobvite.com', 'workable.com', 'recruitee.com', 'bamboohr.com', 'teamtailor.com', 'darwinbox.in', 'darwinbox.com',
+  'eightfold.ai', 'phenom.com', 'ats.rippling.com', 'breezy.hr', 'pinpointhq.com', 'jazzhr.com', 'nic.in', 'gov.in'];
 
 export const gmailConfigured = () => !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 
@@ -141,7 +144,9 @@ export function parseFrom(v: string): { name?: string; address: string } {
 /** Gmail search for mail about the user's recent applications only. */
 export function searchQuery(companies: string[], since: Date): string {
   const names = [...new Set(companies.map((c) => c.replace(/["()]/g, '').trim()).filter((c) => c.length >= 3))].slice(0, 25);
-  const terms = [...ATS_FROM.map((d) => `from:${d}`), ...names.map((n) => `"${n}"`)];
+  // Subject phrases catch employers writing from their own domain without naming themselves in the body.
+  const phrases = ['"thank you for applying"', '"your application"', '"application received"', '"interview"', '"verify your"'].map((p) => `subject:${p}`);
+  const terms = [...ATS_FROM.map((d) => `from:${d}`), ...names.map((n) => `"${n}"`), ...phrases];
   return `after:${Math.floor(since.getTime() / 1000)} -category:promotions -category:social {${terms.join(' ')}}`;
 }
 
