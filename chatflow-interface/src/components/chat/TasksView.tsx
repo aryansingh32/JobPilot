@@ -56,6 +56,7 @@ export function TasksView({
   applications,
   loading,
   focusId,
+  focusTick = 0,
   onOpenChat,
   onNew,
   onWatching,
@@ -64,6 +65,8 @@ export function TasksView({
   loading: boolean;
   /** Application to expand on arrival (e.g. tapped on the home screen) */
   focusId?: string | null;
+  /** Changes each time something asks to open `focusId` (the island's "Review & submit"), even if it's already the open id. */
+  focusTick?: number;
   /** Opens the chat for this application when one exists on this device */
   onOpenChat?: (app: ApplicationSummary) => (() => void) | null;
   onNew: () => void;
@@ -72,6 +75,13 @@ export function TasksView({
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [openId, setOpenId] = useState<string | null>(focusId ?? null);
+  // "Review & submit" on the island: open that row and bring its question/review into view.
+  useEffect(() => {
+    if (!focusId) return;
+    setOpenId(focusId);
+    const t = window.setTimeout(() => document.getElementById(`pending-${focusId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 350);
+    return () => window.clearTimeout(t);
+  }, [focusId, focusTick]);
   const rows = applications
     .map((a) => ({ a, status: appStatus(a) }))
     .sort((x, y) => ts(y.a.updated_at) - ts(x.a.updated_at));

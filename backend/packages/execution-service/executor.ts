@@ -2087,6 +2087,9 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
     const shotPath = join(shotDir, `${ctx.jobId}.png`);
     await ctx.page.screenshot({ path: shotPath, fullPage: true }).catch(() => {});
     await stage(ctx, 'diagnostic', { why: 'submit not confirmed', url: ctx.page.url(), posts: posts.slice(-8), alerts, screenshot: shotPath, securityBoxes: await ctx.page.locator('input[id^="security-input"]').count().catch(() => -1), shown: shown.slice(0, 200) });
+    // Visible validation messages mean the form was refused, not "sent but unconfirmed".
+    const refusals = [...new Set((alerts as string[]).filter((m) => m.length < 160 && /required|must|invalid|please|select|enter|choose|error/i.test(m)))];
+    if (refusals.length && !posts.some((x) => /^2\d\d /.test(x))) throw new Error(`The site rejected the form: ${refusals.slice(0, 3).join('; ')}`);
     throw new Error('Submitted, but the site never confirmed the application');
   },
 };

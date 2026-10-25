@@ -103,6 +103,8 @@ function Index() {
   const [authChecked, setAuthChecked] = useState(false);
   const store = useChatStore(authUser?.id ?? null);
   const [focusAppId, setFocusAppId] = useState<string | null>(null);
+  // Bumped on every "open this application" so the list reacts even when it's already showing that id.
+  const [focusTick, setFocusTick] = useState(0);
   /** Application card open on the Applications screen right now. */
   const [watchedApp, setWatchedApp] = useState<string | null>(null);
   const [openJob, setOpenJob] = useState<JobListingDTO | null>(null);
@@ -499,6 +501,7 @@ function Index() {
   const onIslandNavigate = (to: IslandTarget, appId?: string) => {
     if (to === "tasks") {
       setFocusAppId(appId ?? null);
+      setFocusTick((n) => n + 1);
       setView("tasks");
     } else setView(to);
   };
@@ -513,6 +516,7 @@ function Index() {
 
   const openApplication = (app: Pick<ApplicationSummary, "id">) => {
     setFocusAppId(app.id);
+    setFocusTick((n) => n + 1);
     setView("tasks");
   };
   // A chat for an application only exists on the device that started it.
@@ -728,6 +732,7 @@ function Index() {
               applications={applications}
               loading={appsQ.isLoading}
               focusId={focusAppId}
+              focusTick={focusTick}
               onWatching={setWatchedApp}
               onOpenChat={chatFor}
               onNew={() => {

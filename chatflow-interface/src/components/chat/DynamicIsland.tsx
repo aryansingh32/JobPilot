@@ -570,8 +570,16 @@ function AskBody({
           ))}
         </ul>
         <div className="flex gap-2">
-          <button onClick={onOpen} className={`${SEND} flex-1`}>
-            Review &amp; submit
+          <button onClick={onOpen} className="inline-flex h-11 flex-1 cursor-pointer items-center justify-center rounded-full border border-white/20 px-5 text-[14px] font-semibold text-white hover:bg-white/10">
+            Review all
+          </button>
+          <button
+            disabled={sent || blank > 0}
+            onClick={() => send(JSON.stringify({ action: "approve" }))}
+            className={`${SEND} flex-1`}
+            title={blank > 0 ? "Some answers are blank — open the review to fill them" : undefined}
+          >
+            {sent ? "Submitting…" : "Submit now"}
           </button>
         </div>
         {foot}

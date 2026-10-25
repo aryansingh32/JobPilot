@@ -439,6 +439,23 @@ export async function scanForm(page: Page, scope?: string): Promise<FormField[]>
     const radioGroups = new Map<string, number>();
     const checkGroups = new Map<Element, number>();
     let idx = 0;
+    // Yes/No (or any few-choice) toggles built from buttons — Ashby and others — are a pick-one question like radios.
+    const toggled = new Set<Element>();
+    root.querySelectorAll('[class*="yesno" i], [role="group"], [role="radiogroup"]').forEach((group) => {
+      if (toggled.has(group) || group.closest('nav')) return;
+      const btns = Array.from(group.querySelectorAll('button[aria-pressed], [role="button"][aria-pressed], [role="radio"]:not(input)')).filter((b) => visible(b) && clean(textOf(b)));
+      if (btns.length < 2 || btns.length > 6 || btns.some((b) => b.closest('[data-jp-field]'))) return;
+      toggled.add(group);
+      const label = labelFor(btns[0] as HTMLElement);
+      const entry = group.closest('[class*="fieldEntry"], [data-field-path]');
+      const pressed = btns.find((b) => b.getAttribute('aria-pressed') === 'true' || b.getAttribute('aria-checked') === 'true');
+      btns.forEach((b, i) => { b.setAttribute('data-jp-field', String(idx)); b.setAttribute('data-jp-opt', String(i)); });
+      out.push({
+        idx: idx++, tag: 'input', type: 'radio', label, name: group.getAttribute('data-field-path') || entry?.getAttribute('data-field-path') || '',
+        required: /[*✱]/.test(label) || !!entry?.querySelector('[class*="required" i]'),
+        options: btns.map((b) => clean(textOf(b))), value: pressed ? clean(textOf(pressed)) : '', selector: null,
+      });
+    });
     root.querySelectorAll('input, textarea, select, [aria-haspopup="listbox"]:not(input), [role="combobox"]:not(input):not(select)').forEach((node) => {
       const el = node as HTMLInputElement;
       // Site chrome (language / settings pickers, nav, banner search) is never part of the application. Without this
@@ -621,7 +638,10 @@ export async function fillField(page: Page, answer: { field: FormField; value: s
   if (field.type === 'radio') {
     const i = field.options.indexOf(value);
     if (i < 0) throw new Error(`No option "${value}" for "${field.label}"`);
-    await page.locator(`[data-jp-field="${field.idx}"][data-jp-opt="${i}"]`).first().check({ force: true, timeout: 5_000 });
+    const target = page.locator(`[data-jp-field="${field.idx}"][data-jp-opt="${i}"]`).first();
+    // A toggle built from buttons is clicked, a real radio is checked.
+    if ((await target.evaluate((e) => e.tagName).catch(() => 'INPUT')) !== 'INPUT') await target.click({ timeout: 5_000 });
+    else await target.check({ force: true, timeout: 5_000 });
     return;
   }
   const loc = await locate(page, field);
@@ -691,6 +711,20 @@ export async function fillField(page: Page, answer: { field: FormField; value: s
     else await loc.press('Enter').catch(() => {});
     return;
   }
+  // Lever's "Current location": a text box that only counts once a suggestion from its dropdown is chosen.
+  if (await loc.evaluate((e) => (e as HTMLInputElement).name === 'location' || /location-input/.test(e.className)).catch(() => false)) {
+    await loc.click({ timeout: 5_000 });
+    await loc.fill('', { timeout: 5_000 }).catch(() => {});
+    await loc.pressSequentially(value.split(',')[0].trim(), { delay: 60 });
+    const hits = page.locator('.dropdown-results .dropdown-location, .dropdown-results [role="option"], .dropdown-container .dropdown-location');
+    await hits.first().waitFor({ state: 'visible', timeout: 6_000 }).catch(() => {});
+    const texts = await hits.allInnerTexts().catch(() => [] as string[]);
+    const region = value.split(',').slice(1).map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const at = Math.max(0, texts.findIndex((t) => region.some((r) => t.toLowerCase().includes(r))));
+    if (texts.length) await hits.nth(at).click({ timeout: 5_000 });
+    else await loc.fill(value, { timeout: 5_000 });
+    return;
+  }
   await loc.fill(value, { timeout: 5_000 });
 }
 
@@ -712,7 +746,11 @@ export async function readFormErrors(page: Page): Promise<string[]> {
       const label = (id && document.querySelector(`label[for="${id}"]`)?.textContent) || el.getAttribute('name') || 'a field';
       return `${label.replace(/\s+/g, ' ').replace(/\*/g, '').trim()} is required`;
     });
-    return [...messages, ...invalid].slice(0, 10);
+    // Lever's "Couldn't auto-read resume" (its parser failing) is a notice, not a rejection of the form.
+    const parserNotice = messages.some((m) => /couldn'?t auto-?read/i.test(m));
+    // A 100 MB cap is never what stops a one-page résumé: that text is the parser notice's second line.
+    const real = messages.filter((m) => !(parserNotice && /auto-?read/i.test(m)) && !/exceeds the maximum upload size of 100\s*MB/i.test(m));
+    return [...real, ...invalid].slice(0, 10);
   });
 }
 
