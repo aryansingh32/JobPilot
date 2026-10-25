@@ -4,3 +4,10 @@ node_modules
 dist
 *.tsbuildinfo
 .DS_Store
+
+# Android app
+chatflow-interface/.env.android
+chatflow-interface/android/app/google-services.json
+
+# Local network dev stack (dev-lan.sh)
+.dev-data/

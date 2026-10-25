@@ -10,7 +10,9 @@ import {
 } from "@tanstack/react-router";
 import { createLogger } from "@/lib/logger";
 import { TelemetryProvider } from "@/components/TelemetryProvider";
+import { Toaster } from "@/components/ui/sonner";
 import { trackClientError } from "@/lib/client-telemetry";
+import { initNativeApp } from "@/lib/native-app";
 
 import appCss from "../styles.css?url";
 
@@ -82,23 +84,24 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Agent — AI Browser Automation" },
+      { title: "jobpilot" },
       {
         name: "description",
         content:
-          "Chat-powered browser automation. Download documents, fill forms, pay bills — all from a conversation.",
+          "Tell jobpilot the task. It fills the forms, you approve, you get proof it's done.",
       },
-      { name: "author", content: "ChatFlow" },
-      { property: "og:title", content: "Agent — AI Browser Automation" },
+      { name: "author", content: "jobpilot" },
+      { property: "og:title", content: "jobpilot" },
       {
         property: "og:description",
         content:
-          "Chat-powered browser automation. Download documents, fill forms, pay bills — all from a conversation.",
+          "Tell jobpilot the task. It fills the forms, you approve, you get proof it's done.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
     links: [
+      { rel: "icon", type: "image/png", href: "/favicon.png" },
       {
         rel: "stylesheet",
         href: appCss,
@@ -114,7 +117,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       {
         rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
+        href: "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap",
       },
     ],
   }),
@@ -131,7 +134,8 @@ const THEME_INIT_SCRIPT = `
 (function () {
   try {
     var stored = localStorage.getItem("theme");
-    var dark = stored ? stored === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    // Light is the default look; dark only when the user explicitly chose it.
+    var dark = stored === "dark";
     document.documentElement.classList.toggle("dark", dark);
   } catch (e) {}
 })();
@@ -155,10 +159,16 @@ function RootShell({ children }: { children: React.ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
+  // Android app only (no-op on the web): status bar, back button, session refresh.
+  useEffect(() => {
+    initNativeApp();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <TelemetryProvider>
         <Outlet />
+        <Toaster position="top-right" richColors />
       </TelemetryProvider>
     </QueryClientProvider>
   );

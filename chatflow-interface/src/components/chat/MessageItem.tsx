@@ -21,21 +21,34 @@ import type {
   TextMessage,
   InputCardMessage,
   StatusMessage,
+  ReviewMessage,
+  ReceiptMessage,
+  JobCardsMessage,
+  AskMessage,
+  ActionsMessage,
+  AppsStatusMessage,
 } from "@/lib/chat-types";
 import { InputCard } from "./InputCard";
+import { ReviewCard } from "./ReviewCard";
+import { ReceiptCard } from "./ReceiptCard";
+import { ActionsView, AppsStatusView, AskView, JobCardsView } from "./AiCards";
 import { config } from "@/lib/config";
+import { nativeHeaders } from "@/lib/native";
 
 export function MessageItem({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
   if (isUser) {
     return (
-      <div className="animate-in px-4 py-2 fade-in-0 slide-in-from-bottom-1 duration-300">
+      <div
+        id={`msg-${msg.id}`}
+        className="animate-in scroll-mt-4 px-3 py-2 fade-in-0 slide-in-from-bottom-1 duration-300 sm:px-4"
+      >
         {/* Same centered column as the bot's reply below, so the user's
             bubble hugs the column's right edge instead of the viewport's. */}
-        <div className="mx-auto flex max-w-3xl justify-end">
+        <div className="mx-auto flex max-w-(--chat-w) justify-end">
           <div className="max-w-[85%] sm:max-w-[75%]">
             {msg.type === "text" && (
-              <div className="rounded-2xl rounded-br-md bg-bubble-user px-4 py-2.5 text-[15px] leading-relaxed text-bubble-user-foreground shadow-sm">
+              <div className="rounded-[22px] rounded-br-md bg-bubble-user px-4 py-2.5 text-[15px] leading-relaxed text-bubble-user-foreground">
                 {(msg as TextMessage).content}
               </div>
             )}
@@ -48,17 +61,23 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
 
   // Bot side – no background, full width content
   return (
-    <div className="animate-in px-4 py-3 fade-in-0 slide-in-from-bottom-1 duration-300">
-      <div className="mx-auto flex max-w-3xl gap-3">
-        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-[11px] font-bold">
-          A
-        </div>
-        <div className="min-w-0 flex-1 pt-0.5">
+    <div
+      id={`msg-${msg.id}`}
+      className="animate-in scroll-mt-4 px-3 py-2.5 fade-in-0 slide-in-from-bottom-1 duration-300 sm:px-4"
+    >
+      <div className="mx-auto flex max-w-(--chat-w)">
+        <div className="min-w-0 flex-1">
           {msg.type === "text" && <BotText msg={msg as TextMessage} />}
           {msg.type === "timeline" && <Timeline msg={msg as TimelineMessage} />}
           {msg.type === "input-card" && <InputCard msg={msg as InputCardMessage} />}
           {msg.type === "download" && <DownloadCard msg={msg as DownloadMessage} />}
           {msg.type === "status" && <StatusBubble msg={msg as StatusMessage} />}
+          {msg.type === "review" && <ReviewCard msg={msg as ReviewMessage} />}
+          {msg.type === "receipt" && <ReceiptCard msg={msg as ReceiptMessage} />}
+          {msg.type === "job-cards" && <JobCardsView msg={msg as JobCardsMessage} />}
+          {msg.type === "ask" && <AskView msg={msg as AskMessage} />}
+          {msg.type === "actions" && <ActionsView msg={msg as ActionsMessage} />}
+          {msg.type === "apps-status" && <AppsStatusView msg={msg as AppsStatusMessage} />}
         </div>
       </div>
     </div>
@@ -123,49 +142,75 @@ function UserFileBubble({ msg }: { msg: FileMessage }) {
 }
 
 function Timeline({ msg }: { msg: TimelineMessage }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(!msg.done);
   const active = msg.steps.find((s) => s.status === "active");
+  const doneCount = msg.steps.filter((s) => s.status === "done").length;
+  const pct = msg.steps.length ? Math.round((doneCount / msg.steps.length) * 100) : 0;
   return (
-    <div className="rounded-2xl border border-border bg-card/60 transition-colors duration-150 hover:border-border/80">
+    <div className="overflow-hidden rounded-[18px] border border-border bg-card shadow-[0_1px_2px_rgba(13,24,40,0.04)]">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 rounded-2xl px-3 py-2.5 text-sm font-medium transition-colors duration-150 hover:bg-accent/30"
+        className="flex w-full items-center gap-3 px-4 py-3 text-left"
       >
-        {msg.done ? (
-          <Check className="h-4 w-4 text-primary" />
-        ) : (
-          <Loader2 className="h-4 w-4 animate-spin text-primary" />
-        )}
-        <span>{msg.title}</span>
-        {active && !msg.done && (
-          <span className="text-xs font-normal text-muted-foreground">· {active.label}</span>
-        )}
+        <span
+          className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${
+            msg.done
+              ? "bg-primary text-primary-foreground"
+              : "bg-primary-soft text-primary-soft-foreground"
+          }`}
+        >
+          {msg.done ? (
+            <Check className="h-4 w-4" strokeWidth={2.5} />
+          ) : (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[14px] font-semibold text-foreground">
+            {msg.title}
+          </span>
+          <span className="block truncate text-[12px] text-muted-foreground">
+            {msg.done
+              ? `Done · ${msg.steps.length} steps`
+              : active
+                ? active.label
+                : `${doneCount} of ${msg.steps.length} steps`}
+          </span>
+        </span>
         <ChevronDown
-          className={`ml-auto h-4 w-4 text-muted-foreground transition ${open ? "" : "-rotate-90"}`}
+          className={`h-4 w-4 shrink-0 text-faint transition-transform ${open ? "" : "-rotate-90"}`}
         />
       </button>
+      {!msg.done && (
+        <div className="mx-4 mb-3 h-1 overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full rounded-full bg-primary transition-[width] duration-500"
+            style={{ width: `${Math.max(pct, 6)}%` }}
+          />
+        </div>
+      )}
       {open && (
-        <ol className="space-y-2 border-t border-border px-4 py-3 text-sm">
+        <ol className="space-y-2.5 border-t border-border px-4 py-3 text-[13px]">
           {msg.steps.map((s) => (
             <li key={s.id} className="flex items-center gap-2.5">
               {s.status === "done" ? (
-                <Check className="h-3.5 w-3.5 text-primary" />
+                <Check className="h-3.5 w-3.5 text-success" strokeWidth={2.5} />
               ) : s.status === "active" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
               ) : s.status === "error" ? (
                 <XCircle className="h-3.5 w-3.5 text-destructive" />
               ) : (
-                <Circle className="h-3 w-3 text-muted-foreground/60" />
+                <Circle className="h-3 w-3 text-faint" />
               )}
               <span
                 className={
-                  s.status === "done"
-                    ? "text-muted-foreground line-through"
-                    : s.status === "active"
-                      ? "text-foreground"
-                      : s.status === "error"
-                        ? "text-destructive"
-                        : "text-muted-foreground"
+                  s.status === "active"
+                    ? "font-medium text-foreground"
+                    : s.status === "error"
+                      ? "text-destructive"
+                      : s.status === "done"
+                        ? "text-ink-2"
+                        : "text-faint"
                 }
               >
                 {s.label}
@@ -191,23 +236,25 @@ function DownloadCard({ msg }: { msg: DownloadMessage }) {
       a.download = msg.fileName;
       // Note: x-api-key can't be sent via <a> tag, so for authenticated downloads
       // we'd need to use fetch + blob. For now, try direct:
-      fetch(url, {
-        headers: { "x-api-key": config.apiKey },
-        credentials: "include", // sends the jp_session cookie so the backend can authorize this file
-      })
-        .then((res) => res.blob())
-        .then((blob) => {
-          const blobUrl = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = blobUrl;
-          link.download = msg.fileName;
-          link.click();
-          URL.revokeObjectURL(blobUrl);
+      nativeHeaders().then((auth) =>
+        fetch(url, {
+          headers: { "x-api-key": config.apiKey, ...auth },
+          credentials: "include", // sends the jp_session cookie so the backend can authorize this file
         })
-        .catch(() => {
-          // Fallback: direct link
-          a.click();
-        });
+          .then((res) => res.blob())
+          .then((blob) => {
+            const blobUrl = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = blobUrl;
+            link.download = msg.fileName;
+            link.click();
+            URL.revokeObjectURL(blobUrl);
+          })
+          .catch(() => {
+            // Fallback: direct link
+            a.click();
+          }),
+      );
       return;
     }
 
@@ -223,12 +270,12 @@ function DownloadCard({ msg }: { msg: DownloadMessage }) {
     URL.revokeObjectURL(url);
   };
   return (
-    <div className="flex items-center gap-3 rounded-2xl border border-border bg-card p-3 shadow-sm transition-colors duration-150 hover:border-primary/25">
-      <div className="grid h-11 w-11 place-items-center rounded-xl bg-primary/15 text-primary">
+    <div className="flex items-center gap-3 rounded-[18px] border border-border bg-card p-3 shadow-[0_1px_2px_rgba(13,24,40,0.04)]">
+      <div className="grid h-11 w-11 place-items-center rounded-xl bg-primary-soft text-primary-soft-foreground">
         <FileText className="h-5 w-5" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{msg.title}</div>
+        <div className="truncate text-[14px] font-semibold text-foreground">{msg.title}</div>
         <div className="truncate text-xs text-muted-foreground">
           {msg.fileName}
           {msg.sizeLabel ? ` · ${msg.sizeLabel}` : ""}
@@ -237,7 +284,7 @@ function DownloadCard({ msg }: { msg: DownloadMessage }) {
       </div>
       <button
         onClick={downloadFile}
-        className="flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-all duration-150 hover:opacity-90 active:scale-95"
+        className="flex shrink-0 items-center gap-1.5 rounded-full bg-primary px-3.5 py-2 text-[13px] font-semibold text-primary-foreground transition-all duration-150 hover:opacity-90 active:scale-95"
       >
         <Download className="h-3.5 w-3.5" /> Download
       </button>
@@ -247,22 +294,30 @@ function DownloadCard({ msg }: { msg: DownloadMessage }) {
 
 function StatusBubble({ msg }: { msg: StatusMessage }) {
   const variants = {
-    info: { icon: Info, color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
-    success: { icon: CheckCircle2, color: "text-primary", bg: "bg-primary/10 border-primary/20" },
-    warning: { icon: AlertTriangle, color: "text-warning", bg: "bg-warning/10 border-warning/20" },
+    info: { icon: Info, color: "text-muted-foreground", bg: "bg-card border-border" },
+    success: {
+      icon: CheckCircle2,
+      color: "text-success",
+      bg: "bg-primary-soft border-primary-border",
+    },
+    warning: {
+      icon: AlertTriangle,
+      color: "text-warning-soft-foreground",
+      bg: "bg-warning-soft border-transparent",
+    },
     error: {
       icon: XCircle,
       color: "text-destructive",
-      bg: "bg-destructive/10 border-destructive/20",
+      bg: "bg-destructive/5 border-destructive/20",
     },
   };
   const v = variants[msg.variant] || variants.info;
   const Icon = v.icon;
 
   return (
-    <div className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm ${v.bg}`}>
+    <div className={`flex items-center gap-2 rounded-2xl border px-3.5 py-2.5 text-[13px] ${v.bg}`}>
       <Icon className={`h-4 w-4 shrink-0 ${v.color}`} />
-      <span className="text-muted-foreground">{msg.content}</span>
+      <span className="text-ink-2">{msg.content}</span>
     </div>
   );
 }
@@ -270,11 +325,8 @@ function StatusBubble({ msg }: { msg: StatusMessage }) {
 export function TypingIndicator() {
   return (
     <div className="px-4 py-3">
-      <div className="mx-auto flex max-w-3xl gap-3">
-        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-[11px] font-bold animate-pulse">
-          A
-        </div>
-        <div className="flex items-center gap-1.5 pt-2.5">
+      <div className="mx-auto flex max-w-(--chat-w)">
+        <div className="flex items-center gap-1.5 py-2">
           <span className="typing-dot" />
           <span className="typing-dot" />
           <span className="typing-dot" />

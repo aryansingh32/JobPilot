@@ -3,6 +3,7 @@
 // ============================================================
 
 import { config } from "./config";
+import { nativeHeaders } from "./native";
 
 const STORAGE_KEY = "cf_telemetry_session";
 
@@ -54,6 +55,7 @@ export async function flushTelemetryQueue(): Promise<void> {
       headers: {
         "Content-Type": "application/json",
         "x-api-key": config.apiKey,
+        ...(await nativeHeaders()),
       },
       body: JSON.stringify({
         events: batch,

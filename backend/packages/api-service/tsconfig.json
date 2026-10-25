@@ -4,7 +4,7 @@
     "outDir": "dist",
     "rootDir": ".."
   },
-  "include": ["./**/*.ts", "../execution-service/browser-pool.ts", "../execution-service/proxy-manager.ts"],
+  "include": ["./**/*.ts", "../execution-service/proxy-manager.ts"],
   "exclude": ["dist", "**/dist/**"],
   "references": [
     { "path": "../shared" },

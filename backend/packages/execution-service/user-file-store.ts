@@ -1,7 +1,8 @@
-import { mkdir, writeFile, unlink, readdir, stat } from 'fs/promises';
+import { mkdir, writeFile, unlink, readdir, stat, rm } from 'fs/promises';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { getPgPool } from '../shared/db/index.js';
+import { materialize, putObject } from '../shared/storage/index.js';
 import type { UserFile } from '../shared/types/index.js';
 
 const STORAGE_ROOT = process.env.USER_FILE_STORAGE_ROOT
@@ -54,14 +55,15 @@ export class UserFileStore {
       const fileId = normalized.slice('file:'.length);
       const file = await this.getFileById(fileId, userId);
       if (!file) throw new Error(`Referenced file not found: ${fileId}`);
-      return file.storagePath;
+      // Playwright needs a local path; remote objects are downloaded to a temp cache.
+      return materialize(file.storagePath);
     }
 
     if (normalized.startsWith('file-category:')) {
       const category = normalized.slice('file-category:'.length) as FileCategory;
       const file = await this.getLatestByCategory(userId, category);
       if (!file) throw new Error(`No uploaded file found for category: ${category}`);
-      return file.storagePath;
+      return materialize(file.storagePath);
     }
 
     return normalized;
@@ -80,12 +82,12 @@ export class UserFileStore {
     const safeOriginal = sanitizeFileName(input.originalName || `${input.category}.bin`);
     const extension = path.extname(safeOriginal);
     const storedName = `${fileId}${extension}`;
-    const userDir = path.join(STORAGE_ROOT, sanitizeFileName(input.userId), input.category);
-    const fullPath = path.join(userDir, storedName);
-
     try {
-      await mkdir(userDir, { recursive: true });
-      await writeFile(fullPath, input.buffer);
+      const fullPath = await putObject(
+        `${sanitizeFileName(input.userId)}/${input.category}/${storedName}`,
+        input.buffer,
+        input.mimeType || 'application/octet-stream',
+      );
 
       const pool = getPgPool();
       const { rows } = await pool.query(
@@ -168,7 +170,8 @@ export class UserFileStore {
     const now = Date.now();
     const tempDirs = [
       path.join(TEMP_ROOT, 'screenshots'),
-      path.join(TEMP_ROOT, 'downloads')
+      path.join(TEMP_ROOT, 'downloads'),
+      path.join(TEMP_ROOT, 'uploads'),
     ];
 
     for (const dir of tempDirs) {
@@ -178,7 +181,8 @@ export class UserFileStore {
           const filePath = path.join(dir, file);
           const fstat = await stat(filePath);
           if (now - fstat.mtimeMs > maxAgeMs) {
-            await unlink(filePath).catch(() => {});
+            // uploads/ holds one folder per run (files keep their original names).
+            await (fstat.isDirectory() ? rm(filePath, { recursive: true, force: true }) : unlink(filePath)).catch(() => {});
           }
         }
       } catch (err) {
@@ -187,7 +191,7 @@ export class UserFileStore {
     }
   }
 
-  getTempPath(type: 'screenshots' | 'downloads', filename: string): string {
+  getTempPath(type: 'screenshots' | 'downloads' | 'uploads', filename: string): string {
     return path.join(TEMP_ROOT, type, sanitizeFileName(filename));
   }
 }

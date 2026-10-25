@@ -1,10 +1,8 @@
-import { getOpenAICompatibleClient, getLLMProviderConfig } from '../shared/llm/index.js';
-import { ActionStep } from './recorder.js';
+import { completeJSON } from '../shared/llm/gateway.js';
+import type { ActionStep } from './recorder.js';
+import { compileRecording } from '../shared/workflows/compile-recording.js';
 
 export async function generalizeSteps(steps: ActionStep[], starterActionPlan?: string): Promise<any[]> {
-  const client = getOpenAICompatibleClient();
-  const config = getLLMProviderConfig();
-
   const prompt = `You are an AI trained to analyze raw web recording steps and generalize them into robust resilient steps.
 The raw steps contain absolute selectors or basic CSS classes.
 Your goal is to generalize these to better selectors (like Playwright roles, testids, or descriptive text matches) and identify if a field is a user input field.
@@ -20,26 +18,16 @@ Respond with a JSON object containing a 'steps' array of generalized steps, keep
 `;
 
   try {
-    const response = await client.chat.completions.create({
-      model: config.chatModel,
+    // Admin tool (recording → workflow); uses the planner model.
+    const { data } = await completeJSON<{ steps?: any[] }>({
+      purpose: 'planner',
+      maxTokens: 4000,
       messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' }
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error('No response from LLM');
-
-    const result = JSON.parse(content);
-    return result.steps || [];
+    return data.steps || [];
   } catch (err) {
-    console.error('Failed to generalize steps via LLM, falling back to mock logic', err);
-    // Mock fallback logic
-    return steps.map(step => ({
-      ...step,
-      target: {
-        selector: `role=element[name='${step.target?.text || step.target?.selector}']`,
-        isUserInput: step.action === 'input' || step.action === 'change'
-      }
-    }));
+    // No AI available (or it failed): the deterministic compiler is the fallback.
+    console.warn('Generalize via LLM failed, using the deterministic compiler', (err as Error).message);
+    return compileRecording(steps);
   }
 }

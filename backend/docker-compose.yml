@@ -61,6 +61,15 @@ x-common-env: &common-env
   PREMIUM_PLAN_MONTHLY_SPEND_CAP_USD: ${PREMIUM_PLAN_MONTHLY_SPEND_CAP_USD:-5.0}
   WORKFLOW_PROMOTION_THRESHOLD: ${WORKFLOW_PROMOTION_THRESHOLD:-3}
   CORS_ORIGIN: ${CORS_ORIGIN:-}
+  NATIVE_APP_ORIGINS: ${NATIVE_APP_ORIGINS:-https://localhost,capacitor://localhost}
+  FCM_SERVICE_ACCOUNT: ${FCM_SERVICE_ACCOUNT:-}
+  FCM_SERVICE_ACCOUNT_FILE: ${FCM_SERVICE_ACCOUNT_FILE:-}
+  RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+  RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+  RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+  STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+  PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:5173}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   RATE_LIMIT: ${RATE_LIMIT:-100}
   MIN_BROWSERS: ${MIN_BROWSERS:-1}
@@ -128,6 +137,29 @@ services:
     shm_size: '1gb'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      <<: *healthcheck-defaults
+
+  admin:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.admin
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      ADMIN_PORT: 3100
+      ADMIN_CORS_ORIGIN: ${ADMIN_CORS_ORIGIN:-http://localhost:5173}
+      ADMIN_IP_ALLOWLIST: ${ADMIN_IP_ALLOWLIST:-}
+    ports:
+      - "${ADMIN_PUBLIC_PORT:-3100}:3100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
       <<: *healthcheck-defaults
 
   worker:

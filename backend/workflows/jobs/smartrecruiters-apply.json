@@ -1,0 +1,65 @@
+{
+  "id": "job-apply-smartrecruiters",
+  "siteId": "ats-smartrecruiters",
+  "category": "jobs",
+  "name": "SmartRecruiters \u2014 Apply",
+  "trigger": "apply smartrecruiters",
+  "triggerPhrases": [
+    "apply on smartrecruiters"
+  ],
+  "portalType": "jobs",
+  "entryUrl": "https://jobs.smartrecruiters.com/",
+  "pageUrlPatterns": [
+    "jobs\\.smartrecruiters\\.com"
+  ],
+  "requiredInputs": [],
+  "requiredFiles": [
+    "resume"
+  ],
+  "instructions": "Opens the application form for the job, fills it from the user's profile and remembered answers, asks for any required answer it doesn't know, pauses for review, then submits.",
+  "starterActionPlan": [
+    {
+      "id": "open",
+      "order": 1,
+      "action": "navigate",
+      "value": "{{job:applyUrl}}",
+      "timeout": 45000,
+      "retries": 1,
+      "description": "Open the application form"
+    },
+    {
+      "id": "fill",
+      "order": 2,
+      "action": "autofillForm",
+      "timeout": 150000,
+      "retries": 0,
+      "description": "Fill the form from your profile",
+      "metadata": {
+        "openApplyButton": true
+      }
+    },
+    {
+      "id": "review",
+      "order": 3,
+      "action": "reviewForm",
+      "retries": 0,
+      "description": "Wait for your approval"
+    },
+    {
+      "id": "submit",
+      "order": 4,
+      "action": "submitForm",
+      "timeout": 45000,
+      "retries": 0,
+      "description": "Submit the application"
+    }
+  ],
+  "errorRecoveryPlan": [],
+  "isActive": true,
+  "version": 1,
+  "metadata": {
+    "kind": "job-apply",
+    "atsType": "smartrecruiters",
+    "source": "file"
+  }
+}

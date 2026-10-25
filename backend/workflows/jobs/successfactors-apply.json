@@ -1,0 +1,115 @@
+{
+  "id": "job-apply-successfactors",
+  "siteId": "ats-successfactors",
+  "category": "jobs",
+  "name": "SAP SuccessFactors — Apply",
+  "trigger": "apply successfactors",
+  "triggerPhrases": [
+    "apply on successfactors"
+  ],
+  "portalType": "jobs",
+  "entryUrl": "https://www.sap.com/products/hcm/recruiting-software.html",
+  "pageUrlPatterns": [
+    "\\.(successfactors\\.(com|eu)|sapsf\\.(com|eu|cn))/(career|careers)\\b"
+  ],
+  "requiredInputs": [],
+  "requiredFiles": [
+    "resume"
+  ],
+  "instructions": "Opens the job on the company's career site, chooses Apply Now, creates (or signs in to) the user's candidate account for that company with the application email and a stored password — retyped email, name, phone with country code (asked once if the profile has none), country, privacy statement accepted — waits for the verification email when one is sent (opened automatically from the jobpilot inbox or connected Gmail), fills the application page from the profile, pauses for approval, then applies.",
+  "starterActionPlan": [
+    {
+      "id": "open",
+      "order": 1,
+      "action": "navigate",
+      "value": "{{job:applyUrl}}",
+      "timeout": 45000,
+      "retries": 1,
+      "description": "Open the job"
+    },
+    {
+      "id": "start",
+      "order": 2,
+      "action": "openApplication",
+      "retries": 0,
+      "description": "Start the application",
+      "metadata": {
+        "buttons": [
+          "#unifyApplyNowTopButton, a.dialogApplyBtn, button:has-text(\"Apply now\")",
+          "#applyOption--manual"
+        ]
+      }
+    },
+    {
+      "id": "account",
+      "order": 3,
+      "action": "siteAccount",
+      "timeout": 900000,
+      "retries": 0,
+      "description": "Sign in to the company's careers account",
+      "metadata": {
+        "selectors": {
+          "email": "#fbclc_userName, #username",
+          "password": "#fbclc_pwd, #password",
+          "verifyPassword": "#fbclc_pwdConf",
+          "terms": "#dataPrivacyId",
+          "createLink": "a:has-text(\"Create an account\")",
+          "createSubmit": "#fbclc_createAccountButton",
+          "signInLink": "a:has-text(\"Please sign in\"), a:has-text(\"Sign in\")",
+          "signInSubmit": "button:has-text(\"Sign In\")"
+        },
+        "signup": {
+          "#fbclc_emailConf": "email",
+          "#fbclc_fName": "firstName",
+          "#fbclc_lName": "lastName",
+          "#fbclc_ituCode": "phoneDialCode",
+          "#fbclc_phoneNumber": "phoneNational",
+          "#fbclc_country": "country"
+        },
+        "doneUrl": "career_ns=job_application|/apply/|jobApply",
+        "doneSelector": "button:has-text(\"Apply\"):not(:has-text(\"now\")), input[type=\"submit\"][value=\"Apply\"]"
+      }
+    },
+    {
+      "id": "fill",
+      "order": 4,
+      "action": "autofillForm",
+      "timeout": 600000,
+      "retries": 0,
+      "description": "Fill the application from your profile",
+      "metadata": {
+        "openApplyButton": false
+      }
+    },
+    {
+      "id": "review",
+      "order": 5,
+      "action": "reviewForm",
+      "retries": 0,
+      "description": "Wait for your approval"
+    },
+    {
+      "id": "submit",
+      "order": 6,
+      "action": "submitForm",
+      "timeout": 45000,
+      "retries": 0,
+      "description": "Apply",
+      "target": {
+        "value": "button:has-text(\"Apply\"):not(:has-text(\"now\"))",
+        "fallbackSelectors": [
+          "input[type=\"submit\"][value=\"Apply\"]",
+          "button[type=\"submit\"]"
+        ]
+      }
+    }
+  ],
+  "errorRecoveryPlan": [],
+  "isActive": true,
+  "version": 1,
+  "metadata": {
+    "kind": "job-apply",
+    "atsType": "successfactors",
+    "source": "file"
+  }
+}

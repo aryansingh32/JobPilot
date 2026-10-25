@@ -1,0 +1,187 @@
+{
+  "id": "job-apply-keka",
+  "category": "jobs",
+  "name": "Keka careers \u2014 Apply",
+  "trigger": "Keka careers \u2014 Apply",
+  "triggerPhrases": [
+    "Keka careers \u2014 Apply"
+  ],
+  "portalType": "jobs",
+  "entryUrl": "https://evolve.keka.com/careers/jobdetails/91601",
+  "pageUrlPatterns": [
+    "\\.keka\\.com/careers"
+  ],
+  "requiredInputs": [],
+  "requiredFiles": [],
+  "instructions": "Recorded in the admin Recorder on a Keka careers page (Zenskar SDE-1): opens the job, clicks Apply, fills name/phone/email from the profile, then the standard fill \u2192 review \u2192 submit (r\u00e9sum\u00e9 upload, screening questions, text captcha before submit).",
+  "starterActionPlan": [
+    {
+      "id": "s1",
+      "order": 1,
+      "value": "{{job:applyUrl}}",
+      "action": "navigate",
+      "retries": 1,
+      "timeout": 45000,
+      "metadata": {
+        "recordedUrl": "https://evolve.keka.com/careers/jobdetails/91601"
+      },
+      "humanType": false,
+      "trueSteps": [],
+      "falseSteps": [],
+      "humanDelay": false,
+      "description": "Open the application form"
+    },
+    {
+      "id": "s2",
+      "order": 2,
+      "action": "click",
+      "target": {
+        "type": "css",
+        "value": "#apply-job",
+        "fallbackSelectors": [
+          "div > div:nth-of-type(2) > div > div:nth-of-type(1) > button"
+        ]
+      },
+      "retries": 1,
+      "timeout": 15000,
+      "humanType": false,
+      "trueSteps": [],
+      "falseSteps": [],
+      "humanDelay": false,
+      "description": "Click \"Apply for this job\""
+    },
+    {
+      "id": "s3",
+      "order": 3,
+      "value": "{{profile:firstName}}",
+      "action": "fill",
+      "target": {
+        "type": "css",
+        "value": "#firstName",
+        "fallbackSelectors": [
+          "input[name=\"firstName\"]",
+          "div > div:nth-of-type(3) > div:nth-of-type(1) > div > input"
+        ]
+      },
+      "retries": 1,
+      "timeout": 10000,
+      "humanType": false,
+      "trueSteps": [],
+      "falseSteps": [],
+      "humanDelay": false,
+      "description": "Fill \"First Name *\" from profile (firstName)"
+    },
+    {
+      "id": "s4",
+      "order": 4,
+      "value": "{{profile:lastName}}",
+      "action": "fill",
+      "target": {
+        "type": "css",
+        "value": "#lastName",
+        "fallbackSelectors": [
+          "input[name=\"lastName\"]",
+          "div > div:nth-of-type(3) > div:nth-of-type(3) > div > input"
+        ]
+      },
+      "retries": 1,
+      "timeout": 10000,
+      "humanType": false,
+      "trueSteps": [],
+      "falseSteps": [],
+      "humanDelay": false,
+      "description": "Fill \"Last Name *\" from profile (lastName)"
+    },
+    {
+      "id": "s5",
+      "order": 5,
+      "value": "{{profile:phoneLocal}}",
+      "action": "fill",
+      "target": {
+        "type": "css",
+        "value": "#mobilePhone\\.number",
+        "fallbackSelectors": [
+          "input[name=\"mobilePhone.number\"]",
+          "input[placeholder=\"Mobile Phone\"]",
+          "div:nth-of-type(4) > div > div > div:nth-of-type(2) > input"
+        ]
+      },
+      "retries": 1,
+      "timeout": 10000,
+      "humanType": false,
+      "trueSteps": [],
+      "falseSteps": [],
+      "humanDelay": false,
+      "description": "Fill \"Mobile Phone\""
+    },
+    {
+      "id": "s6",
+      "order": 6,
+      "value": "{{profile:email}}",
+      "action": "fill",
+      "target": {
+        "type": "css",
+        "value": "#email",
+        "fallbackSelectors": [
+          "input[name=\"email\"]",
+          "div > div:nth-of-type(3) > div:nth-of-type(5) > div > input"
+        ]
+      },
+      "retries": 1,
+      "timeout": 10000,
+      "humanType": false,
+      "trueSteps": [],
+      "falseSteps": [],
+      "humanDelay": false,
+      "description": "Fill \"Email *\" from profile (email)"
+    },
+    {
+      "id": "s7",
+      "order": 7,
+      "action": "autofillForm",
+      "retries": 0,
+      "timeout": 10000,
+      "metadata": {
+        "openApplyButton": false
+      },
+      "humanType": false,
+      "trueSteps": [],
+      "falseSteps": [],
+      "humanDelay": false,
+      "description": "Fill the rest from the profile (r\u00e9sum\u00e9, other questions)"
+    },
+    {
+      "id": "s8",
+      "order": 8,
+      "action": "reviewForm",
+      "retries": 0,
+      "timeout": 10000,
+      "humanType": false,
+      "trueSteps": [],
+      "falseSteps": [],
+      "humanDelay": false,
+      "description": "Wait for the user to approve"
+    },
+    {
+      "id": "s9",
+      "order": 9,
+      "action": "submitForm",
+      "retries": 0,
+      "timeout": 45000,
+      "humanType": false,
+      "trueSteps": [],
+      "falseSteps": [],
+      "humanDelay": false,
+      "description": "Submit the application"
+    }
+  ],
+  "errorRecoveryPlan": [],
+  "version": 2,
+  "isActive": true,
+  "metadata": {
+    "kind": "job-apply",
+    "source": "recorder",
+    "atsType": "keka"
+  },
+  "siteId": "ats-keka"
+}

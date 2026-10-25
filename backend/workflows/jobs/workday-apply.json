@@ -1,0 +1,89 @@
+{
+  "id": "job-apply-workday",
+  "siteId": "ats-workday",
+  "category": "jobs",
+  "name": "Workday — Apply",
+  "trigger": "apply workday",
+  "triggerPhrases": [
+    "apply on workday"
+  ],
+  "portalType": "jobs",
+  "entryUrl": "https://www.myworkdayjobs.com/",
+  "pageUrlPatterns": [
+    "\\.myworkdayjobs\\.com/"
+  ],
+  "requiredInputs": [],
+  "requiredFiles": [
+    "resume"
+  ],
+  "instructions": "Opens the job, chooses Apply Manually, creates (or signs in to) the user's account on that company's Workday with a stored password, fills every page from the profile and remembered answers (asking for required unknowns), pauses on Workday's review page for approval, then submits.",
+  "starterActionPlan": [
+    {
+      "id": "open",
+      "order": 1,
+      "action": "navigate",
+      "value": "{{job:applyUrl}}",
+      "timeout": 90000,
+      "retries": 1,
+      "description": "Open the job"
+    },
+    {
+      "id": "start",
+      "order": 2,
+      "action": "openApplication",
+      "retries": 0,
+      "description": "Start the application",
+      "metadata": {
+        "buttons": [
+          "[data-automation-id=\"adventureButton\"]",
+          "[data-automation-id=\"applyManually\"]"
+        ]
+      }
+    },
+    {
+      "id": "account",
+      "order": 3,
+      "action": "siteAccount",
+      "timeout": 120000,
+      "retries": 0,
+      "description": "Sign in to the company's Workday"
+    },
+    {
+      "id": "fill",
+      "order": 4,
+      "action": "fillWizard",
+      "timeout": 600000,
+      "retries": 0,
+      "description": "Fill every page from your profile"
+    },
+    {
+      "id": "review",
+      "order": 5,
+      "action": "reviewForm",
+      "retries": 0,
+      "description": "Wait for your approval"
+    },
+    {
+      "id": "submit",
+      "order": 6,
+      "action": "submitForm",
+      "timeout": 45000,
+      "retries": 0,
+      "description": "Submit the application",
+      "target": {
+        "value": "[data-automation-id=\"bottom-navigation-next-button\"]",
+        "fallbackSelectors": [
+          "[data-automation-id=\"pageFooterNextButton\"]"
+        ]
+      }
+    }
+  ],
+  "errorRecoveryPlan": [],
+  "isActive": true,
+  "version": 1,
+  "metadata": {
+    "kind": "job-apply",
+    "atsType": "workday",
+    "source": "file"
+  }
+}

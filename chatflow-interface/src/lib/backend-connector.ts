@@ -11,9 +11,18 @@ import {
   type PauseEvent,
   type FileEvent,
   type JobStartedEvent,
+  type ReceiptEvent,
+  type ChatUiCard,
 } from "./socket-service";
-import type { ChatMessage, InputCardKind, TimelineStep } from "./chat-types";
+import type {
+  ChatMessage,
+  InputCardKind,
+  ReviewMessage,
+  ReviewSection,
+  TimelineStep,
+} from "./chat-types";
 import { createLogger } from "./logger";
+import { showIsland, type IslandTarget } from "./island";
 import { toast } from "sonner";
 
 const logger = createLogger("frontend-backend-connector");
@@ -52,6 +61,7 @@ function mapPauseToCardKind(type: string): InputCardKind | null {
     case "password":
     case "email":
     case "mobile":
+    case "emailLink":
       return "text";
     default:
       return null;
@@ -99,16 +109,24 @@ function setTrackedJobId(jobId: string | null): void {
   }
 }
 
+/** Called once the user is known: the chat session id is per user on this device. */
+export function scopeSessionToUser(userId: string): void {
+  sessionScope = userId;
+  currentSessionId = null;
+}
+let sessionScope = "anon";
+const SESSION_KEY = () => `agent-session-id:${sessionScope}`;
+
 export function getSessionId(): string {
   if (!currentSessionId) {
     // Try to restore from localStorage
     if (typeof window !== "undefined") {
-      currentSessionId = window.localStorage.getItem("agent-session-id");
+      currentSessionId = window.localStorage.getItem(SESSION_KEY());
     }
     if (!currentSessionId) {
       currentSessionId = uid() + "-" + uid();
       if (typeof window !== "undefined") {
-        window.localStorage.setItem("agent-session-id", currentSessionId);
+        window.localStorage.setItem(SESSION_KEY(), currentSessionId);
       }
     }
   }
@@ -129,7 +147,7 @@ export function resetSession(): void {
   // Generate a brand-new session ID
   currentSessionId = uid() + "-" + uid();
   if (typeof window !== "undefined") {
-    window.localStorage.setItem("agent-session-id", currentSessionId);
+    window.localStorage.setItem(SESSION_KEY(), currentSessionId);
   }
 
   // Reconnect socket with the new session
@@ -190,6 +208,44 @@ function buildCallbacks(emitter: BotEmitter) {
       });
     },
 
+    onChatUi: ({ cards }: { cards: ChatUiCard[] }) => {
+      for (const c of cards) {
+        const base = { id: uid(), role: "bot" as const, createdAt: Date.now() };
+        if (c.type === "jobs")
+          emitter.pushMessage({
+            ...base,
+            type: "job-cards",
+            title: c.title,
+            jobs: c.jobs,
+            empty: c.empty,
+          });
+        else if (c.type === "ask")
+          emitter.pushMessage({
+            ...base,
+            type: "ask",
+            kind: c.kind,
+            prompt: c.prompt,
+            options: c.options,
+            length: c.length,
+          });
+        else if (c.type === "open")
+          emitter.pushMessage({
+            ...base,
+            type: "actions",
+            actions: [{ view: c.view, label: c.label }],
+          });
+        else if (c.type === "applications")
+          emitter.pushMessage({ ...base, type: "apps-status", ids: c.items.map((i) => i.id) });
+        else if (c.type === "island")
+          showIsland({
+            tone: c.tone,
+            title: c.title,
+            body: c.body,
+            action: c.view ? { label: c.label || "Open", view: c.view as IslandTarget } : undefined,
+          });
+      }
+    },
+
     onChatPause: (event: PauseEvent) => {
       emitter.setTyping(false);
       emitter.setBusy(true);
@@ -200,6 +256,24 @@ function buildCallbacks(emitter: BotEmitter) {
           description: "Agent is handling security checks in the background.",
         });
         resolveCard(`pause-${event.stepId}`, "auto-solved", event.jobId);
+        return;
+      }
+
+      if (event.type === "review") {
+        const d = (event.data ?? {}) as Partial<ReviewMessage>;
+        emitter.pushMessage({
+          id: `pause-${event.stepId}`,
+          role: "bot" as const,
+          type: "review" as const,
+          createdAt: Date.now(),
+          title: d.title || event.contextMessage || "Review before submit",
+          site: d.site,
+          siteUrl: d.siteUrl,
+          actionLabel: d.actionLabel || "Submit",
+          sections: (d.sections as ReviewSection[]) || [],
+          jobId: event.jobId,
+          stepId: event.stepId,
+        });
         return;
       }
 
@@ -255,6 +329,30 @@ function buildCallbacks(emitter: BotEmitter) {
       });
     },
 
+    onChatReceipt: (event: ReceiptEvent) => {
+      emitter.setBusy(false);
+      emitter.pushMessage({
+        id: `receipt-${event.jobId}`,
+        role: "bot" as const,
+        type: "receipt" as const,
+        createdAt: Date.now(),
+        status: event.status,
+        title: event.title,
+        site: event.site,
+        siteUrl: event.siteUrl,
+        reference: event.reference,
+        durationMs: event.durationMs,
+        completedAt: event.completedAt ?? Date.now(),
+        sections: event.sections ?? [],
+        files: event.files?.map((f) => ({
+          ...f,
+          downloadUrl: f.fileId ? api.getFileDownloadUrl(f.fileId) : undefined,
+        })),
+        steps: event.steps,
+        nextSteps: event.nextSteps,
+      });
+    },
+
     onJobStarted: (event: JobStartedEvent) => {
       setTrackedJobId(event.jobId);
       emitter.setBusy(true);
@@ -264,7 +362,7 @@ function buildCallbacks(emitter: BotEmitter) {
         type: "status" as const,
         createdAt: Date.now(),
         variant: "info" as const,
-        content: `⚡ Initializing secure browser & connecting to government portal...`,
+        content: "Starting a secure browser for this task…",
       });
     },
 
@@ -275,7 +373,7 @@ function buildCallbacks(emitter: BotEmitter) {
         type: "status" as const,
         createdAt: Date.now(),
         variant: "warning" as const,
-        content: `⏳ Your task is queued (${event.position} ahead of you). Estimated wait: ${event.position * 2} minutes.`,
+        content: `Queued — ${event.position} ahead of you, about ${event.position * 2} min.`,
       });
     },
 
@@ -317,6 +415,35 @@ export async function resolveCard(id: string, value: string, jobId?: string): Pr
     } catch (err) {
       logger.error("job:resume-failed", err, { targetJobId });
     }
+  }
+}
+
+/**
+ * Resolve a review pause. The approved values are sent verbatim as the resume
+ * payload — the executor must submit exactly these, never re-generate them.
+ */
+export async function resolveReview(
+  msg: ReviewMessage,
+  action: "approved" | "cancelled",
+  values: Record<string, string>,
+): Promise<void> {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("agent-review-resolve", {
+        detail: { id: msg.id, resolved: { action, values, at: Date.now() } },
+      }),
+    );
+  }
+  const targetJobId = msg.jobId || currentJobId;
+  if (!targetJobId) return;
+  try {
+    if (action === "cancelled") {
+      await api.cancelJob(targetJobId);
+    } else {
+      await api.resumeJob(targetJobId, JSON.stringify({ action: "approve", values }));
+    }
+  } catch (err) {
+    logger.error("job:review-resolve-failed", err, { targetJobId, action });
   }
 }
 

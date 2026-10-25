@@ -49,9 +49,10 @@ function HealthBar({ label, status, latency }: { label: string; status: string; 
 }
 
 function BrowserDonut({ stats }: { stats: Record<string, unknown> }) {
-  const total = (stats?.totalBrowsers as number) ?? 0;
-  const active = (stats?.activeLeasesCount as number) ?? 0;
-  const idle = total - active;
+  // Worker heartbeats (control bus) report browsers / activeContexts; older single-process stats used the other names.
+  const total = ((stats?.browsers ?? stats?.totalBrowsers) as number) ?? 0;
+  const active = ((stats?.activeContexts ?? stats?.activeLeasesCount) as number) ?? 0;
+  const idle = Math.max(0, total - active);
   return (
     <div className="rounded-2xl border border-border/40 bg-card/60 p-5">
       <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">

@@ -6,7 +6,8 @@ const DEFAULT_OPENROUTER_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:
 // short structured-JSON tasks, not multi-step reasoning — the reasoning
 // variant above is needless latency/cost for them. This is the same
 // free-tier Nemotron 3 Nano family, just without the reasoning trace.
-const DEFAULT_LIGHTWEIGHT_MODEL = 'nvidia/nemotron-3-nano-30b-a3b:free';
+// (nemotron-3-nano-30b-a3b lost its free tier on OpenRouter in 2026.)
+const DEFAULT_LIGHTWEIGHT_MODEL = 'nvidia/nemotron-3.5-lightning:free';
 
 type LLMProviderConfig = {
   apiKey: string;

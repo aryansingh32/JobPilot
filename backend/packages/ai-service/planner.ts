@@ -5,7 +5,7 @@ import type {
   ExtractedElement, SimplifiedDOM, SiteWorkflow,
 } from '../shared/types/index.js';
 import { getPgPool, cacheGet, cacheSet, CacheKeys } from '../shared/db/index.js';
-import { getLLMProviderConfig, getOpenAICompatibleClient, getReasoningRequestBody } from '../shared/llm/index.js';
+import { complete } from '../shared/llm/gateway.js';
 
 // ============================================================
 // AI SERVICE
@@ -347,7 +347,8 @@ function serializeDOM(snapshot: DOMSnapshot, elements: ExtractedElement[]): stri
       visible: e.visible,
     }));
 
-  return JSON.stringify({ url: snapshot.url, elements: interactable }, null, 2);
+  // Compact (no pretty-printing): indentation is ~25–30% of the tokens here.
+  return JSON.stringify({ url: snapshot.url, elements: interactable });
 }
 
 export function buildSyntheticSnapshot(url?: string): DOMSnapshot {
@@ -447,12 +448,11 @@ export class AIPlanner {
     console.log(`[AI] Planning task: "${task.slice(0, 60)}"`);
     const domContext = serializeDOM(snapshot, elements);
     const workflowContext = await getSiteWorkflowContext(siteId);
-    const client = getOpenAICompatibleClient();
-    const { plannerModel } = getLLMProviderConfig();
-    const reasoningBody = getReasoningRequestBody();
-
-    const requestBody: Record<string, unknown> = {
-      model: plannerModel,
+    const response = await complete({
+      purpose: 'planner',
+      maxTokens: 1500,
+      json: true,
+      allowReasoning: true,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
@@ -460,13 +460,8 @@ export class AIPlanner {
           content: `TASK: ${task}\n\nSITE WORKFLOW INSTRUCTIONS:\n${workflowContext}\n\nPAGE STATE:\n${domContext}`,
         },
       ],
-    };
-    if (reasoningBody) {
-      requestBody.extra_body = reasoningBody;
-    }
-
-    const response = await client.chat.completions.create(requestBody as any);
-    const raw = getTextResponse(response.choices[0]?.message?.content);
+    });
+    const raw = response.text;
 
     let parsed: AIDecision;
     try {
@@ -508,13 +503,10 @@ export class AIPlanner {
     currentDOM: string
   ): Promise<ActionStep[] | null> {
     console.log(`[AI] Attempting recovery for failed step: ${failedStep.description}`);
-    const client = getOpenAICompatibleClient();
-    const { recoveryModel } = getLLMProviderConfig();
-
-    // No reasoning trace here — this is bounded structured-JSON generation,
-    // not multi-step reasoning, so skip the extra latency/cost.
-    const requestBody: Record<string, unknown> = {
-      model: recoveryModel,
+    const response = await complete({
+      purpose: 'recovery',
+      maxTokens: 800,
+      json: true,
       messages: [
         {
           role: 'user',
@@ -525,14 +517,11 @@ FAILED STEP: ${JSON.stringify(failedStep)}
 ERROR: ${errorMessage}
 CURRENT DOM (simplified): ${currentDOM.slice(0, 2000)}
 
-Return a JSON array of recovery ActionStep objects, or null if unrecoverable.
-Format: { "recoverable": true/false, "steps": [...] }`,
+Return a JSON object: { "recoverable": true/false, "steps": [ActionStep, ...] }`,
         },
       ],
-    };
-
-    const response = await client.chat.completions.create(requestBody as any);
-    const raw = getTextResponse(response.choices[0]?.message?.content);
+    });
+    const raw = response.text;
     try {
       const clean = raw.replace(/```json\n?|\n?```/g, '').trim();
       const data = JSON.parse(clean);
@@ -551,12 +540,9 @@ Format: { "recoverable": true/false, "steps": [...] }`,
     elementType: string,
     bodyContext?: string
   ): Promise<string | null> {
-    const client = getOpenAICompatibleClient();
-    const { selectorModel } = getLLMProviderConfig();
-    // No reasoning trace — this is a one-shot element-matching classification,
-    // not multi-step reasoning, so skip the extra latency/cost.
-    const requestBody: Record<string, unknown> = {
-      model: selectorModel,
+    const response = await complete({
+      purpose: 'selector',
+      maxTokens: 120,
       messages: [
         {
           role: 'user',
@@ -570,10 +556,8 @@ ${(bodyContext ?? '').slice(0, 1500)}
 Return ONLY a CSS selector string, no explanation. If impossible, return null.`,
         },
       ],
-    };
-
-    const response = await client.chat.completions.create(requestBody as any);
-    const raw = getTextResponse(response.choices[0]?.message?.content).trim();
+    });
+    const raw = response.text.trim();
     if (!raw || raw === 'null' || raw.length > 200) return null;
 
     // Validate the selector works

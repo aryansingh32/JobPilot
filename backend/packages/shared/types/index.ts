@@ -4,7 +4,7 @@
 
 export type JobStatus = 'pending' | 'active' | 'completed' | 'failed' | 'retrying';
 export type JobPriority = 'critical' | 'high' | 'normal' | 'low';
-export type JobType = 'crawl' | 'execute' | 'remap' | 'ai-plan' | 'health-check';
+export type JobType = 'crawl' | 'execute' | 'remap' | 'ai-plan' | 'health-check' | 'parse' | 'jobs-poll' | 'jobs-discover';
 
 // ─── Job Definitions ────────────────────────────────────────
 
@@ -41,6 +41,14 @@ export interface ExecuteJob extends BaseJob {
     useCache: boolean;
     dryRun?: boolean;
     lightweight?: boolean;
+    /** Values for {{job:*}} tokens (url, applyUrl, title, company, country). */
+    context?: Record<string, string>;
+    /** Full-plan retries; 1 for anything that submits (never apply twice). */
+    maxAttempts?: number;
+    /** Admin test runs: fill and review, but never press submit. */
+    stopBeforeSubmit?: boolean;
+    /** Continuation of a parked review: field label → the value the user approved. */
+    approved?: Record<string, string>;
   };
 }
 
@@ -51,6 +59,24 @@ export interface RemapJob extends BaseJob {
     affectedUrls?: string[];  // empty = full remap
     reason: 'scheduled' | 'change-detected' | 'selector-failure';
   };
+}
+
+/** Turn an uploaded resume into a profile draft (resume_parses row). */
+export interface ParseResumeJob extends BaseJob {
+  type: 'parse';
+  payload: { parseId: string };
+}
+
+/** Fetch one company job board and upsert its jobs. */
+export interface PollBoardJob extends BaseJob {
+  type: 'jobs-poll';
+  payload: { boardId: string };
+}
+
+/** Find more company boards (dataset / Common Crawl / seeds) — minutes long, runs on a worker. */
+export interface DiscoverBoardsJob extends BaseJob {
+  type: 'jobs-discover';
+  payload: { source: 'dataset' | 'commoncrawl' | 'seed'; crawls?: string[]; systems?: string[]; maxBlocks?: number };
 }
 
 export interface AIPlanJob extends BaseJob {
@@ -140,7 +166,7 @@ export interface BoundingBox {
 
 // ─── Action Types ────────────────────────────────────────────
 
-export type InputCardKind = 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file' | 'direct_input' | 'mfa' | 'loginVerification' | 'credentialFill';
+export type InputCardKind = 'otp' | 'upi_id' | 'captcha' | 'clickCaptcha' | 'confirmation' | 'text' | 'email' | 'mobile' | 'password' | 'file' | 'direct_input' | 'mfa' | 'loginVerification' | 'credentialFill' | 'emailLink' | 'aadhaar';
 
 // ─── Human-in-the-Loop / CAPTCHA subsystem ─────────────────────
 
@@ -261,6 +287,17 @@ export type ActionType =
   | 'iframe'
   | 'loop'
   | 'dragDrop'
+  // Job applications
+  | 'autofillForm'
+  | 'reviewForm'
+  | 'submitForm'
+  // Multi-page applicant systems (Workday…)
+  | 'openApplication'
+  | 'siteAccount'
+  | 'fillWizard'
+  | 'govWizard'
+  | 'solveTextCaptcha'
+  | 'emailCodeSignIn'
   | 'goBack'
   | 'goForward'
   | 'credentialFill'
@@ -277,6 +314,8 @@ export interface ExecutionResult {
   extractedData?: Record<string, unknown>;
   error?: string;
   sessionId: string;
+  /** Released its browser while waiting for the user; a continuation run finishes it. */
+  parked?: boolean;
 }
 
 export interface StepResult {

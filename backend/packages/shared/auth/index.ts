@@ -33,6 +33,8 @@ export interface SessionClaims {
   sub: string; // users.id
   email?: string;
   mobileNumber?: string;
+  /** Issued-at (seconds) — tokens older than users.sessions_valid_after are rejected. */
+  iat?: number;
 }
 
 export async function signSession(claims: SessionClaims): Promise<string> {
@@ -52,6 +54,7 @@ export async function verifySession(token: string): Promise<SessionClaims | null
       sub: payload.sub,
       email: typeof payload.email === 'string' ? payload.email : undefined,
       mobileNumber: typeof payload.mobileNumber === 'string' ? payload.mobileNumber : undefined,
+      iat: typeof payload.iat === 'number' ? payload.iat : undefined,
     };
   } catch (err) {
     logger.warn('session:verify-failed', { error: (err as Error).message });

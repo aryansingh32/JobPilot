@@ -1,8 +1,11 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import type { ChatMessage, Thread } from "./chat-types";
 
-const KEY = "agent-chat-threads-v1";
-const ACTIVE_KEY = "agent-chat-active-v1";
+// Chats live in this browser, so they're keyed by user: a second person signing in
+// on the same device must never see the first one's conversations.
+let scope = "anon";
+const KEY = () => `agent-chat-threads-v2:${scope}`;
+const ACTIVE_KEY = () => `agent-chat-active-v2:${scope}`;
 
 function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -11,9 +14,10 @@ function uid() {
 function loadThreads(): Thread[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(KEY);
+    const raw = window.localStorage.getItem(KEY());
     if (!raw) return [];
-    return JSON.parse(raw) as Thread[];
+    // Chats nobody wrote in aren't history (older builds saved them).
+    return (JSON.parse(raw) as Thread[]).filter((t) => t.messages.length > 0);
   } catch {
     return [];
   }
@@ -21,31 +25,37 @@ function loadThreads(): Thread[] {
 
 function saveThreads(threads: Thread[]) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(KEY, JSON.stringify(threads));
+  // An empty "New chat" is a blank page, not history: it is never saved.
+  window.localStorage.setItem(KEY(), JSON.stringify(threads.filter((t) => t.messages.length > 0)));
 }
 
 function loadActive(): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(ACTIVE_KEY);
+  return window.localStorage.getItem(ACTIVE_KEY());
 }
 
 function saveActive(id: string) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(ACTIVE_KEY, id);
+  window.localStorage.setItem(ACTIVE_KEY(), id);
 }
 
 function makeThread(title = "New chat"): Thread {
   return { id: uid(), title, updatedAt: Date.now(), messages: [] };
 }
 
-export function useChatStore() {
+/** Chat storage for one signed-in user; it stays empty until `userId` is known. */
+export function useChatStore(userId: string | null) {
   const [threads, setThreadsState] = useState<Thread[]>([]);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
   // Idempotent bootstrap (StrictMode safe)
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !userId) return;
+    scope = userId;
+    // The old unscoped keys may hold another person's chats.
+    window.localStorage.removeItem("agent-chat-threads-v1");
+    window.localStorage.removeItem("agent-chat-active-v1");
     let initial = loadThreads();
     let active = loadActive();
     if (initial.length === 0) {
@@ -61,7 +71,7 @@ export function useChatStore() {
     setThreadsState(initial);
     setActiveIdState(active);
     setHydrated(true);
-  }, []);
+  }, [userId]);
 
   const setThreads = useCallback((updater: (prev: Thread[]) => Thread[]) => {
     setThreadsState((prev) => {
@@ -71,17 +81,34 @@ export function useChatStore() {
     });
   }, []);
 
-  const setActiveId = useCallback((id: string) => {
-    setActiveIdState(id);
-    saveActive(id);
-  }, []);
+  const threadsRef = useRef<Thread[]>([]);
+  threadsRef.current = threads;
+  const activeRef = useRef<string | null>(null);
+  activeRef.current = activeId;
+
+  const setActiveId = useCallback(
+    (id: string) => {
+      const leaving = threadsRef.current.find((t) => t.id === activeRef.current);
+      setActiveIdState(id);
+      saveActive(id);
+      // Walking away from a chat nobody wrote in: it simply disappears.
+      if (leaving && leaving.id !== id && leaving.messages.length === 0) {
+        setThreads((prev) => prev.filter((t) => t.id !== leaving.id));
+      }
+    },
+    [setThreads],
+  );
 
   const newThread = useCallback(() => {
+    // Already on a blank chat: "New chat" again just stays there.
+    const current = threadsRef.current.find((t) => t.id === activeRef.current);
+    if (current && current.messages.length === 0) return current.id;
     const t = makeThread();
-    setThreads((prev) => [t, ...prev]);
-    setActiveId(t.id);
+    setThreads((prev) => [t, ...prev.filter((x) => x.messages.length > 0)]);
+    setActiveIdState(t.id);
+    saveActive(t.id);
     return t.id;
-  }, [setThreads, setActiveId]);
+  }, [setThreads]);
 
   const deleteThread = useCallback(
     (id: string) => {

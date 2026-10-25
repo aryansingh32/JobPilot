@@ -5,7 +5,6 @@ import { AdminLayout } from "@/components/admin/AdminLayout";
 import { Dashboard } from "@/components/admin/Dashboard";
 import { JobsPanel } from "@/components/admin/JobsPanel";
 import { UsersPanel } from "@/components/admin/UsersPanel";
-import { WorkflowsPanel } from "@/components/admin/WorkflowsPanel";
 import { CaptchaPanel } from "@/components/admin/CaptchaPanel";
 import { BrowsersPanel } from "@/components/admin/BrowsersPanel";
 import { ReliabilityPanel } from "@/components/admin/ReliabilityPanel";
@@ -17,15 +16,26 @@ import { SecurityPanel } from "@/components/admin/SecurityPanel";
 import { ObservabilityCommandCenter } from "@/components/admin/ObservabilityCommandCenter";
 import { SessionIntelPanel } from "@/components/admin/SessionIntelPanel";
 import { DebugCopilotPanel } from "@/components/admin/DebugCopilotPanel";
+import { ApplicationsPanel } from "@/components/admin/ApplicationsPanel";
+import { JobSourcesPanel } from "@/components/admin/JobSourcesPanel";
+import { WorkflowStudio } from "@/components/admin/WorkflowStudio";
+import { RecorderPanel } from "@/components/admin/RecorderPanel";
+import {
+  AiUsagePanel,
+  InboxPanel,
+  SettingsPanel,
+  TeamPanel,
+  TestProfilePanel,
+} from "@/components/admin/PlatformPanels";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({
     meta: [
-      { title: "ChatFlow Admin — System Control Panel" },
+      { title: "JobPilot Admin" },
       {
         name: "description",
         content:
-          "SaaS-level admin panel for full system control, user management, workflow CRUD, captcha solving, and monitoring.",
+          "Control panel for applications, job sources, workflows, the recorder, settings and monitoring.",
       },
     ],
   }),
@@ -33,7 +43,31 @@ export const Route = createFileRoute("/admin")({
 });
 
 function AdminPage() {
-  const [tab, setTab] = useState("observability");
+  const [tab, setTab] = useState(() => {
+    if (typeof window === "undefined") return "dashboard";
+    try {
+      return window.location.hash.slice(1) || localStorage.getItem("jp-admin-tab") || "dashboard";
+    } catch {
+      return "dashboard";
+    }
+  });
+  // Back/forward and pasted #links switch panels too.
+  useEffect(() => {
+    const onHash = () => {
+      const h = window.location.hash.slice(1);
+      if (h) setTab(h);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("jp-admin-tab", tab);
+      if (window.location.hash.slice(1) !== tab) window.history.pushState(null, "", `#${tab}`);
+    } catch {
+      /* storage blocked */
+    }
+  }, [tab]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<string>(new Date().toLocaleTimeString());
   const [authorized, setAuthorized] = useState<boolean | null>(null);
@@ -71,7 +105,23 @@ function AdminPage() {
       case "users":
         return <UsersPanel key={refreshKey} />;
       case "workflows":
-        return <WorkflowsPanel key={refreshKey} />;
+        return <WorkflowStudio key={refreshKey} />;
+      case "recorder":
+        return <RecorderPanel />;
+      case "test-profile":
+        return <TestProfilePanel key={refreshKey} />;
+      case "applications":
+        return <ApplicationsPanel key={refreshKey} />;
+      case "sources":
+        return <JobSourcesPanel key={refreshKey} />;
+      case "inbox":
+        return <InboxPanel key={refreshKey} />;
+      case "settings":
+        return <SettingsPanel key={refreshKey} />;
+      case "ai":
+        return <AiUsagePanel key={refreshKey} />;
+      case "team":
+        return <TeamPanel key={refreshKey} />;
       case "sites":
         return <SitesPanel key={refreshKey} />;
       case "captcha":

@@ -11,7 +11,7 @@ import { createLogger } from "./logger";
 const logger = createLogger("admin-api");
 
 async function adminRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const url = `${config.apiBaseUrl}${path}`;
+  const url = `${config.adminApiBaseUrl}${path}`;
   const headers: Record<string, string> = {
     ...((options.headers as Record<string, string>) || {}),
   };
@@ -36,16 +36,16 @@ async function adminRequest<T>(path: string, options: RequestInit = {}): Promise
   return res.text() as unknown as T;
 }
 
-function aGet<T>(path: string) {
+export function aGet<T>(path: string) {
   return adminRequest<T>(path, { method: "GET" });
 }
-function aPost<T>(path: string, body?: unknown) {
+export function aPost<T>(path: string, body?: unknown) {
   return adminRequest<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
 }
-function aPut<T>(path: string, body?: unknown) {
+export function aPut<T>(path: string, body?: unknown) {
   return adminRequest<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined });
 }
-function aDel<T>(path: string) {
+export function aDel<T>(path: string) {
   return adminRequest<T>(path, { method: "DELETE" });
 }
 
@@ -93,11 +93,37 @@ export interface AdminJob {
 
 export interface AdminUser {
   user_id: string;
+  email?: string | null;
+  mobile_number?: string | null;
+  display_name?: string | null;
+  suspended?: boolean;
+  credits?: number;
+  devices?: number;
   total_jobs: number;
   completed_jobs: number;
   failed_jobs: number;
   last_active: string;
   first_seen: string;
+}
+
+export interface CreditLedgerRow {
+  id: number;
+  delta: number;
+  reason: "grant" | "reserve" | "commit" | "refund" | "admin";
+  note: string | null;
+  actor: string | null;
+  balance_after: number;
+  created_at: string;
+  application_title: string | null;
+}
+
+export interface UserNotificationRow {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  read: boolean;
+  created_at: string;
 }
 
 export interface AdminWorkflow {
@@ -278,7 +304,23 @@ export interface ErrorReportRow {
 
 // ── API ───────────────────────────────────────────────────
 
+export interface MailConnectionRow {
+  id: string;
+  user_id: string;
+  user_email: string | null;
+  address: string;
+  status: "active" | "revoked" | "error";
+  last_sync_at: string | null;
+  last_error: string | null;
+  messages_kept: number;
+  created_at: string;
+}
+
 export const adminApi = {
+  mailConnections: () =>
+    aGet<{ available: boolean; configured: boolean; connections: MailConnectionRow[] }>("/admin/mail-connections"),
+  gmailSync: (userId: string) => aPost<{ kept: number }>(`/admin/users/${userId}/gmail/sync`),
+  gmailDisconnect: (userId: string) => aPost<{ ok: boolean }>(`/admin/users/${userId}/gmail/disconnect`),
   // Dashboard
   overview: () => aGet<OverviewData>("/admin/overview"),
   health: () => aGet<SystemHealth>("/admin/health"),
@@ -303,8 +345,9 @@ export const adminApi = {
     aPost<{ jobId: string; retrying: boolean }>(`/admin/jobs/${jobId}/retry`),
 
   // Users
-  listUsers: (params?: { limit?: number; offset?: number }) => {
+  listUsers: (params?: { limit?: number; offset?: number; q?: string }) => {
     const q = new URLSearchParams();
+    if (params?.q) q.set("q", params.q);
     if (params?.limit) q.set("limit", String(params.limit));
     if (params?.offset) q.set("offset", String(params.offset));
     return aGet<{ users: AdminUser[]; total: number }>(`/admin/users?${q}`);
@@ -313,6 +356,32 @@ export const adminApi = {
     aGet<{ userId: string; jobs: AdminJob[]; profiles: unknown[]; files: unknown[] }>(
       `/admin/users/${userId}`,
     ),
+  // Account controls: credits, suspension, sign-out, export, delete, notifications
+  userCredits: (userId: string) =>
+    aGet<{ balance: number; ledger: CreditLedgerRow[] }>(`/admin/users/${userId}/credits`),
+  adjustCredits: (userId: string, delta: number, note: string) =>
+    aPost<{ balance: number }>(`/admin/users/${userId}/credits`, { delta, note }),
+  creditsSummary: () =>
+    aGet<{ granted: number; admin_adjusted: number; committed: number; refunded: number; held: number; outstanding: number }>(
+      "/admin/credits/summary",
+    ),
+  suspendUser: (userId: string, suspended: boolean) =>
+    aPost<{ suspended: boolean }>(`/admin/users/${userId}/suspend`, { suspended }),
+  logoutUser: (userId: string) => aPost<{ loggedOut: boolean }>(`/admin/users/${userId}/logout`, {}),
+  exportUser: (userId: string) => aGet<Record<string, unknown>>(`/admin/users/${userId}/export`),
+  deleteUser: (userId: string) =>
+    aPost<{ deleted: boolean; files: number }>(`/admin/users/${userId}/delete`, { confirm: userId }),
+  userNotifications: (userId: string) =>
+    aGet<{ notifications: UserNotificationRow[]; devices: { platform: string; app_version: string | null; last_seen_at: string }[] }>(
+      `/admin/users/${userId}/notifications`,
+    ),
+  notificationStats: () =>
+    aGet<{ devices: number; users_with_devices: number; sent_24h: number; pushed_24h: number; pushConfigured: boolean }>(
+      "/admin/notifications/stats",
+    ),
+  broadcast: (title: string, body: string, userIds?: string[]) =>
+    aPost<{ users: number }>("/admin/notifications/broadcast", { title, body, userIds }),
+
   getUserPrompts: (userId: string, limit = 50) =>
     aGet<{ prompts: { job_id: string; prompt: string; status: string; started_at: string }[] }>(
       `/admin/users/${userId}/prompts?limit=${limit}`,

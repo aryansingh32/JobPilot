@@ -14,6 +14,7 @@ export interface UserAccount {
   mobileVerified: boolean;
   googleId: string | null;
   displayName: string | null;
+  suspended: boolean;
 }
 
 const SELECT = `
@@ -23,7 +24,8 @@ const SELECT = `
   mobile_number as "mobileNumber",
   mobile_verified as "mobileVerified",
   google_id as "googleId",
-  display_name as "displayName"
+  display_name as "displayName",
+  (suspended_at IS NOT NULL) as "suspended"
 `;
 
 export const userAccountService = {
@@ -40,18 +42,34 @@ export const userAccountService = {
     displayName?: string;
   }): Promise<UserAccount> {
     const pool = getPgPool();
+    const email = input.email.trim().toLowerCase();
+    const displayName = input.displayName ?? null;
+
+    // Returning Google user.
+    const byGoogle = await pool.query(
+      `UPDATE users SET email = $2, email_verified = $3,
+         display_name = COALESCE($4, display_name), last_login_at = NOW()
+       WHERE google_id = $1 RETURNING ${SELECT}`,
+      [input.googleId, email, input.emailVerified, displayName]
+    );
+    if (byGoogle.rows[0]) return byGoogle.rows[0];
+
+    // Same person who signed in earlier by email OTP: attach the Google identity.
+    // Only when Google vouches for the address, otherwise anyone could claim it.
+    if (input.emailVerified) {
+      const byEmail = await pool.query(
+        `UPDATE users SET google_id = $1, email_verified = true,
+           display_name = COALESCE(display_name, $3), last_login_at = NOW()
+         WHERE email = $2 AND google_id IS NULL RETURNING ${SELECT}`,
+        [input.googleId, email, displayName]
+      );
+      if (byEmail.rows[0]) return byEmail.rows[0];
+    }
+
     const { rows } = await pool.query(
-      `
-      INSERT INTO users (google_id, email, email_verified, display_name, last_login_at)
-      VALUES ($1, $2, $3, $4, NOW())
-      ON CONFLICT (google_id) DO UPDATE SET
-        email = EXCLUDED.email,
-        email_verified = EXCLUDED.email_verified,
-        display_name = COALESCE(EXCLUDED.display_name, users.display_name),
-        last_login_at = NOW()
-      RETURNING ${SELECT}
-      `,
-      [input.googleId, input.email, input.emailVerified, input.displayName ?? null]
+      `INSERT INTO users (google_id, email, email_verified, display_name, last_login_at)
+       VALUES ($1, $2, $3, $4, NOW()) RETURNING ${SELECT}`,
+      [input.googleId, email, input.emailVerified, displayName]
     );
     return rows[0];
   },
@@ -86,5 +104,24 @@ export const userAccountService = {
       [mobileNumber.trim()]
     );
     return rows[0];
+  },
+
+  /**
+   * Attach a verified mobile number to an existing (e.g. email/Google) account.
+   * Returns null when the number already belongs to a different account.
+   */
+  async linkMobile(userId: string, mobileNumber: string): Promise<UserAccount | null> {
+    const pool = getPgPool();
+    const number = mobileNumber.trim();
+    const { rows: owners } = await pool.query(
+      `SELECT id FROM users WHERE mobile_number = $1 AND id <> $2`,
+      [number, userId]
+    );
+    if (owners.length) return null;
+    const { rows } = await pool.query(
+      `UPDATE users SET mobile_number = $2, mobile_verified = true WHERE id = $1 RETURNING ${SELECT}`,
+      [userId, number]
+    );
+    return rows[0] ?? null;
   },
 };

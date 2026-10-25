@@ -1,0 +1,94 @@
+{
+  "id": "job-apply-oracle",
+  "siteId": "ats-oracle",
+  "category": "jobs",
+  "name": "Oracle Recruiting Cloud — Apply",
+  "trigger": "apply oracle",
+  "triggerPhrases": [
+    "apply on oracle careers"
+  ],
+  "portalType": "jobs",
+  "entryUrl": "https://www.oracle.com/careers/",
+  "pageUrlPatterns": [
+    "\\.oraclecloud\\.com/hcmUI/CandidateExperience/"
+  ],
+  "requiredInputs": [],
+  "requiredFiles": [
+    "resume"
+  ],
+  "instructions": "Opens the job, presses Apply Now, signs in with the application email and the code Oracle sends to it (filled from the jobpilot inbox or connected Gmail when available, otherwise asked; a texted code asks for the mobile number if the profile has none), fills every step from the profile and remembered answers including the e-signature next to Submit, pauses for approval, then submits.",
+  "starterActionPlan": [
+    {
+      "id": "open",
+      "order": 1,
+      "action": "navigate",
+      "value": "{{job:applyUrl}}",
+      "timeout": 45000,
+      "retries": 1,
+      "description": "Open the job"
+    },
+    {
+      "id": "start",
+      "order": 2,
+      "action": "openApplication",
+      "retries": 0,
+      "description": "Start the application",
+      "metadata": {
+        "buttons": [
+          "button.apply-now-button, button:has-text(\"Apply Now\")"
+        ],
+        "waitMs": 20000
+      }
+    },
+    {
+      "id": "account",
+      "order": 3,
+      "action": "emailCodeSignIn",
+      "timeout": 900000,
+      "retries": 0,
+      "description": "Sign in with the code Oracle emails you"
+    },
+    {
+      "id": "fill",
+      "order": 4,
+      "action": "fillWizard",
+      "timeout": 600000,
+      "retries": 0,
+      "description": "Fill every step from your profile",
+      "metadata": {
+        "next": "button[title=\"Next\"], button[title=\"Submit\"], button.apply-flow-pagination__next-button, button.apply-flow-pagination__submit-button",
+        "fillLastPage": true
+      }
+    },
+    {
+      "id": "review",
+      "order": 5,
+      "action": "reviewForm",
+      "retries": 0,
+      "description": "Wait for your approval"
+    },
+    {
+      "id": "submit",
+      "order": 6,
+      "action": "submitForm",
+      "timeout": 45000,
+      "retries": 0,
+      "description": "Submit the application",
+      "target": {
+        "value": "button[title=\"Submit\"]",
+        "fallbackSelectors": [
+          "button.apply-flow-pagination__submit-button",
+          "button:has-text(\"Submit\")"
+        ]
+      }
+    }
+  ],
+  "errorRecoveryPlan": [],
+  "isActive": true,
+  "version": 1,
+  "metadata": {
+    "kind": "job-apply",
+    "atsType": "oracle",
+    "source": "file"
+  }
+}

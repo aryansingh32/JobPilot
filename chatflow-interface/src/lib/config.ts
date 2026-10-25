@@ -5,18 +5,37 @@
 
 const env = typeof import.meta !== "undefined" ? (import.meta as any).env : {};
 
+/**
+ * "{host}" in a URL becomes the host this page was opened from, so one build
+ * works on localhost and from other devices on the network (and the API stays
+ * same-site, so its cookies are sent). Server-side it falls back to localhost.
+ */
+function withPageHost(url: string): string {
+  if (!url.includes("{host}")) return url;
+  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+  return url.replace("{host}", host);
+}
+
 export const config = {
   /** Backend API base URL (no trailing slash) */
-  apiBaseUrl:
+  apiBaseUrl: withPageHost(
     env?.VITE_API_BASE_URL !== undefined && env?.VITE_API_BASE_URL !== null
       ? env.VITE_API_BASE_URL
       : "http://localhost:3000",
+  ),
 
   /** API key for x-api-key header — identifies this as a legitimate client, not a per-user secret */
   apiKey: env?.VITE_API_KEY || "",
 
   /** Google OAuth Web Client ID, used by the Google Identity Services sign-in button */
   googleClientId: env?.VITE_GOOGLE_CLIENT_ID || "",
+
+  /** Admin service base URL — the admin panel talks only to this, never to the user API. */
+  adminApiBaseUrl: withPageHost(
+    env?.VITE_ADMIN_API_BASE_URL !== undefined && env?.VITE_ADMIN_API_BASE_URL !== null
+      ? env.VITE_ADMIN_API_BASE_URL
+      : "http://localhost:3100",
+  ),
 
   /** Socket.IO path (defaults to /socket.io) */
   socketPath: env?.VITE_SOCKET_PATH || "/socket.io",
@@ -42,3 +61,15 @@ export function apiOriginForSockets(): string {
 // /auth/email/verify, or /auth/mobile/verify — neither is ever readable by
 // client-side JS, unlike the old VITE_-prefixed values which were baked into
 // the public bundle.
+
+/** Origin for the admin service's Socket.IO feed (namespace /admin). */
+export function adminOriginForSockets(): string {
+  const base = String(config.adminApiBaseUrl ?? "").trim();
+  try {
+    if (base.startsWith("http://") || base.startsWith("https://")) return new URL(base).origin;
+  } catch {
+    /* fall through */
+  }
+  if (typeof window !== "undefined") return window.location.origin;
+  return "http://localhost:3100";
+}

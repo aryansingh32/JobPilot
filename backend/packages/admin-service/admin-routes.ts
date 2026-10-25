@@ -6,9 +6,13 @@
 
 import type { FastifyInstance } from 'fastify';
 import { getPgPool, getRedisClient, CacheKeys } from '../shared/db/index.js';
-import { getBrowserPool } from '../execution-service/browser-pool.js';
-import { recorderService } from '../execution-service/recorder.js';
-import { dryRunService } from '../execution-service/dry-run-service.js';
+import {
+  aggregateBrowserStats,
+  listWorkers,
+  pickWorker,
+  pruneStaleWorkers,
+  sendCommand,
+} from '../shared/control-bus/index.js';
 import { generalizeSteps } from '../execution-service/llm-generalizer.js';
 import { getAllQueueStats } from '../shared/queue/index.js';
 import { getSelectorHealthReport } from '../execution-service/selector-engine.js';
@@ -18,6 +22,8 @@ import { canUsePaidProvider } from '../execution-service/captcha/plan-gate.js';
 import { register as promRegister } from 'prom-client';
 import { createLogger } from '../shared/logger/index.js';
 import { adminAuth } from './admin-auth.js';
+import { invalidateWorkflowCache } from './automation-routes.js';
+import { randomUUID } from 'crypto';
 import os from 'os';
 import fs from 'fs';
 
@@ -65,7 +71,8 @@ async function getSystemHealth() {
     } catch {}
   }
 
-  const browserStats = getBrowserPool().getStats();
+  // Real numbers from worker heartbeats (this process runs no browsers).
+  const browserStats = await aggregateBrowserStats().catch(() => null);
   const mem = process.memoryUsage();
   const sysMem = { total: os.totalmem(), free: os.freemem() };
 
@@ -284,22 +291,32 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     const { limit = '100', offset = '0' } = req.query as { limit?: string; offset?: string };
     const pool = getPgPool();
     try {
-      // Derive users from memory profiles and job_logs (no auth users table yet)
+      // Real accounts, with their application activity, credits and state.
+      const { q } = req.query as { q?: string };
       const { rows } = await pool.query(`
         SELECT
-          user_id,
-          COUNT(*) AS total_jobs,
-          COUNT(*) FILTER (WHERE status = 'completed') AS completed_jobs,
-          COUNT(*) FILTER (WHERE status = 'failed') AS failed_jobs,
-          MAX(started_at) AS last_active,
-          MIN(started_at) AS first_seen
-        FROM job_logs
-        GROUP BY user_id
-        ORDER BY last_active DESC
+          u.id::text AS user_id,
+          u.email, u.mobile_number, COALESCE(u.display_name, MAX(p.data->'personal'->>'fullName')) AS display_name,
+          u.created_at, u.last_login_at,
+          (u.suspended_at IS NOT NULL) AS suspended,
+          COUNT(a.id) AS total_jobs,
+          COUNT(a.id) FILTER (WHERE a.status IN ('submitted', 'completed')) AS completed_jobs,
+          COUNT(a.id) FILTER (WHERE a.status = 'failed') AS failed_jobs,
+          GREATEST(MAX(a.updated_at), u.last_login_at) AS last_active,
+          u.created_at AS first_seen,
+          (SELECT COALESCE(SUM(delta), 0)::int FROM credit_ledger l WHERE l.user_id = u.id::text) AS credits,
+          (SELECT COUNT(*)::int FROM push_devices d WHERE d.user_id = u.id::text) AS devices
+        FROM users u
+        LEFT JOIN applications a ON a.user_id = u.id::text
+        LEFT JOIN profiles p ON p.user_id = u.id::text
+        WHERE ($3::text IS NULL OR u.email ILIKE $3 OR u.mobile_number ILIKE $3 OR u.display_name ILIKE $3
+               OR p.data->'personal'->>'fullName' ILIKE $3 OR u.id::text = $4)
+        GROUP BY u.id
+        ORDER BY last_active DESC NULLS LAST
         LIMIT $1 OFFSET $2
-      `, [parseInt(limit), parseInt(offset)]);
+      `, [parseInt(limit), parseInt(offset), q ? `%${q}%` : null, q ?? null]);
 
-      const countRes = await pool.query(`SELECT COUNT(DISTINCT user_id) FROM job_logs`);
+      const countRes = await pool.query(`SELECT COUNT(*) FROM users`);
       return reply.send({ users: rows, total: Number(countRes.rows[0].count) });
     } catch (e) {
       logger.error('admin:users-query-failed', e);
@@ -384,6 +401,24 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     }
     const pool = getPgPool();
     try {
+      // The panel sends an entry URL, not a sites.id — find/create the site by domain.
+      if (!body.siteId || !/^[0-9a-f-]{36}$/i.test(String(body.siteId))) {
+        if (!body.entryUrl) return reply.status(400).send({ error: 'entryUrl is required' });
+        let domain: string;
+        try {
+          domain = new URL(String(body.entryUrl)).hostname;
+        } catch {
+          return reply.status(400).send({ error: 'entryUrl must be a full URL' });
+        }
+        const site = await pool.query(
+          `INSERT INTO sites (domain, config, updated_at) VALUES ($1, '{}'::jsonb, NOW())
+           ON CONFLICT (domain) DO UPDATE SET updated_at = NOW() RETURNING id`,
+          [domain],
+        );
+        body.siteId = site.rows[0].id;
+      }
+      body.workflowKey = body.workflowKey || `admin-${randomUUID().slice(0, 8)}`;
+      body.metadata = { ...((body.metadata as object) ?? {}), editedInAdmin: true };
       const { rows } = await pool.query(`
         INSERT INTO site_workflows
           (site_id, workflow_key, category, name, trigger, trigger_phrases, portal_type,
@@ -420,6 +455,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           [admin.id, rows[0].id, 'CREATE', JSON.stringify({ new: rows[0] })]
         );
       }
+      await invalidateWorkflowCache(rows[0].site_id);
       return reply.status(201).send({ workflow: rows[0] });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
@@ -454,6 +490,9 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         // reasoning as the POST /admin/workflows insert above.
         trigger_phrases: body.triggerPhrases, page_url_patterns: body.pageUrlPatterns,
         required_inputs: body.requiredInputs, required_files: body.requiredFiles,
+        error_recovery_plan: body.errorRecoveryPlan !== undefined ? JSON.stringify(body.errorRecoveryPlan) : undefined,
+        // Any admin edit makes the DB the owner: the file loader stops overwriting it.
+        metadata: JSON.stringify({ ...(oldWorkflow.metadata ?? {}), ...((body.metadata as object) ?? {}), editedInAdmin: true }),
       };
       for (const [col, val] of Object.entries(map)) {
         if (val !== undefined) { sets.push(`${col} = $${pi++}`); params.push(val); }
@@ -483,6 +522,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         );
       }
       
+      await invalidateWorkflowCache(rows[0].site_id);
       return reply.send({ workflow: rows[0] });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
@@ -506,37 +546,61 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       
       const { rowCount } = await pool.query(`DELETE FROM site_workflows WHERE id = $1`, [workflowId]);
       if (!rowCount) return reply.status(404).send({ error: 'Workflow not found' });
+      await invalidateWorkflowCache(oldRows.rows[0].site_id);
       return reply.send({ deleted: true, workflowId });
     } catch {
       return reply.status(500).send({ error: 'Failed to delete workflow' });
     }
   });
 
-  // ── Workflow Recorder ───────────────────────────────────
+  // ── Workflow Recorder (runs on a worker via the control bus) ──
+  const recordKey = (sessionId: string) => `admin:record:${sessionId}`;
+
   app.post('/admin/record/start', { preHandler: adminAuth }, async (req, reply) => {
     const { url, sessionId } = req.body as { url: string; sessionId: string };
+    if (!url || !sessionId) return reply.status(400).send({ error: 'url and sessionId are required' });
+    const worker = await pickWorker();
+    if (!worker) return reply.status(503).send({ error: 'No worker is online to run the recorder' });
     try {
-      await recorderService.startRecording(sessionId, url);
-      return reply.send({ success: true, sessionId, url });
+      const [res] = await sendCommand('record.start', { sessionId, url }, { target: worker.workerId, timeoutMs: 60_000 });
+      if (!res?.ok) return reply.status(500).send({ error: res?.error ?? 'Recorder failed to start' });
+      // record.stop must reach the same worker that holds the browser.
+      const redis = await getRedisClient();
+      await redis.setEx(recordKey(sessionId), 2 * 60 * 60, worker.workerId);
+      return reply.send({ success: true, sessionId, url, workerId: worker.workerId, viewport: (res.result as { viewport?: unknown })?.viewport });
     } catch (e: any) {
-      return reply.status(500).send({ error: e.message });
+      return reply.status(504).send({ error: e.message });
     }
   });
 
   app.post('/admin/record/stop', { preHandler: adminAuth }, async (req, reply) => {
     const { sessionId } = req.body as { sessionId: string };
+    const redis = await getRedisClient();
+    const workerId = await redis.get(recordKey(sessionId));
+    if (!workerId) return reply.status(404).send({ error: 'No active recording for that session' });
     try {
-      const steps = await recorderService.stopRecording(sessionId);
-      return reply.send({ success: true, steps });
+      const [res] = await sendCommand<{ steps: unknown[] }>('record.stop', { sessionId }, { target: workerId, timeoutMs: 60_000 });
+      if (!res?.ok) return reply.status(500).send({ error: res?.error ?? 'Recorder failed to stop' });
+      await redis.del(recordKey(sessionId));
+      return reply.send({ success: true, steps: res.result?.steps ?? [] });
     } catch (e: any) {
-      return reply.status(500).send({ error: e.message });
+      return reply.status(504).send({ error: e.message });
     }
   });
 
   app.post('/admin/record/generalize', { preHandler: adminAuth }, async (req, reply) => {
-    const { steps, starterActionPlan } = req.body as { steps: any[]; starterActionPlan?: string };
+    const body = req.body as { steps: any[]; starterActionPlan?: string };
+    const { starterActionPlan } = body;
+    // Nothing a person typed reaches the model: page snapshots go, and every value is dropped
+    // except structure-only ones (navigate URLs, selects) — fills become placeholders.
+    const steps = (body.steps ?? [])
+      .filter((s) => s?.action !== 'page')
+      .map((s) => (s.action === 'fill' ? { ...s, value: '[VALUE_HIDDEN]' } : s));
     try {
       const generalized = await generalizeSteps(steps, starterActionPlan);
+      // The model only saw placeholders: put the recorded values back (locally).
+      const original = new Map<number, any>((body.steps ?? []).map((o) => [o.timestamp, o]));
+      for (const g of generalized as any[]) if (g?.action === 'fill' && g.value === '[VALUE_HIDDEN]') g.value = original.get(g.timestamp)?.value;
       return reply.send({ success: true, generalized });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });
@@ -545,27 +609,65 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/admin/record/dry-run', { preHandler: adminAuth }, async (req, reply) => {
     const { url, steps } = req.body as { url: string; steps: any[] };
+    const worker = await pickWorker();
+    if (!worker) return reply.status(503).send({ error: 'No worker is online to run the dry-run' });
     try {
-      const result = await dryRunService.runDryRun(url, steps);
-      return reply.send(result);
+      const [res] = await sendCommand('workflow.dry-run', { url, steps }, { target: worker.workerId, timeoutMs: 5 * 60_000 });
+      if (!res?.ok) return reply.status(500).send({ error: res?.error ?? 'Dry-run failed' });
+      return reply.send(res.result);
     } catch (e: any) {
-      return reply.status(500).send({ error: e.message });
+      return reply.status(504).send({ error: e.message });
     }
   });
 
-  // ── Browser Pool Control ────────────────────────────────
-  app.get('/admin/browsers', { preHandler: adminAuth }, async (_req, reply) => {
-    const stats = getBrowserPool().getStats();
-    return reply.send({ browsers: stats });
+  // ── Workers & Browser Pool Control (via control bus) ────
+  app.get('/admin/workers', { preHandler: adminAuth }, async (req, reply) => {
+    const { includeStale } = req.query as { includeStale?: string };
+    return reply.send({ workers: await listWorkers(includeStale === 'true') });
   });
 
-  app.post('/admin/browsers/recycle', { preHandler: adminAuth }, async (_req, reply) => {
+  app.post('/admin/workers/:workerId/drain', { preHandler: adminAuth }, async (req, reply) => {
+    const { workerId } = req.params as { workerId: string };
     try {
-      await getBrowserPool().reclaimIdleBrowsers?.();
-      logger.warn('admin:browser-pool-recycled');
-      return reply.send({ recycled: true });
+      const [res] = await sendCommand('worker.drain', {}, { target: workerId, timeoutMs: 30_000 });
+      logger.warn('admin:worker-drained', { workerId });
+      return reply.send(res);
     } catch (e: any) {
-      return reply.status(500).send({ error: e.message });
+      return reply.status(504).send({ error: e.message });
+    }
+  });
+
+  app.post('/admin/workers/:workerId/resume', { preHandler: adminAuth }, async (req, reply) => {
+    const { workerId } = req.params as { workerId: string };
+    try {
+      const [res] = await sendCommand('worker.resume', {}, { target: workerId, timeoutMs: 10_000 });
+      logger.warn('admin:worker-resumed', { workerId });
+      return reply.send(res);
+    } catch (e: any) {
+      return reply.status(504).send({ error: e.message });
+    }
+  });
+
+  app.post('/admin/workers/prune', { preHandler: adminAuth }, async (_req, reply) => {
+    return reply.send({ removed: await pruneStaleWorkers() });
+  });
+
+  app.get('/admin/browsers', { preHandler: adminAuth }, async (_req, reply) => {
+    const [browsers, workers] = await Promise.all([aggregateBrowserStats(), listWorkers()]);
+    return reply.send({
+      browsers,
+      perWorker: workers.map((w) => ({ workerId: w.workerId, host: w.host, draining: w.draining, ...w.browsers })),
+    });
+  });
+
+  app.post('/admin/browsers/recycle', { preHandler: adminAuth }, async (req, reply) => {
+    const { workerId } = (req.body ?? {}) as { workerId?: string };
+    try {
+      const replies = await sendCommand('browser.recycle', {}, { target: workerId, timeoutMs: 20_000 });
+      logger.warn('admin:browser-pool-recycled', { workerId: workerId ?? 'all', workers: replies.length });
+      return reply.send({ recycled: true, workers: replies });
+    } catch (e: any) {
+      return reply.status(504).send({ error: e.message });
     }
   });
 

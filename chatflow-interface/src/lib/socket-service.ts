@@ -8,6 +8,7 @@
 import { io, type Socket } from "socket.io-client";
 import { config } from "./config";
 import { createLogger } from "./logger";
+import { getSessionToken } from "./native";
 
 const logger = createLogger("frontend-socket");
 
@@ -20,11 +21,13 @@ export type PauseType =
   | "text"
   | "email"
   | "mobile"
+  | "emailLink"
   | "password"
   | "gridCaptcha"
   | "sliderCaptcha"
   | "paymentPending"
   | "invisibleCaptcha"
+  | "review"
   | "file";
 
 export interface PauseEvent {
@@ -32,7 +35,56 @@ export interface PauseEvent {
   stepId: string;
   type: PauseType;
   contextMessage: string;
+  /** Type-specific payload — for "review": { title, site, siteUrl, actionLabel, sections } */
+  data?: Record<string, unknown>;
 }
+
+/** Emitted when a run finishes — the "what was actually sent" receipt. */
+export interface ReceiptEvent {
+  jobId: string;
+  status: "submitted" | "completed" | "failed";
+  title: string;
+  site?: string;
+  siteUrl?: string;
+  reference?: string;
+  durationMs?: number;
+  completedAt?: number;
+  sections?: { title: string; items: { label: string; value: string }[] }[];
+  files?: { name: string; fileId?: string; sizeLabel?: string }[];
+  steps?: { label: string; atMs: number }[];
+  nextSteps?: string[];
+}
+
+/** Rich cards the assistant attached to a reply (jobs, a question, an island notice, shortcuts, live status). */
+export type ChatUiCard =
+  | { type: "jobs"; title: string; jobs: import("./api-client").JobListingDTO[]; empty?: string }
+  | {
+      type: "ask";
+      kind: "otp" | "number" | "text" | "choice" | "confirm";
+      prompt: string;
+      options?: string[];
+      length?: number;
+    }
+  | {
+      type: "island";
+      tone: "info" | "success" | "warn" | "error";
+      title: string;
+      body?: string;
+      view?: string;
+      label?: string;
+    }
+  | { type: "open"; view: string; label: string }
+  | {
+      type: "applications";
+      items: {
+        id: string;
+        title: string;
+        company: string | null;
+        status: string;
+        detail: string | null;
+        updatedAt: string;
+      }[];
+    };
 
 export interface FileEvent {
   jobId: string;
@@ -62,6 +114,8 @@ export interface SocketCallbacks {
   onChatReceive?: (message: string) => void;
   onChatPause?: (event: PauseEvent) => void;
   onChatFile?: (event: FileEvent) => void;
+  onChatUi?: (event: { cards: ChatUiCard[] }) => void;
+  onChatReceipt?: (event: ReceiptEvent) => void;
   onJobStarted?: (event: JobStartedEvent) => void;
   onJobQueuePosition?: (event: { jobId: string; position: number }) => void;
   onLiveFrame?: (base64: string) => void;
@@ -105,6 +159,13 @@ class SocketService {
     this.socket = io(socketUrl, {
       path: config.socketPath,
       withCredentials: true, // sends the httpOnly jp_session cookie — the server derives userId from it
+      // The Android app has no cookie; it proves who it is with its stored token.
+      auth: (cb: (data: object) => void) => {
+        void getSessionToken().then((token) => cb(token ? { token } : {}));
+      },
+      // Never reuse a cached connection: its handshake carried whoever was signed
+      // in when it opened (a stale account after sign-in/out).
+      forceNew: true,
       transports: ["websocket", "polling"],
       reconnection: true,
       reconnectionAttempts: 10,
@@ -148,8 +209,16 @@ class SocketService {
       this.callbacks.onChatPause?.(event);
     });
 
+    this.socket.on("chat:ui", (event: { cards: ChatUiCard[] }) => {
+      this.callbacks.onChatUi?.(event);
+    });
+
     this.socket.on("chat:file", (event: FileEvent) => {
       this.callbacks.onChatFile?.(event);
+    });
+
+    this.socket.on("chat:receipt", (event: ReceiptEvent) => {
+      this.callbacks.onChatReceipt?.(event);
     });
 
     this.socket.on("job:started", (event: JobStartedEvent) => {

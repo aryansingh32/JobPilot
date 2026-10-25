@@ -1,25 +1,70 @@
+import { toast } from "sonner";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { PanelLeft, Monitor, Sparkles, Wifi, WifiOff, Sun, Moon, LogOut } from "lucide-react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useChatStore, uid } from "@/lib/chat-store";
 import { useTheme } from "@/hooks/use-theme";
-import { PROFILES } from "@/lib/chat-types";
-import type { ChatMessage, FileAttachment, InputCardMessage } from "@/lib/chat-types";
+import type {
+  ChatMessage,
+  FileAttachment,
+  InputCardMessage,
+  ReviewMessage,
+  TimelineMessage,
+  StatusMessage,
+} from "@/lib/chat-types";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
+import { ChatHeader, WorkingStrip, type MainView } from "@/components/chat/Shell";
+import { HomeScreen } from "@/components/chat/JobsHome";
+import { Splash } from "@/components/Splash";
+import { ViewBoundary } from "@/components/ViewBoundary";
+import { JobsExplorer } from "@/components/chat/JobsExplorer";
+import { JobDetailSheet } from "@/components/chat/JobDetail";
+import { TasksView } from "@/components/chat/TasksView";
+import { InboxView } from "@/components/chat/InboxView";
+import { AutoApplyView } from "@/components/chat/AutoApplyView";
+import { BuyCreditsDialog } from "@/components/chat/BuyCredits";
+import { ProfileGapsDialog } from "@/components/chat/ProfileGapsDialog";
+import { taskStatus } from "@/lib/task-status";
+import {
+  APPLY_JOB_EVENT,
+  NAVIGATE_EVENT,
+  OPEN_JOB_EVENT,
+  SEND_EVENT,
+} from "@/components/chat/AiCards";
+import { DynamicIsland } from "@/components/chat/DynamicIsland";
+import type { IslandTarget } from "@/lib/island";
+import { NeedsYouHint } from "@/components/chat/NeedsYouHint";
 import { LiveScreenPanel } from "@/components/chat/LiveScreenPanel";
 import { Composer } from "@/components/chat/Composer";
 import { MessageItem, TypingIndicator } from "@/components/chat/MessageItem";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
+  BACK_EVENT,
+  OPEN_APPLICATION_EVENT,
+  OPEN_INBOX_EVENT,
+  registerPush,
+  unregisterPush,
+} from "@/lib/native-app";
+import {
   sendChatMessage,
   initializeBackend,
   resetSession,
+  scopeSessionToUser,
   type BotEmitter,
 } from "@/lib/backend-connector";
 import { api } from "@/lib/api-client";
 import { socketService } from "@/lib/socket-service";
 import { authClient, type AuthUser } from "@/lib/auth-client";
+import { jp, type ApplicationSummary, type JobListingDTO, type ProfileGapDTO } from "@/lib/api-client";
+import {
+  useApplications,
+  useInbox,
+  useAutoApply,
+  useJobActions,
+  useApplicationActions,
+  useMe,
+  useRecommendations,
+} from "@/lib/live";
 import { createLogger } from "@/lib/logger";
 
 const logger = createLogger("frontend-index-route");
@@ -27,28 +72,18 @@ const logger = createLogger("frontend-index-route");
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Agent — your personal automation chat" },
+      { title: "jobpilot — tell it the task, get proof it's done" },
       {
         name: "description",
         content:
-          "Chat with your agent. Watch it work in real time, approve OTPs and payments, get files back instantly.",
+          "Tell jobpilot what to get done on any website. Watch it work, approve before anything is sent, and keep a receipt.",
       },
     ],
   }),
   component: Index,
 });
 
-const SUGGESTIONS = [
-  "Download my Aadhaar e-card",
-  "Check my PAN card status",
-  "Fill an SSC job application for me",
-  "What government services can you help with?",
-  "Update my name in Aadhaar",
-  "Check my passport application status",
-];
-
 function Index() {
-  const store = useChatStore();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   // Hidden by default — the panel opens itself when there's something worth
   // watching (a live frame streaming, or a captcha that needs the picture)
@@ -58,15 +93,60 @@ function Index() {
   const [liveHot, setLiveHot] = useState(false);
   const liveCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [typing, setTyping] = useState(false);
+  const [view, setView] = useState<MainView>("chat");
   const [busy, setBusy] = useState(false);
-  const [profileId, setProfileId] = useState("personal");
   const [connected, setConnected] = useState(false);
   const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const store = useChatStore(authUser?.id ?? null);
+  const [focusAppId, setFocusAppId] = useState<string | null>(null);
+  /** Application card open on the Applications screen right now. */
+  const [watchedApp, setWatchedApp] = useState<string | null>(null);
+  const [openJob, setOpenJob] = useState<JobListingDTO | null>(null);
+  const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set());
+  const [passedIds, setPassedIds] = useState<Set<string>>(() => new Set());
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { theme, toggleTheme } = useTheme();
+
+  // Live data — only once the session is known to be signed in.
+  const signedIn = authChecked && !!authUser;
+  const meQ = useMe(signedIn);
+  const recsQ = useRecommendations(signedIn);
+  const appsQ = useApplications("all", signedIn);
+  const inboxQ = useInbox("all", signedIn && view === "inbox");
+  const autoApplyQ = useAutoApply(signedIn);
+  const [buyOpen, setBuyOpen] = useState(false);
+  const credits = meQ.data?.credits?.enabled ? meQ.data.credits.balance : null;
+  // Back from Stripe's checkout page.
+  useEffect(() => {
+    if (!signedIn || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const result = url.searchParams.get("payment");
+    if (!result) return;
+    if (result === "success") {
+      toast.success("Payment received", { description: "Your credits appear in a moment." });
+      setTimeout(() => void meQ.refetch(), 2500);
+    } else toast("Payment cancelled — nothing was charged");
+    url.searchParams.delete("payment");
+    window.history.replaceState(null, "", url.pathname + url.search);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn]);
+  // Back from Google's Gmail consent: show Inbox, where the Gmail card reads ?gmail= and says how it went.
+  useEffect(() => {
+    if (!signedIn || typeof window === "undefined") return;
+    if (new URL(window.location.href).searchParams.has("gmail")) setView("inbox");
+  }, [signedIn]);
+  /** Errors from starting applications: out of credits offers to buy. */
+  const applyError = (err: unknown) => {
+    const msg = (err as Error).message;
+    if (/out of credits/i.test(msg))
+      toast.error(msg, { action: { label: "Buy credits", onClick: () => setBuyOpen(true) } });
+    else toast.error(msg);
+  };
+  const jobActions = useJobActions();
+  const appActions = useApplicationActions();
 
   // The sidebar defaults open for desktop's persistent-panel layout, but on
   // mobile it's a full-screen overlay — starting it open there would bury
@@ -80,16 +160,65 @@ function Index() {
   // before this resolves.
   useEffect(() => {
     let cancelled = false;
-    authClient.me().then((user) => {
+    authClient.me().then(async (user) => {
       if (cancelled) return;
+      if (!user) {
+        setAuthChecked(true);
+        navigate({ to: "/login" });
+        return;
+      }
+      // First visit after sign-up: finish (or skip) onboarding before the app.
+      const me = await jp.me().catch(() => null);
+      if (cancelled) return;
+      if (me && me.profile.onboardingStatus === "pending") {
+        // Keep Google's "?gmail=…" so onboarding lands on the step that asked for it.
+        const gmail = new URLSearchParams(window.location.search).get("gmail") ?? undefined;
+        navigate({ to: "/onboarding", search: gmail ? { gmail } : {}, replace: true });
+        return;
+      }
+      scopeSessionToUser(user.id);
       setAuthUser(user);
       setAuthChecked(true);
-      if (!user) navigate({ to: "/login" });
     });
     return () => {
       cancelled = true;
     };
   }, [navigate]);
+
+  // Android app: register for push once signed in; a tapped notification
+  // opens its application (or the inbox); hardware Back closes the drawer,
+  // then returns to the home view, before leaving the app.
+  useEffect(() => {
+    if (!signedIn) return;
+    void registerPush();
+    const openApp = (e: Event) => {
+      const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+      if (!id) return;
+      setFocusAppId(id);
+      setView("tasks");
+    };
+    const openInbox = () => setView("inbox");
+    window.addEventListener(OPEN_APPLICATION_EVENT, openApp);
+    window.addEventListener(OPEN_INBOX_EVENT, openInbox);
+    return () => {
+      window.removeEventListener(OPEN_APPLICATION_EVENT, openApp);
+      window.removeEventListener(OPEN_INBOX_EVENT, openInbox);
+    };
+  }, [signedIn]);
+
+  useEffect(() => {
+    const onBack = (e: Event) => {
+      if (isMobile && sidebarOpen) {
+        setSidebarOpen(false);
+        e.preventDefault();
+      } else if (view !== "chat") {
+        setView("chat");
+        e.preventDefault();
+      }
+    };
+    window.addEventListener(BACK_EVENT, onBack);
+    return () => window.removeEventListener(BACK_EVENT, onBack);
+  }, [isMobile, sidebarOpen, view]);
 
   // "New chat" handler — resets the backend session and creates a fresh UI thread
   const handleNewChat = useCallback(() => {
@@ -101,13 +230,13 @@ function Index() {
     store.newThread();
   }, [store]);
 
-  const profile = useMemo(() => PROFILES.find((p) => p.id === profileId)!, [profileId]);
-
   const scrollRef = useRef<HTMLDivElement>(null);
   const messages = store.activeThread?.messages ?? [];
   const activePause = messages.find((m) => m.type === "input-card" && !m.resolved) as
     | InputCardMessage
     | undefined;
+  // A review waiting for approval is also "on the user", not "working".
+  const pendingReview = messages.some((m) => m.type === "review" && !m.resolved);
   const emitterRef = useRef<BotEmitter | null>(null);
 
   // Build the emitter for backend-connector
@@ -147,8 +276,9 @@ function Index() {
   // back away a few seconds after that's no longer true. A manual toggle
   // (the header button) can always override this in either direction.
   useEffect(() => {
-    const visualPauseKinds = new Set(["captcha", "clickCaptcha", "gridCaptcha", "sliderCaptcha"]);
-    const needsLiveView = liveHot || (!!activePause && visualPauseKinds.has(activePause.kind));
+    // Live view is being retired: captchas show their own cropped image in the
+    // card, so the panel only opens if frames actually arrive.
+    const needsLiveView = liveHot && !!liveFrame;
 
     if (liveCollapseTimer.current) {
       clearTimeout(liveCollapseTimer.current);
@@ -169,6 +299,41 @@ function Index() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveHot, activePause?.id, activePause?.kind]);
+
+  // Cards in the conversation (the assistant's job cards, shortcuts, one-tap answers)
+  // talk to this screen through window events.
+  const sendRef = useRef<((text: string, files: File[]) => Promise<void>) | null>(null);
+  const cardActionsRef = useRef<{
+    open: (j: JobListingDTO) => void;
+    apply: (j: JobListingDTO) => void;
+  }>({
+    open: () => {},
+    apply: () => {},
+  });
+  useEffect(() => {
+    const onOpenJob = (e: Event) =>
+      cardActionsRef.current.open((e as CustomEvent<JobListingDTO>).detail);
+    const onApplyJob = (e: Event) =>
+      cardActionsRef.current.apply((e as CustomEvent<JobListingDTO>).detail);
+    const onSend = (e: Event) => void sendRef.current?.((e as CustomEvent<string>).detail, []);
+    const onNav = (e: Event) => {
+      const [view, id] = String((e as CustomEvent<string>).detail).split(":");
+      if (view === "tasks") {
+        setFocusAppId(id || null);
+        setView("tasks");
+      } else if (view === "inbox" || view === "jobs" || view === "autoapply") setView(view);
+    };
+    window.addEventListener(OPEN_JOB_EVENT, onOpenJob);
+    window.addEventListener(APPLY_JOB_EVENT, onApplyJob);
+    window.addEventListener(SEND_EVENT, onSend);
+    window.addEventListener(NAVIGATE_EVENT, onNav);
+    return () => {
+      window.removeEventListener(OPEN_JOB_EVENT, onOpenJob);
+      window.removeEventListener(APPLY_JOB_EVENT, onApplyJob);
+      window.removeEventListener(SEND_EVENT, onSend);
+      window.removeEventListener(NAVIGATE_EVENT, onNav);
+    };
+  }, []);
 
   // Initialize backend connection
   useEffect(() => {
@@ -206,9 +371,23 @@ function Index() {
     };
     window.addEventListener("agent-card-resolve", handleResolve);
 
+    const handleReviewResolve = (e: Event) => {
+      const detail = (e as CustomEvent).detail as {
+        id: string;
+        resolved: ReviewMessage["resolved"];
+      };
+      if (store.activeId) {
+        store.updateMessage(store.activeId, detail.id, {
+          resolved: detail.resolved,
+        } as Partial<ChatMessage>);
+      }
+    };
+    window.addEventListener("agent-review-resolve", handleReviewResolve);
+
     return () => {
       clearInterval(interval);
       window.removeEventListener("agent-card-resolve", handleResolve);
+      window.removeEventListener("agent-review-resolve", handleReviewResolve);
     };
   }, [store.hydrated, getEmitter]);
 
@@ -221,7 +400,7 @@ function Index() {
   }, [store.activeId, store.hydrated, getEmitter]);
 
   if (!store.hydrated) {
-    return <div className="h-screen w-screen bg-background" />;
+    return <Splash />;
   }
 
   const send = async (text: string, files: File[]) => {
@@ -282,145 +461,342 @@ function Index() {
     }
   };
 
+  sendRef.current = send;
   const showEmpty = messages.length === 0;
 
   if (!authChecked || !authUser) {
     // Either still checking the session, or the redirect to /login is in
     // flight — render nothing rather than a flash of an unauthenticated chat.
-    return <div className="h-[100dvh] w-screen bg-background" />;
+    return <Splash />;
   }
 
+  const userLabel =
+    meQ.data?.profile.fullName ||
+    authUser.displayName ||
+    authUser.email ||
+    authUser.mobileNumber ||
+    null;
+  const progress = currentProgress(messages);
+  const needsCount = meQ.data?.applications.needs ?? 0;
+  const unreadCount = meQ.data?.inbox.unread ?? 0;
+  const applications = appsQ.data?.applications ?? [];
+  const jobs = (recsQ.data?.jobs ?? []).filter((j) => !passedIds.has(j.id));
+
+  // Applications already on screen in full never go on the island: the open
+  // row of the Applications list, and the one this chat thread is running.
+  const threadJobId = store.activeThread?.activeJobId;
+  const watching = [
+    ...(view === "tasks" && watchedApp ? [watchedApp] : []),
+    ...(view === "chat" && threadJobId
+      ? applications.filter((a) => a.exec_job_id === threadJobId).map((a) => a.id)
+      : []),
+  ];
+  const onIslandNavigate = (to: IslandTarget, appId?: string) => {
+    if (to === "tasks") {
+      setFocusAppId(appId ?? null);
+      setView("tasks");
+    } else setView(to);
+  };
+  const chatHintId =
+    view === "chat"
+      ? activePause
+        ? `msg-${activePause.id}`
+        : messages.find((m) => m.type === "review" && !m.resolved)?.id
+          ? `msg-${messages.find((m) => m.type === "review" && !m.resolved)!.id}`
+          : null
+      : null;
+
+  const openApplication = (app: Pick<ApplicationSummary, "id">) => {
+    setFocusAppId(app.id);
+    setView("tasks");
+  };
+  // A chat for an application only exists on the device that started it.
+  const chatFor = (app: ApplicationSummary) => {
+    const thread = store.threads.find(
+      (t) => !!app.exec_job_id && t.activeJobId === app.exec_job_id,
+    );
+    return thread
+      ? () => {
+          store.setActiveId(thread.id);
+          setView("chat");
+        }
+      : null;
+  };
+  // What the profile still lacks for this job: asked once, before a browser starts waiting on it.
+  const [gapsFor, setGapsFor] = useState<{ job: JobListingDTO; gaps: ProfileGapDTO[] } | null>(null);
+  const applyToJob = async (job: JobListingDTO, skipGapCheck = false) => {
+    if (!skipGapCheck) {
+      const { gaps } = await jp.profileGaps(job.id).catch(() => ({ gaps: [] as ProfileGapDTO[] }));
+      if (gaps.some((g) => g.blocking)) {
+        setGapsFor({ job, gaps: gaps.filter((g) => g.blocking) });
+        return;
+      }
+    }
+    // Straight to the apply engine — the run shows up under Applications,
+    // where questions and the final review are answered.
+    appActions.start.mutate(
+      { jobId: job.id },
+      {
+        onSuccess: (r) => {
+          toast.success(`Applying to ${job.title}`, {
+            description: "I'll show you every answer before it's submitted.",
+          });
+          setOpenJob(null);
+          openApplication(r.application);
+        },
+        onError: applyError,
+      },
+    );
+  };
+  cardActionsRef.current = { open: setOpenJob, apply: applyToJob };
+  const toggleSave = (job: JobListingDTO) => {
+    const saved = savedIds.has(job.id);
+    setSavedIds((prev) => {
+      const next = new Set(prev);
+      if (saved) next.delete(job.id);
+      else next.add(job.id);
+      return next;
+    });
+    (saved ? jobActions.unsave : jobActions.save).mutate(job.id);
+  };
+  const passJob = (job: JobListingDTO) => {
+    setPassedIds((prev) => new Set(prev).add(job.id));
+    jobActions.pass.mutate(job.id);
+  };
+
   return (
-    <div className="flex h-[100dvh] w-screen overflow-hidden bg-background text-foreground pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] relative">
+    <div className="relative flex h-[100dvh] w-full overflow-hidden bg-background pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] text-foreground">
       <ChatSidebar
         isOpen={sidebarOpen}
         threads={store.threads}
         activeId={store.activeId}
-        onSelect={store.setActiveId}
-        onNew={handleNewChat}
+        onSelect={(id) => {
+          store.setActiveId(id);
+          setView("chat");
+        }}
+        onNew={() => {
+          handleNewChat();
+          setView("chat");
+        }}
         onDelete={store.deleteThread}
+        onOpen={() => setSidebarOpen(true)}
         onClose={() => setSidebarOpen(false)}
-        profile={profile}
-        profiles={PROFILES}
-        onProfileChange={setProfileId}
+        userLabel={userLabel}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onLogout={() =>
+          unregisterPush()
+            .then(() => authClient.logout())
+            .then(() => navigate({ to: "/login" }))
+        }
+        jobsActive={view === "jobs"}
+        onShowJobs={() => setView("jobs")}
+        tasksActive={view === "tasks"}
+        onShowTasks={() => {
+          setFocusAppId(null);
+          setView("tasks");
+        }}
+        inboxActive={view === "inbox"}
+        onShowInbox={() => setView("inbox")}
+        autoApplyActive={view === "autoapply"}
+        onShowAutoApply={() => setView("autoapply")}
+        autoApplyOn={autoApplyQ.data?.settings.enabled}
+        credits={credits}
+        onBuyCredits={() => setBuyOpen(true)}
+        unreadCount={unreadCount}
+        needsCount={needsCount}
       />
       {sidebarOpen && (
         <div
           onClick={() => setSidebarOpen(false)}
-          className="absolute inset-0 z-30 bg-black/50 md:hidden"
+          className="absolute inset-0 z-30 bg-foreground/20 backdrop-blur-[1px] md:hidden"
         />
       )}
 
-      <main className="flex h-full min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-border px-3 py-2.5">
-          <div className="flex items-center gap-2">
-            {!sidebarOpen && (
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="rounded-md p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
-                aria-label="Show sidebar"
-              >
-                <PanelLeft className="h-4 w-4" />
-              </button>
-            )}
-            <div className="text-sm font-medium truncate">
-              {store.activeThread?.title || "New chat"}
-            </div>
-            <span className="ml-2 hidden items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
-              Profile · {profile.name}
-            </span>
-            {/* Connection indicator */}
-            <span
-              className={`ml-1 hidden items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] sm:inline-flex ${
-                connected ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
-              }`}
-            >
-              {connected ? (
-                <>
-                  <Wifi className="h-2.5 w-2.5" /> live
-                </>
-              ) : (
-                <>
-                  <WifiOff className="h-2.5 w-2.5" /> offline
-                </>
-              )}
-            </span>
-          </div>
-          <button
-            onClick={() => setLiveOpen((v) => !v)}
-            aria-label="Toggle live screen"
-            className={`relative flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors duration-150 active:scale-95 ${
-              liveOpen
-                ? "bg-primary/15 text-primary"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground"
-            }`}
-          >
-            <Monitor className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Live screen</span>
-            {liveHot && <span className="live-dot absolute -right-0.5 -top-0.5 h-1.5 w-1.5" />}
-          </button>
+      <ProfileGapsDialog
+        gaps={gapsFor?.gaps ?? null}
+        title={gapsFor?.job.title}
+        onClose={() => setGapsFor(null)}
+        onDone={() => {
+          const job = gapsFor?.job;
+          setGapsFor(null);
+          if (job) void applyToJob(job, true);
+        }}
+      />
 
-          <button
-            onClick={toggleTheme}
-            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            className="rounded-md p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
-          >
-            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          </button>
-          {authUser && (
-            <button
-              onClick={() => authClient.logout().then(() => navigate({ to: "/login" }))}
-              aria-label="Sign out"
-              title={authUser.email ?? authUser.mobileNumber ?? "Sign out"}
-              className="rounded-md p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
-          )}
-        </header>
+      <BuyCreditsDialog
+        open={buyOpen}
+        onOpenChange={setBuyOpen}
+        email={authUser.email}
+        defaultCurrency={
+          typeof Intl !== "undefined" &&
+          /Calcutta|Kolkata/.test(Intl.DateTimeFormat().resolvedOptions().timeZone)
+            ? "INR"
+            : "USD"
+        }
+      />
+      <JobDetailSheet
+        job={openJob}
+        saved={!!openJob && savedIds.has(openJob.id)}
+        onClose={() => setOpenJob(null)}
+        onApply={applyToJob}
+        onToggleSave={toggleSave}
+      />
+      <DynamicIsland
+        applications={applications}
+        watching={watching}
+        unread={unreadCount}
+        inboxOpen={view === "inbox"}
+        onNavigate={onIslandNavigate}
+      />
+      <NeedsYouHint targetId={chatHintId} label="Needs you" />
+      <main id="app-main" className="flex h-full min-w-0 flex-1 flex-col">
+        <ChatHeader
+          onOpenSidebar={() => setSidebarOpen(true)}
+          title={
+            view === "tasks"
+              ? "Applications"
+              : view === "jobs"
+                ? "Browse jobs"
+                : view === "inbox"
+                  ? "Inbox"
+                  : view === "autoapply"
+                    ? "Auto Apply"
+                    : showEmpty
+                      ? ""
+                      : store.activeThread?.title || "New task"
+          }
+          status={view === "chat" && store.activeThread ? taskStatus(store.activeThread) : null}
+          detail={busy ? progress : undefined}
+          onStatusClick={() => {
+            const st = store.activeThread ? taskStatus(store.activeThread) : null;
+            if (st === "working") return liveFrame ? setLiveOpen(true) : undefined;
+            const target =
+              st === "needs"
+                ? messages.find(
+                    (m) => (m.type === "input-card" || m.type === "review") && !m.resolved,
+                  )
+                : [...messages].reverse().find((m) => m.type === "receipt");
+            if (target) {
+              document
+                .getElementById(`msg-${target.id}`)
+                ?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+          }}
+          unreadCount={unreadCount}
+          onOpenInbox={() => setView("inbox")}
+        />
 
-        <div
-          ref={scrollRef}
-          key={store.activeId ?? "none"}
-          className="scroll-thin flex-1 overflow-y-auto"
-        >
-          {showEmpty ? (
-            <EmptyState backendAvailable={backendAvailable} user={authUser} />
+        <ViewBoundary key={view === "chat" ? `chat-${store.activeId}` : view}>
+          {view === "jobs" ? (
+            <JobsExplorer
+              savedIds={savedIds}
+              onOpen={setOpenJob}
+              onApply={applyToJob}
+              onToggleSave={toggleSave}
+            />
+          ) : view === "autoapply" ? (
+            <AutoApplyView
+              credits={credits}
+              onBuyCredits={() => setBuyOpen(true)}
+              onOpenApplications={() => {
+                setFocusAppId(null);
+                setView("tasks");
+              }}
+            />
+          ) : view === "inbox" ? (
+            <InboxView
+              emails={inboxQ.data?.emails ?? []}
+              address={inboxQ.data?.address ?? meQ.data?.inbox.address ?? null}
+              loading={inboxQ.isLoading}
+              onOpenApplication={(id) => openApplication({ id })}
+            />
+          ) : view === "tasks" ? (
+            <TasksView
+              key={focusAppId ?? "all"}
+              applications={applications}
+              loading={appsQ.isLoading}
+              focusId={focusAppId}
+              onWatching={setWatchedApp}
+              onOpenChat={chatFor}
+              onNew={() => {
+                handleNewChat();
+                setView("chat");
+              }}
+            />
+          ) : showEmpty ? (
+            <HomeScreen
+              greeting={`${greeting()}${firstName(authUser, meQ.data?.profile.fullName) ? `, ${firstName(authUser, meQ.data?.profile.fullName)}` : ""}`}
+              notice={
+                backendAvailable === false ? (
+                  <p className="mb-4 text-center text-[12px] font-medium text-warning-soft-foreground">
+                    Can't reach the server right now — tasks will start once it's back.
+                  </p>
+                ) : undefined
+              }
+              composer={
+                <Composer variant="hero" onSend={send} busy={busy} onStop={() => setBusy(false)} />
+              }
+              jobs={jobs}
+              jobsLoading={recsQ.isLoading}
+              savedIds={savedIds}
+              applications={applications}
+              onOpenJob={setOpenJob}
+              onViewMoreJobs={() => setView("jobs")}
+              onApply={applyToJob}
+              onToggleSave={toggleSave}
+              onPass={passJob}
+              onOpenApplication={(app) => {
+                const open = chatFor(app);
+                if (open) open();
+                else openApplication(app);
+              }}
+              hasResume={meQ.data?.profile.hasResume}
+              onUploadResume={() =>
+                window.dispatchEvent(
+                  new CustomEvent("agent-attach", {
+                    detail: "Here's my resume — use it for my profile",
+                  }),
+                )
+              }
+              onSeeAllApplications={() => {
+                setFocusAppId(null);
+                setView("tasks");
+              }}
+            />
           ) : (
-            <div className="py-3">
-              {messages.map((m) => (
-                <MessageItem key={m.id} msg={m} />
-              ))}
-              {typing && <TypingIndicator />}
-            </div>
-          )}
-        </div>
-
-        {showEmpty && (
-          <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-center gap-2 px-4 pb-4">
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => send(s, [])}
-                className="rounded-full border border-border bg-transparent px-3 py-1.5 text-xs text-muted-foreground transition-all duration-150 hover:border-primary/40 hover:bg-muted hover:text-foreground active:scale-95"
+            <>
+              <div
+                ref={scrollRef}
+                key={store.activeId ?? "none"}
+                className="scroll-thin flex-1 overflow-y-auto"
               >
-                {s}
-              </button>
-            ))}
-          </div>
-        )}
-        <Composer onSend={send} busy={busy} onStop={() => setBusy(false)} />
+                <div className="pb-4 pt-2">
+                  {messages.map((m) => (
+                    <MessageItem key={m.id} msg={m} />
+                  ))}
+                  {typing && <TypingIndicator />}
+                </div>
+              </div>
+              {busy && !activePause && !pendingReview && (
+                <WorkingStrip
+                  label={progress}
+                  frame={liveFrame}
+                  onWatch={() => liveFrame && setLiveOpen(true)}
+                />
+              )}
+              <Composer onSend={send} busy={busy} onStop={() => setBusy(false)} />
+            </>
+          )}
+        </ViewBoundary>
       </main>
 
-      {/* Contextual right panel — persistent, width-collapsible column on
-          desktop; a bottom sheet on mobile. Visibility is driven by liveOpen
-          (see the smart-hide effect above), same state either way. */}
+      {/* Live view — right column on desktop, bottom sheet on mobile. */}
       <div
         data-state={liveOpen ? "open" : "closed"}
-        className="hidden shrink-0 overflow-hidden border-l border-border bg-card/20 transition-[width] duration-300 ease-in-out md:flex md:w-0 md:data-[state=open]:w-[380px] lg:data-[state=open]:w-[420px]"
+        className="hidden shrink-0 overflow-hidden border-l border-border bg-card transition-[width] duration-300 ease-in-out md:flex md:w-0 md:data-[state=open]:w-[380px] lg:data-[state=open]:w-[440px]"
       >
-        <div className="h-full w-[380px] lg:w-[420px]">
+        <div className="h-full w-[380px] lg:w-[440px]">
           <LiveScreenPanel
             frame={liveFrame}
             hot={liveHot}
@@ -435,9 +811,9 @@ function Index() {
         <Sheet open={liveOpen} onOpenChange={setLiveOpen}>
           <SheetContent
             side="bottom"
-            className="flex h-[75vh] flex-col gap-0 rounded-t-2xl border-border bg-card p-0"
+            className="flex h-[75vh] flex-col gap-0 rounded-t-[24px] border-border bg-card p-0"
           >
-            <SheetTitle className="sr-only">Live screen</SheetTitle>
+            <SheetTitle className="sr-only">Live view</SheetTitle>
             <LiveScreenPanel
               frame={liveFrame}
               hot={liveHot}
@@ -453,41 +829,36 @@ function Index() {
   );
 }
 
+/** The latest human-readable thing the agent is doing — shown as "working proof". */
+function currentProgress(messages: ChatMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    // The newest thing wins: a question/review after the last status supersedes it.
+    if (m.type === "input-card" || m.type === "review") {
+      return m.resolved ? "Continuing with your answer…" : "Waiting for you";
+    }
+    if (m.type === "timeline") {
+      const t = m as TimelineMessage;
+      const active = t.steps.find((s) => s.status === "active");
+      if (active) return active.label;
+      if (!t.done) return t.title;
+    }
+    if (m.type === "status") return (m as StatusMessage).content;
+  }
+  return "Working on it…";
+}
+
+function firstName(user: AuthUser | null, profileName?: string | null): string | null {
+  // The name on the profile (from the résumé / onboarding) beats the email's local part.
+  const raw = profileName || user?.displayName || user?.email?.split("@")[0] || null;
+  if (!raw) return null;
+  const first = raw.split(/[\s._-]+/)[0];
+  return first ? first.charAt(0).toUpperCase() + first.slice(1) : null;
+}
+
 function greeting(): string {
   const hour = new Date().getHours();
   if (hour < 12) return "Good morning";
   if (hour < 18) return "Good afternoon";
   return "Good evening";
-}
-
-function EmptyState({
-  backendAvailable,
-  user,
-}: {
-  backendAvailable: boolean | null;
-  user: AuthUser | null;
-}) {
-  const name = user?.displayName || user?.email?.split("@")[0] || null;
-
-  return (
-    <div className="mx-auto flex h-full max-w-2xl animate-in flex-col items-center justify-center px-6 text-center fade-in-0 duration-500">
-      <span className="mb-5 grid h-12 w-12 place-items-center rounded-2xl bg-primary/15 text-primary">
-        <Sparkles className="h-5 w-5" />
-      </span>
-      <h1 className="text-2xl font-semibold tracking-tight text-muted-foreground sm:text-3xl">
-        {greeting()}
-        {name ? `, ${name}` : ""}
-      </h1>
-      <p className="mt-1 text-3xl font-semibold tracking-tight sm:text-4xl">
-        What can I help with?
-      </p>
-
-      {backendAvailable === false && (
-        <div className="mt-6 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-warning">
-          Backend not available. Start it with{" "}
-          <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">npm run dev:full</code>
-        </div>
-      )}
-    </div>
-  );
 }

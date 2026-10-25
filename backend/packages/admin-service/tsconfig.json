@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": ".."
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["dist", "**/dist/**"],
+  "references": [
+    { "path": "../shared" },
+    { "path": "../api-service" },
+    { "path": "../execution-service" }
+  ]
+}

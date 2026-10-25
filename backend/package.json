@@ -6,6 +6,7 @@
   "workspaces": [
     "packages/shared",
     "packages/api-service",
+    "packages/admin-service",
     "packages/crawler-service",
     "packages/execution-service",
     "packages/ai-service",
@@ -13,7 +14,7 @@
   ],
   "scripts": {
     "build": "tsc --build",
-    "dev:full": "concurrently \"npm run dev:api\" \"npm run dev:worker\"",
+    "dev:full": "concurrently \"npm run dev:api\" \"npm run dev:admin\" \"npm run dev:worker\"",
     "dev:api": "node --import tsx packages/api-service/server.ts",
     "dev:worker": "node --import tsx packages/execution-service/worker.ts",
     "dev:scheduler": "tsx packages/scheduler-service/scheduler.ts",
@@ -31,8 +32,9 @@
     "verify:captcha-fallback": "node --import tsx scripts/verify-captcha-fallback.mjs",
     "verify:redis-reconnect": "node --import tsx scripts/verify-redis-reconnect.mjs",
     "verify:live-e2e": "node --import tsx scripts/verify-live-e2e.mjs",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf packages/*/dist tsconfig.tsbuildinfo"
+    "typecheck": "tsc -p tsconfig.check.json",
+    "clean": "rm -rf packages/*/dist tsconfig.tsbuildinfo",
+    "dev:admin": "node --import tsx packages/admin-service/server.ts"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.162",

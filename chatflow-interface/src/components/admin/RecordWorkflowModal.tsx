@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Play, Square, Save, ArrowRight, ShieldAlert, FlaskConical } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
-import { config, apiOriginForSockets } from "@/lib/config";
+import { config, adminOriginForSockets } from "@/lib/config";
 import type { AdminWorkflow } from "@/lib/admin-api";
 import { toast } from "sonner";
 import {
@@ -48,7 +48,7 @@ export function RecordWorkflowModal({
     setIsStarting(true);
     try {
       const sessionId = crypto.randomUUID();
-      const res = await fetch(`${config.apiBaseUrl}/admin/record/start`, {
+      const res = await fetch(`${config.adminApiBaseUrl}/admin/record/start`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -61,7 +61,7 @@ export function RecordWorkflowModal({
       sessionIdRef.current = sessionId;
       setRawSteps([]);
 
-      const socket = io(`${apiOriginForSockets()}/admin`, {
+      const socket = io(`${adminOriginForSockets()}/admin`, {
         path: config.socketPath,
         withCredentials: true,
         transports: ["websocket", "polling"],
@@ -92,7 +92,7 @@ export function RecordWorkflowModal({
       return;
     }
     try {
-      const res = await fetch(`${config.apiBaseUrl}/admin/record/stop`, {
+      const res = await fetch(`${config.adminApiBaseUrl}/admin/record/stop`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -115,7 +115,7 @@ export function RecordWorkflowModal({
   const handleGeneralize = async () => {
     setIsGeneralizing(true);
     try {
-      const res = await fetch(`${config.apiBaseUrl}/admin/record/generalize`, {
+      const res = await fetch(`${config.adminApiBaseUrl}/admin/record/generalize`, {
         method: "POST",
         credentials: "include",
         headers: {
@@ -165,7 +165,7 @@ export function RecordWorkflowModal({
     }
     setIsDryRunning(true);
     try {
-      const res = await fetch(`${config.apiBaseUrl}/admin/record/dry-run`, {
+      const res = await fetch(`${config.adminApiBaseUrl}/admin/record/dry-run`, {
         method: "POST",
         credentials: "include",
         headers: {
