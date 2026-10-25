@@ -2032,6 +2032,8 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
       const challenge = await visibleClickChallenge(ctx.page);
       if (challenge) {
         await askClickCaptcha(ctx, challenge);
+        // The time the person took to answer doesn't count against the site's response window.
+        deadline = Date.now() + submitWindow;
         continue;
       }
       // Greenhouse's emailed security code: read it, type it, press Submit again.
@@ -2063,6 +2065,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
         // A server re-render is a fresh form: put back what it dropped (files always are).
         await restoreAnswers(ctx);
         await textCaptchas(captchaRetries);
+        deadline = Date.now() + submitWindow;
         await clickThrough(await submitButton());
         await ctx.page.waitForTimeout(1500);
         continue;
