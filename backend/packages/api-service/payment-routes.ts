@@ -60,7 +60,7 @@ export function registerPaymentRoutes(app: FastifyInstance, apiKeyAuth: preHandl
       try {
         done(null, JSON.parse(body as string));
       } catch (err) {
-        done(err as Error, undefined);
+        done(Object.assign(err as Error, { statusCode: 400 }), undefined);
       }
     });
     const raw = (req: FastifyRequest) => (req as FastifyRequest & { rawBody?: string }).rawBody ?? '';

@@ -57,7 +57,7 @@ export interface ReceiptEvent {
 
 /** Rich cards the assistant attached to a reply (jobs, a question, an island notice, shortcuts, live status). */
 export type ChatUiCard =
-  | { type: "jobs"; title: string; jobs: import("./api-client").JobListingDTO[]; empty?: string }
+  | { type: "jobs"; title: string; jobs: import("./api-client").JobListingDTO[]; empty?: string; hasMore?: boolean; broadened?: boolean; search?: import("./api-client").JobSearchParams & { country?: string; includeRemote?: boolean; experienceLevel?: "fresher" } }
   | {
       type: "ask";
       kind: "otp" | "number" | "text" | "choice" | "confirm";
@@ -103,6 +103,25 @@ export interface JobStartedEvent {
   userId: string;
 }
 
+export interface ChatTurnContext {
+  threadId?: string;
+  generateTitle?: boolean;
+  visibleJobs?: Array<{
+    id: string;
+    title: string;
+    company?: string;
+    location?: string;
+    url?: string;
+    atsType?: string;
+  }>;
+  recentApplications?: Array<{
+    id: string;
+    title: string;
+    company?: string | null;
+    status: string;
+  }>;
+}
+
 export interface ActionUpdate {
   jobId: string;
   stepId: string;
@@ -115,6 +134,7 @@ export interface SocketCallbacks {
   onChatPause?: (event: PauseEvent) => void;
   onChatFile?: (event: FileEvent) => void;
   onChatUi?: (event: { cards: ChatUiCard[] }) => void;
+  onChatTitle?: (event: { threadId: string; title: string }) => void;
   onChatReceipt?: (event: ReceiptEvent) => void;
   onJobStarted?: (event: JobStartedEvent) => void;
   onJobQueuePosition?: (event: { jobId: string; position: number }) => void;
@@ -213,6 +233,10 @@ class SocketService {
       this.callbacks.onChatUi?.(event);
     });
 
+    this.socket.on("chat:title", (event: { threadId: string; title: string }) => {
+      this.callbacks.onChatTitle?.(event);
+    });
+
     this.socket.on("chat:file", (event: FileEvent) => {
       this.callbacks.onChatFile?.(event);
     });
@@ -245,7 +269,7 @@ class SocketService {
   /**
    * Send a chat message through Socket.IO
    */
-  sendMessage(message: string): void {
+  sendMessage(message: string, context?: ChatTurnContext): void {
     if (!this.socket || !this._sessionId) {
       logger.warn("socket:send-skipped-not-connected", { sessionId: this._sessionId });
       return;
@@ -254,6 +278,7 @@ class SocketService {
     this.socket.emit("chat:send", {
       sessionId: this._sessionId,
       message,
+      context,
     });
   }
 

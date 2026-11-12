@@ -45,7 +45,8 @@ export async function runDiscovery(p: { source: string; crawls?: string[]; syste
 }
 
 export async function addCandidates(atsType: AtsType, tokens: string[], via: string): Promise<number> {
-  const clean = [...new Set(tokens.map((t) => t.trim()).filter((t) => t && t.length <= 300))];
+  // A link's query string or fragment is never part of a board ("lithia/wd5/careers?q=l0377" is the board "lithia/wd5/careers").
+  const clean = [...new Set(tokens.map((t) => t.trim().split(/[?#]/)[0].replace(/\/+$/, '')).filter((t) => t && t.length <= 300 && !/[&=\s]/.test(t)))];
   let added = 0;
   for (let i = 0; i < clean.length; i += 1000) {
     const { rowCount } = await getPgPool().query(
@@ -193,6 +194,10 @@ const CC_RULES: { ats: AtsType; prefixes: string[]; token: (host: string, path: 
   { ats: 'freshteam', prefixes: ['com,freshteam,'], token: (h, p) => (p.startsWith('/jobs') ? sub(h, 'freshteam.com') : null) },
   { ats: 'greenhouse', prefixes: ['io,greenhouse,boards)/', 'io,greenhouse,job-boards)/'], token: (_h, p) => firstSeg(p) },
   { ats: 'lever', prefixes: ['co,lever,jobs)/'], token: (_h, p) => firstSeg(p) },
+  { ats: 'workable', prefixes: ['com,workable,apply)/'], token: (_h, p) => firstSeg(p) },
+  { ats: 'recruitee', prefixes: ['com,recruitee,'], token: (h) => (h.endsWith('.recruitee.com') && !SKIP_SUB.has(h.split('.')[0]) ? sub(h, 'recruitee.com') : null) },
+  { ats: 'breezy', prefixes: ['hr,breezy,'], token: (h, p) => (h.endsWith('.breezy.hr') && p.startsWith('/p/') && !SKIP_SUB.has(h.split('.')[0]) ? sub(h, 'breezy.hr') : null) },
+  { ats: 'personio', prefixes: ['de,personio,jobs,', 'com,personio,jobs,'], token: (h) => (/\.jobs\.personio\.(de|com)$/.test(h) ? h.split('.')[0] : null) },
   { ats: 'ashby', prefixes: ['com,ashbyhq,jobs)/'], token: (_h, p) => firstSeg(p) },
   { ats: 'smartrecruiters', prefixes: ['com,smartrecruiters,jobs)/'], token: (_h, p) => firstSeg(p) },
   {

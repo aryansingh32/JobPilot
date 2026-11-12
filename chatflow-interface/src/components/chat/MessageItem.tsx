@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   ChevronDown,
@@ -12,6 +12,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   XCircle,
+  Copy,
+  Sparkles,
 } from "lucide-react";
 import type {
   ChatMessage,
@@ -69,7 +71,16 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
         <div className="min-w-0 flex-1">
           {msg.type === "text" && <BotText msg={msg as TextMessage} />}
           {msg.type === "timeline" && <Timeline msg={msg as TimelineMessage} />}
-          {msg.type === "input-card" && <InputCard msg={msg as InputCardMessage} />}
+          {msg.type === "input-card" && (
+            <div aria-busy={!!(msg as InputCardMessage).submitting} className={(msg as InputCardMessage).submitting ? "pointer-events-none opacity-70" : ""}>
+              <InputCard msg={msg as InputCardMessage} />
+              {(msg as InputCardMessage).submitting && (
+                <p role="status" aria-live="polite" className="mt-2 text-center text-[12px] text-muted-foreground">
+                  Sending your answer…
+                </p>
+              )}
+            </div>
+          )}
           {msg.type === "download" && <DownloadCard msg={msg as DownloadMessage} />}
           {msg.type === "status" && <StatusBubble msg={msg as StatusMessage} />}
           {msg.type === "review" && <ReviewCard msg={msg as ReviewMessage} />}
@@ -85,40 +96,46 @@ export function MessageItem({ msg }: { msg: ChatMessage }) {
 }
 
 function BotText({ msg }: { msg: TextMessage }) {
-  const [displayed, setDisplayed] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    // Only animate if the message was created in the last 2 seconds (new incoming message)
-    const isNew = Date.now() - msg.createdAt < 2000;
-
-    if (!isNew) {
-      setDisplayed(msg.content);
-      return;
+  const copyReply = async () => {
+    try {
+      await navigator.clipboard.writeText(msg.content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
     }
-
-    setIsTyping(true);
-    let i = 0;
-    const interval = setInterval(() => {
-      // Advance by a few characters to make it look like fast typing
-      i += Math.floor(Math.random() * 3) + 2;
-      if (i >= msg.content.length) {
-        setDisplayed(msg.content);
-        setIsTyping(false);
-        clearInterval(interval);
-      } else {
-        setDisplayed(msg.content.substring(0, i));
-      }
-    }, 15);
-
-    return () => clearInterval(interval);
-  }, [msg.content, msg.createdAt]);
+  };
 
   return (
-    <div className="md text-[15px] leading-relaxed text-foreground">
-      <ReactMarkdown>{displayed}</ReactMarkdown>
-      {isTyping && (
-        <span className="inline-block w-2 h-[15px] ml-1 bg-primary/70 align-middle animate-pulse" />
+    <div className="group/bot-reply animate-in fade-in-0 duration-200">
+      <div className="md break-words text-[15px] leading-[1.72] text-foreground">
+        <ReactMarkdown
+          components={{
+            a: ({ href, children }) => (
+              <a href={href} target="_blank" rel="noreferrer noopener">
+                {children}
+              </a>
+            ),
+          }}
+        >
+          {msg.content}
+        </ReactMarkdown>
+      </div>
+      {msg.content.trim() && (
+        <div className="mt-2 flex min-h-7 items-center opacity-100 transition-opacity sm:opacity-0 sm:group-hover/bot-reply:opacity-100 sm:group-focus-within/bot-reply:opacity-100">
+          <button
+            type="button"
+            onClick={copyReply}
+            aria-label={copied ? "Copied response" : "Copy response"}
+            title={copied ? "Copied" : "Copy response"}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            <span>{copied ? "Copied" : "Copy"}</span>
+          </button>
+        </div>
       )}
     </div>
   );
@@ -322,15 +339,19 @@ function StatusBubble({ msg }: { msg: StatusMessage }) {
   );
 }
 
-export function TypingIndicator() {
+export function TypingIndicator({ label }: { label: string }) {
   return (
-    <div className="px-4 py-3">
-      <div className="mx-auto flex max-w-(--chat-w)">
-        <div className="flex items-center gap-1.5 py-2">
+    <div className="px-3 py-3 sm:px-4" role="status" aria-live="polite">
+      <div className="mx-auto flex max-w-(--chat-w) items-center gap-2.5 text-[13px] text-muted-foreground">
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-primary-soft text-primary-soft-foreground">
+          <Sparkles className="h-3.5 w-3.5 animate-pulse" />
+        </span>
+        <span>{label}</span>
+        <span className="flex items-center gap-1" aria-hidden="true">
           <span className="typing-dot" />
           <span className="typing-dot" />
           <span className="typing-dot" />
-        </div>
+        </span>
       </div>
     </div>
   );

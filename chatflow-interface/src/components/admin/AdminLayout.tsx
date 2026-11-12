@@ -27,6 +27,7 @@ import {
   CircleDot,
   IdCard,
   SlidersHorizontal,
+  ClipboardCheck,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
@@ -63,6 +64,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     label: "Platform",
     items: [
       { id: "settings", label: "Settings", icon: <SlidersHorizontal className="h-4 w-4" /> },
+      { id: "answers", label: "Default answers", icon: <ClipboardCheck className="h-4 w-4" /> },
       { id: "ai", label: "AI usage", icon: <Sparkles className="h-4 w-4" /> },
       { id: "team", label: "Team & audit", icon: <ShieldCheck className="h-4 w-4" /> },
       { id: "security", label: "Security", icon: <ShieldAlert className="h-4 w-4" /> },

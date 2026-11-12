@@ -4,7 +4,7 @@ import { getPgPool } from '../db/index.js';
 import { getObject } from '../storage/index.js';
 import { createLogger } from '../logger/index.js';
 import type { ProfileData } from './index.js';
-import { extractEducation, extractExperience } from './resume-sections.js';
+import { extractCertifications, extractEducation, extractExperience, extractSkillList, extractSummary } from './resume-sections.js';
 
 // ============================================================
 // RESUME → PROFILE
@@ -63,6 +63,8 @@ const SKILL_WORDS = [
   'Excel', 'Power BI', 'Tableau', 'Figma', 'Jira', 'Agile', 'Scrum', 'Playwright', 'Selenium', 'Jest',
 ];
 
+const INDIAN_STATES = ['Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka', 'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal', 'Delhi', 'Jammu & Kashmir', 'Chandigarh', 'Puducherry'];
+
 /** Deterministic extraction — free, always runs. */
 export function ruleExtract(text: string): ProfileData {
   // A link that wrapped at a hyphen ("github.com/jane-" ⏎ "doe") is one link.
@@ -93,10 +95,14 @@ export function ruleExtract(text: string): ProfileData {
   const header = text.split('\n').slice(0, 6).join(' | ');
   // Also "San Francisco, CA, USA" (city, state, country).
   const place = header.match(/(?:^|[|·•,]\s*)([A-Z][a-z]+(?:\s[A-Z][a-z]+)?),\s*(?:([A-Z]{2}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)?),\s*)?(India|United States|USA|US|[A-Z][a-z]+)(?=\s*(?:$|[|·•]))/);
-  const country = place?.[3] === 'India' ? 'IN' : /^(United States|USA|US)$/.test(place?.[3] ?? '') ? 'US' : undefined;
+  const inState = place ? null : header.match(new RegExp(`(?:^|[|·•]\\s*)([A-Z][a-z]+(?:\\s[A-Z][a-z]+)?),\\s*(${INDIAN_STATES.join('|')})\\b`));
+  const country = inState ? 'IN' : place?.[3] === 'India' ? 'IN' : /^(United States|USA|US)$/.test(place?.[3] ?? '') ? 'US' : undefined;
   // "3 years of experience" → the experience bands the onboarding form uses.
   const years = Number(text.match(/(\d{1,2})\+?\s+years?\s+of\s+(?:professional\s+|industry\s+|work\s+)?experience/i)?.[1] ?? NaN);
   const experience = extractExperience(text);
+  const summary = extractSummary(text);
+  const certifications = extractCertifications(text);
+  const listed = extractSkillList(text);
   const education = extractEducation(text);
   const currentJob = experience.find((e) => e.current);
   const experienceLevel = Number.isNaN(years) ? undefined
@@ -105,14 +111,15 @@ export function ruleExtract(text: string): ProfileData {
     personal: {
       fullName, firstName: fullName ? firstName : undefined, lastName: fullName ? rest.join(' ') : undefined,
       email, phone, linkedin: withScheme(linkedin), github: withScheme(github),
-      city: place?.[1], state: place?.[2], country,
+      city: place?.[1] ?? inState?.[1], state: place?.[2] ?? inState?.[2], country, summary,
     },
     work: experienceLevel || currentJob
       ? { experienceLevel, currentEmployer: currentJob?.company || undefined, currentTitle: currentJob?.title || undefined }
       : undefined,
     experience: experience.length ? experience : undefined,
     education: education.length ? education : undefined,
-    skills: skills.length ? skills : undefined,
+    skills: [...new Set([...skills, ...listed])].length ? [...new Set([...skills, ...listed])].slice(0, 40) : undefined,
+    certifications: certifications.length ? certifications : undefined,
   };
 }
 

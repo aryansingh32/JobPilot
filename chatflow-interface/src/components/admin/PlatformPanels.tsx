@@ -193,19 +193,21 @@ export function AiUsagePanel() {
         </select>
       </div>
       <p className="text-xs text-muted-foreground">Models, budgets and the killswitch are under Settings → AI. Job applications use no AI at all.</p>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
         <Stat label="Calls" value={t?.calls ?? "—"} />
         <Stat label="Tokens" value={t ? (Number(t.prompt_tokens) + Number(t.completion_tokens)).toLocaleString() : "—"} />
+        <Stat label="Cached input" value={t ? Number(t.cached_tokens).toLocaleString() : "—"} />
+        <Stat label="Cache writes" value={t ? Number(t.cache_write_tokens).toLocaleString() : "—"} />
         <Stat label="Cost" value={t ? `$${t.cost_usd.toFixed(3)}` : "—"} />
         <Stat label="Errors" value={t?.errors ?? "—"} tone="text-red-400" />
         <Stat label="Avg latency" value={t ? `${t.avg_latency_ms} ms` : "—"} />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <Section title="By purpose">
-          <SimpleTable rows={usage.data?.byPurpose ?? []} cols={["purpose", "calls", "tokens", "cost_usd", "errors"]} />
+          <SimpleTable rows={usage.data?.byPurpose ?? []} cols={["purpose", "calls", "tokens", "cached_tokens", "cache_write_tokens", "cost_usd", "errors"]} />
         </Section>
         <Section title="By model">
-          <SimpleTable rows={usage.data?.byModel ?? []} cols={["model", "calls", "tokens", "cost_usd"]} />
+          <SimpleTable rows={usage.data?.byModel ?? []} cols={["model", "calls", "tokens", "cached_tokens", "cache_write_tokens", "cost_usd"]} />
         </Section>
         <Section title="Top users">
           <SimpleTable rows={usage.data?.topUsers ?? []} cols={["user_id", "calls", "tokens", "cost_usd"]} />

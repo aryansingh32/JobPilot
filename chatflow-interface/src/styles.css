@@ -199,7 +199,7 @@
 
 /* Markdown prose styles */
 .md p {
-  margin: 0.4rem 0;
+  margin: 0.55rem 0;
   line-height: 1.65;
 }
 .md p:first-child {
@@ -210,8 +210,8 @@
 }
 .md ul,
 .md ol {
-  margin: 0.5rem 0;
-  padding-left: 1.25rem;
+  margin: 0.65rem 0;
+  padding-left: 1.4rem;
 }
 .md ul {
   list-style: disc;
@@ -220,7 +220,12 @@
   list-style: decimal;
 }
 .md li {
-  margin: 0.15rem 0;
+  margin: 0.28rem 0;
+  padding-left: 0.15rem;
+  line-height: 1.62;
+}
+.md li::marker {
+  color: color-mix(in oklab, var(--color-primary) 72%, transparent);
 }
 .md code {
   background: var(--color-muted);
@@ -236,6 +241,7 @@
   overflow-x: auto;
   margin: 0.6rem 0;
   border: 1px solid var(--color-border);
+  white-space: pre;
 }
 .md pre code {
   background: transparent;
@@ -244,12 +250,27 @@
 .md a {
   color: var(--color-primary);
   text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.md blockquote {
+  margin: 0.75rem 0;
+  border-left: 2px solid var(--color-primary);
+  padding: 0.15rem 0 0.15rem 0.9rem;
+  color: var(--color-muted-foreground);
+}
+.md hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
 }
 .md h1,
 .md h2,
 .md h3 {
   font-weight: 600;
-  margin: 0.8rem 0 0.4rem;
+  line-height: 1.35;
+  margin: 1rem 0 0.4rem;
 }
 .md h1 {
   font-size: 1.25rem;
@@ -262,6 +283,12 @@
 }
 .md strong {
   font-weight: 600;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
 }
 
 /* Pulse dot for live status */
@@ -282,6 +309,21 @@
   border-radius: 9999px;
   background: var(--color-primary);
   animation: pulse-ring 1.6s infinite;
+}
+
+@keyframes needs-answer-border {
+  0%, 100% {
+    border-color: color-mix(in oklab, var(--color-primary) 22%, var(--color-border));
+    box-shadow: 0 1px 2px rgba(13, 24, 40, 0.04), 0 0 0 0 color-mix(in oklab, var(--color-primary) 0%, transparent);
+  }
+  50% {
+    border-color: color-mix(in oklab, var(--color-primary) 48%, var(--color-border));
+    box-shadow: 0 1px 2px rgba(13, 24, 40, 0.04), 0 0 0 3px color-mix(in oklab, var(--color-primary) 7%, transparent);
+  }
+}
+
+.needs-answer-card {
+  animation: needs-answer-border 3.2s ease-in-out infinite;
 }
 
 /* Typing dots */
@@ -436,5 +478,6 @@
 @keyframes island-breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
 @keyframes island-pop { 0% { transform: scale(0.4) rotate(-20deg); opacity: 0; } 60% { transform: scale(1.18) rotate(4deg); opacity: 1; } 100% { transform: scale(1) rotate(0); } }
 @media (prefers-reduced-motion: reduce) {
-  .island-motion { animation: none !important; }
+  .island-motion,
+  .needs-answer-card { animation: none !important; }
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Inbox, KeyRound, ListChecks, Search, Sparkles, Wand2 } from "lucide-react";
+import { ArrowRight, Check, Inbox, KeyRound, ListChecks, Search, Sparkles, Wand2 } from "lucide-react";
 import type {
   ActionsMessage,
   AppsStatusMessage,
@@ -30,8 +30,34 @@ export function JobCardsView({ msg }: { msg: JobCardsMessage }) {
   const jobs = msg.jobs.filter((j) => !hidden.has(j.id));
   if (!jobs.length)
     return (
-      <div className="rounded-[18px] border border-dashed border-border px-4 py-5 text-[13px] text-muted-foreground">
-        {msg.empty ?? "Nothing to show yet."}
+      <div className="rounded-[20px] border border-border bg-gradient-to-br from-card to-muted/40 px-4 py-5 shadow-sm sm:px-5">
+        <div className="flex items-start gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary-soft-foreground">
+            <Search className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[14px] font-semibold text-foreground">No close matches yet</h3>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+              {msg.empty ?? "I couldn't find roles that fit your saved profile yet."}
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => fire(SEND_EVENT, "Search this role for all experience levels")}
+                className="rounded-full border border-border bg-card px-3.5 py-2 text-[12.5px] font-medium text-foreground transition hover:border-primary hover:bg-primary-soft"
+              >
+                Try a broader search
+              </button>
+              <button
+                type="button"
+                onClick={() => fire(NAVIGATE_EVENT, "jobs")}
+                className="rounded-full px-3.5 py-2 text-[12.5px] font-medium text-primary transition hover:bg-primary-soft"
+              >
+                Browse all jobs
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     );
   return (
@@ -39,7 +65,7 @@ export function JobCardsView({ msg }: { msg: JobCardsMessage }) {
       <div className="mb-2 flex items-center gap-1.5 px-0.5 text-[12px] font-semibold uppercase tracking-[0.1em] text-faint">
         <Sparkles className="h-3.5 w-3.5" /> {msg.title}
       </div>
-      <div className="no-scrollbar -mx-3 -mt-1.5 flex snap-x snap-mandatory gap-3 overflow-x-auto px-3 pb-2 pt-1.5 sm:mx-0 sm:px-0">
+      <div className="no-scrollbar -mx-4 -mt-1.5 flex snap-x snap-mandatory gap-3 overflow-x-auto overscroll-x-contain px-4 pb-3 pt-1.5 [scrollbar-width:none] [-webkit-overflow-scrolling:touch] sm:mx-0 sm:px-0">
         {jobs.map((job, i) => (
           <JobCard
             key={job.id}
@@ -64,6 +90,22 @@ export function JobCardsView({ msg }: { msg: JobCardsMessage }) {
             }}
           />
         ))}
+        {msg.hasMore && (
+          <button
+            type="button"
+            onClick={() => fire(NAVIGATE_EVENT, { view: "jobs", search: msg.search })}
+            className="group flex w-[min(82vw,300px)] shrink-0 snap-start flex-col justify-between rounded-[20px] border border-border bg-gradient-to-br from-card to-primary-soft/40 p-5 text-left transition hover:border-primary/40 hover:shadow-md active:scale-[0.99] sm:w-[300px]"
+            aria-label="Search more similar jobs"
+          >
+            <span className="grid h-11 w-11 place-items-center rounded-full border border-border bg-card text-primary shadow-sm transition group-hover:bg-primary group-hover:text-primary-foreground">
+              <ArrowRight className="h-5 w-5" />
+            </span>
+            <span>
+              <span className="block text-[16px] font-semibold text-foreground">Search more similar jobs</span>
+              <span className="mt-1 block text-[13px] leading-relaxed text-muted-foreground">Browse the full list with these filters</span>
+            </span>
+          </button>
+        )}
       </div>
     </div>
   );

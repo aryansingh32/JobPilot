@@ -36,7 +36,7 @@
       "metadata": {
         "buttons": [
           "#unifyApplyNowTopButton, a.dialogApplyBtn, button:has-text(\"Apply now\")",
-          "#applyOption--manual"
+          "a[id^=\"applyOption\"][id$=\"manual\"], #applyOption--manual"
         ]
       }
     },

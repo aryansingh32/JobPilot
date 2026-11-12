@@ -4,7 +4,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerHookHandl
 import { getPgPool } from '../shared/db/index.js';
 import { enqueueJob } from '../shared/queue/index.js';
 import { profileService, answerMemory, type ProfileData } from '../shared/profile/index.js';
-import { recommendJobs, jobPulse, type JobPulse, searchJobs, getJob, scoreJob, toListing, type JobRow } from '../shared/jobs/matcher.js';
+import { loadSkillStats } from '../shared/jobs/fit-math.js';
+import { analyzeFit } from '../shared/jobs/job-fit.js';
+import { checkEligibility, parseRequirements } from '../shared/jobs/govt-eligibility.js';
+import { recommendJobs, homeCountry, jobPulse, type JobPulse, searchJobs, getJob, scoreJob, toListing, type JobRow } from '../shared/jobs/matcher.js';
 import { applicationsService, LimitError } from '../shared/applications/index.js';
 import { ApplyError, pendingInput, respondToApplication, startApplication } from '../shared/applications/apply.js';
 import { inboxService } from '../shared/inbox/index.js';
@@ -16,12 +19,19 @@ import { creditsService, InsufficientCreditsError } from '../shared/credits/inde
 import { notificationsService } from '../shared/notifications/index.js';
 import { accountsService } from '../shared/accounts/index.js';
 import { autoApplyService } from '../shared/applications/auto-apply.js';
+import { receiptPath } from '../shared/applications/receipts.js';
+import { readFile } from 'node:fs/promises';
+import { campaignsService, CampaignError } from '../shared/applications/campaigns.js';
 import { getRedisClient } from '../shared/db/index.js';
 import type { ParseResumeJob } from '../shared/types/index.js';
 import { fileStorageService } from './file-storage.service.js';
 import { userAccountService } from './user-account.service.js';
 import { requireUser, revokeSessions } from './auth-routes.js';
 import { createLogger } from '../shared/logger/index.js';
+import { formSchemas } from '../shared/applications/form-schema.js';
+import { analyzeProfile, missingRequired } from '../shared/profile/resume-analysis.js';
+import { refreshAnswerBank } from '../shared/profile/answer-bank.js';
+import { previewForm } from '../execution-service/form-preview.js';
 
 // ============================================================
 // USER API (Tsenta-style) — profile, resume, jobs feed, applications, inbox.
@@ -35,12 +45,38 @@ const uid = (req: FastifyRequest) => (req as Authed).userId;
 const RESUME_TYPES = /\.(pdf|docx|txt|md)$/i;
 const MAX_RESUME_BYTES = 10 * 1024 * 1024;
 
+/** Country the request comes from: the CDN header when there is one, else a lookup of the address. */
+async function requestCountry(req: FastifyRequest): Promise<{ country: string | null; nationality: string | null }> {
+  const { geoFromIp, nationalityOf } = await import('../shared/profile/geo.js');
+  const header = String(req.headers['cf-ipcountry'] ?? '').toUpperCase();
+  if (/^[A-Z]{2}$/.test(header) && header !== 'XX') return { country: header, nationality: nationalityOf(header) };
+  const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+  return (await geoFromIp(fwd || req.ip)) ?? { country: null, nationality: null };
+}
+
+/** Remember where the person connects from (at most weekly) so jobs near them and remote ones rank first. Never blocks the request. */
+const regionChecked = new Map<string, number>();
+async function detectRegion(req: FastifyRequest, userId: string): Promise<void> {
+  if (Date.now() - (regionChecked.get(userId) ?? 0) < 6 * 3_600_000) return;
+  regionChecked.set(userId, Date.now());
+  try {
+    const { data } = await profileService.get(userId);
+    const at = data.personal?.detectedAt ? +new Date(data.personal.detectedAt) : 0;
+    if (Date.now() - at < 7 * 86_400_000) return;
+    const { country } = await requestCountry(req);
+    if (country) await profileService.patch(userId, { personal: { detectedCountry: country, detectedAt: new Date().toISOString() } });
+  } catch {
+    /* a failed lookup only means jobs rank without it */
+  }
+}
+
 export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHookHandler): void {
   const auth = { preHandler: [apiKeyAuth, requireUser as preHandlerHookHandler] };
 
   // ── Bootstrap ───────────────────────────────────────────
   app.get('/me', auth, async (req) => {
     const userId = uid(req);
+    void detectRegion(req, userId);
     const [user, profile, counts, unread, inbox, credits, notifications] = await Promise.all([
       userAccountService.findById(userId),
       profileService.get(userId),
@@ -79,12 +115,14 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
     return { settings, lastRun: runs[0] ?? null };
   });
   app.put('/me/auto-apply', auth, async (req, reply) => {
-    const b = (req.body ?? {}) as { enabled?: unknown; dailyCap?: unknown; minScore?: unknown; excludeCompanies?: unknown };
+    const b = (req.body ?? {}) as { enabled?: unknown; autoSubmit?: unknown; dailyCap?: unknown; minScore?: unknown; excludeCompanies?: unknown };
     if (b.enabled !== undefined && typeof b.enabled !== 'boolean') return reply.status(400).send({ error: 'enabled must be true or false' });
+    if (b.autoSubmit !== undefined && typeof b.autoSubmit !== 'boolean') return reply.status(400).send({ error: 'autoSubmit must be true or false' });
     if (b.excludeCompanies !== undefined && !Array.isArray(b.excludeCompanies)) return reply.status(400).send({ error: 'excludeCompanies must be a list' });
     return {
       settings: await autoApplyService.update(uid(req), {
         enabled: b.enabled as boolean | undefined,
+        autoSubmit: b.autoSubmit as boolean | undefined,
         dailyCap: b.dailyCap as number | undefined,
         minScore: b.minScore as number | undefined,
         excludeCompanies: b.excludeCompanies as string[] | undefined,
@@ -105,6 +143,33 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
     }
     const run = await autoApplyService.runForUser(userId, 'manual');
     return run ?? reply.status(409).send({ error: 'Auto Apply is already running' });
+  });
+  // ── Campaign: "apply to N jobs" ─────────────────────────
+  app.get('/me/campaign', auth, async (req) => {
+    const userId = uid(req);
+    const [active, recent] = await Promise.all([campaignsService.active(userId), campaignsService.list(userId, 5)]);
+    return { active, recent };
+  });
+  app.post('/me/campaign', auth, async (req, reply) => {
+    const userId = uid(req);
+    const b = (req.body ?? {}) as { target?: unknown; minScore?: unknown };
+    try {
+      const campaign = await campaignsService.start(userId, { target: Number(b.target), minScore: b.minScore === undefined ? undefined : Number(b.minScore) }, await getNumber('autoapply.min_score_floor'));
+      // Start now rather than at the next scheduler tick; the run never throws and reports through the campaign.
+      void autoApplyService.runForUser(userId, 'manual').catch(() => {});
+      return reply.status(201).send({ campaign });
+    } catch (err) {
+      if (err instanceof CampaignError) return reply.status(err.status).send({ error: err.message });
+      throw err;
+    }
+  });
+  app.post('/me/campaign/:id/stop', auth, async (req, reply) => {
+    try {
+      return { campaign: await campaignsService.stop(uid(req), (req.params as { id: string }).id) };
+    } catch (err) {
+      if (err instanceof CampaignError) return reply.status(err.status).send({ error: err.message });
+      throw err;
+    }
   });
   app.get('/me/auto-apply/runs', auth, async (req) => ({ runs: await autoApplyService.runs(uid(req), 30) }));
 
@@ -158,13 +223,7 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
   });
 
   // First guess of country and nationality from where the person connects (only used to prefill, always editable).
-  app.get('/me/geo', auth, async (req) => {
-    const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
-    const header = String(req.headers['cf-ipcountry'] ?? '').toUpperCase();
-    if (/^[A-Z]{2}$/.test(header) && header !== 'XX') return { country: header, nationality: (await import('../shared/profile/geo.js')).nationalityOf(header) };
-    const { geoFromIp } = await import('../shared/profile/geo.js');
-    return (await geoFromIp(fwd || req.ip)) ?? { country: null, nationality: null };
-  });
+  app.get('/me/geo', auth, async (req) => requestCountry(req));
 
   app.get('/me/profile/versions', auth, async (req) => ({ versions: await profileService.versions(uid(req)) }));
 
@@ -173,10 +232,66 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
     if (status !== 'done' && status !== 'skipped' && status !== 'pending') {
       return reply.status(400).send({ error: 'status must be done, skipped or pending' });
     }
+    // The essentials are never skipped: every application asks them, and Auto Apply cannot start without them.
+    if (status === 'done' || status === 'skipped') {
+      const missing = missingRequired((await profileService.get(uid(req))).data);
+      if (missing.length) return reply.status(409).send({ error: `Add ${missing.map((m) => m.label).join(', ')} to finish`, missing });
+    }
     const profile = await profileService.setOnboarding(uid(req), status);
+    if (status === 'done') void refreshAnswerBank(uid(req)).catch(() => {});
     // Every onboarded user gets a private application inbox.
     if (status === 'done' || status === 'skipped') await inboxService.ensureAddress(uid(req), profile.data.personal?.fullName).catch(() => {});
     return profile;
+  });
+
+  // ── Role-specific résumés: the one that fits a job's title is the one sent ──
+  // ── Résumé analysis and the ready-made answers ──
+  app.get('/me/resume/analysis', auth, async (req) => {
+    const { data } = await profileService.get(uid(req));
+    return { analysis: analyzeProfile(data), answerBank: data.answerBank ?? null, missing: missingRequired(data) };
+  });
+
+  // Prepare the answers (rule-built instantly; one small model call at most, only when the facts changed).
+  app.post('/me/resume/optimize', auth, async (req) => {
+    const bank = await refreshAnswerBank(uid(req));
+    const { data } = await profileService.get(uid(req));
+    return { analysis: analyzeProfile(data), answerBank: bank, missing: missingRequired(data) };
+  });
+
+  app.put('/me/answer-bank', auth, async (req, reply) => {
+    const { key, value } = (req.body ?? {}) as { key?: string; value?: string };
+    if (!['aboutYou', 'strengths', 'achievement', 'careerGoal'].includes(key ?? '')) return reply.status(400).send({ error: 'Unknown answer' });
+    const text = String(value ?? '').trim().slice(0, 600);
+    const current = (await profileService.get(uid(req))).data.answerBank ?? {};
+    const edited = [...new Set([...(current.edited ?? []), key!])];
+    return profileService.patch(uid(req), { answerBank: { ...current, [key!]: text, edited } }, 'answer-bank-edit');
+  });
+
+  app.post('/me/resume-variants', auth, async (req, reply) => {
+    const userId = uid(req);
+    const b = (req.body ?? {}) as { label?: string; keywords?: string[]; originalName?: string; mimeType?: string; base64Data?: string };
+    const label = b.label?.trim().slice(0, 40);
+    if (!label || !b.originalName || !b.base64Data) return reply.status(400).send({ error: 'label, originalName and base64Data are required' });
+    if (!RESUME_TYPES.test(b.originalName)) return reply.status(400).send({ error: 'Upload a PDF, DOCX or TXT file' });
+    if (Buffer.byteLength(b.base64Data, 'base64') > MAX_RESUME_BYTES) return reply.status(413).send({ error: 'Resume must be under 10 MB' });
+    const current = (await profileService.get(userId)).data.documents?.resumeVariants ?? [];
+    if (current.length >= 5) return reply.status(409).send({ error: 'You can keep up to 5 role-specific résumés' });
+    const file = await fileStorageService.uploadBase64({
+      userId, originalName: b.originalName, mimeType: b.mimeType || 'application/octet-stream', base64Data: b.base64Data,
+      category: 'document', profileName: 'default',
+    });
+    const variants = [...current.filter((v) => v.label.toLowerCase() !== label.toLowerCase()), { label, fileId: file.id, fileName: file.originalName, keywords: (b.keywords ?? []).slice(0, 12).map((k) => String(k).slice(0, 30)) }];
+    await profileService.patch(userId, { documents: { resumeVariants: variants } }, 'resume-variant');
+    return { variants };
+  });
+
+  app.delete('/me/resume-variants/:fileId', auth, async (req) => {
+    const userId = uid(req);
+    const { fileId } = req.params as { fileId: string };
+    const current = (await profileService.get(userId)).data.documents?.resumeVariants ?? [];
+    const variants = current.filter((v) => v.fileId !== fileId);
+    await profileService.patch(userId, { documents: { resumeVariants: variants } }, 'resume-variant');
+    return { variants };
   });
 
   // ── Resume ──────────────────────────────────────────────
@@ -243,7 +358,10 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
     // Don't overwrite what the user already typed: parsed values only fill gaps.
     const { mergeProfile } = await import('../shared/profile/index.js');
     const filled = mergeProfile(rows[0].result as ProfileData, current.data);
-    return profileService.patch(uid(req), mergeProfile(filled, overrides), 'resume-parse');
+    const saved = await profileService.patch(uid(req), mergeProfile(filled, overrides), 'resume-parse');
+    // Prepare the personal answers now, so applications never have to ask a model for them.
+    void refreshAnswerBank(uid(req)).catch(() => {});
+    return saved;
   });
 
   // ── Answer memory ───────────────────────────────────────
@@ -283,9 +401,11 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
   });
 
   app.get('/jobboard/search', auth, async (req) => {
-    const q = req.query as { q?: string; country?: string; workplace?: string; location?: string; type?: string; page?: string };
+    const q = req.query as { q?: string; country?: string; workplace?: string; includeRemote?: string; experienceLevel?: 'fresher' | 'any'; location?: string; type?: string; page?: string };
+    const home = homeCountry((await profileService.get(uid(req))).data);
     const res = await searchJobs({
-      text: q.q, country: q.country, workplace: q.workplace, location: q.location, employmentType: q.type, page: Number(q.page) || 1,
+      region: home && (await getBool('jobs.region_only')) ? [home] : undefined,
+      text: q.q, country: q.country, workplace: q.workplace, includeRemote: q.includeRemote === 'true', experienceLevel: q.experienceLevel, location: q.location, employmentType: q.type, page: Number(q.page) || 1,
     });
     return { ...res, jobs: res.jobs.map((j) => toListing(j)) };
   });
@@ -296,8 +416,13 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
     const saved = await getPgPool().query('SELECT 1 FROM saved_jobs WHERE user_id = $1 AND job_id = $2', [uid(req), job.id]);
     // How this role fits the signed-in user, so the detail view can say why.
     const profile = await profileService.get(uid(req));
+    await loadSkillStats();
     const fit = scoreJob(profile.data, job as JobRow);
     const j = job as JobRow & { description?: string; department?: string };
+    // Government notices state age and qualification limits: say whether this person meets them.
+    const eligibility = j.employment_type === 'Government'
+      ? checkEligibility(profile.data, parseRequirements(j.description ?? ''), { closesAt: j.closes_at ? new Date(j.closes_at) : null, state: j.location })
+      : undefined;
     return {
       job: {
         ...toListing(j, fit.score, fit.reasons, fit.matchedSkills),
@@ -308,9 +433,23 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
         experienceMin: j.experience_min ? Number(j.experience_min) : undefined,
         experienceMax: j.experience_max ? Number(j.experience_max) : undefined,
         country: j.country ?? undefined,
+        eligibility,
+        // Résumé vs this posting: skills shown / missing, years, and what to do about it.
+        resumeFit: j.employment_type === 'Government' ? undefined : analyzeFit(profile.data, j as never),
       },
       saved: saved.rows.length > 0,
     };
+  });
+
+  /** What applying here will ask, from the first run at this posting: how much is ready, and what only you can answer. */
+  app.get('/jobboard/jobs/:id/form-preview', auth, async (req, reply) => {
+    const job = (await getJob((req.params as { id: string }).id)) as JobRow | null;
+    if (!job) return reply.status(404).send({ error: 'Job not found' });
+    const schema = await formSchemas.get(job.url);
+    if (!schema) return { known: false };
+    const profile = await profileService.get(uid(req));
+    const preview = await previewForm(schema, profile.data, (q) => answerMemory.recall(uid(req), q, { country: job.country }).catch(() => null), { country: job.country });
+    return { known: true, seenBefore: schema.seenCount, ...preview };
   });
 
   app.post('/jobboard/jobs/:id/save', auth, async (req) => {
@@ -356,9 +495,9 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
   app.get('/me/applications/counts', auth, async (req) => applicationsService.counts(uid(req)));
   // Start one: { jobId } from the feed, or { url } for a pasted link. No LLM involved.
   app.post('/me/applications', auth, async (req, reply) => {
-    const body = (req.body ?? {}) as { jobId?: string; url?: string };
+    const body = (req.body ?? {}) as { jobId?: string; url?: string; confirmDuplicate?: boolean; review?: boolean };
     try {
-      const started = await startApplication(uid(req), { jobId: body.jobId, url: body.url, source: 'manual', checkProfile: true });
+      const started = await startApplication(uid(req), { jobId: body.jobId, url: body.url, source: 'manual', checkProfile: true, stopBeforeSubmit: body.review === true ? true : undefined, confirmDuplicate: body.confirmDuplicate === true });
       return reply.status(201).send(started);
     } catch (err) {
       if (err instanceof ApplyError || err instanceof LimitError || err instanceof InsufficientCreditsError) {
@@ -372,6 +511,30 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
     if (!a) return reply.status(404).send({ error: 'Not found' });
     const pending = ['needs_input', 'awaiting_review'].includes(a.status) ? await pendingInput(a.exec_job_id) : null;
     return { ...a, pending };
+  });
+  // The PDF record of a submitted application (what was sent, and the site's confirmation). Owner only.
+  app.get('/me/applications/:id/summary.pdf', auth, async (req, reply) => {
+    const a = await applicationsService.get(uid(req), (req.params as { id: string }).id);
+    if (!a) return reply.status(404).send({ error: 'Not found' });
+    const path = receiptPath(a.exec_job_id, 'summaries');
+    const file = path ? await readFile(path).catch(() => null) : null;
+    if (!file) return reply.status(404).send({ error: 'No summary for this application' });
+    return reply
+      .header('Content-Type', 'application/pdf')
+      .header('Content-Disposition', 'attachment; filename="application-summary.pdf"')
+      .header('Cache-Control', 'private, no-store')
+      .send(file);
+  });
+  // The screenshot taken when the site confirmed (or, failing that, when it didn't). Owner only.
+  app.get('/me/applications/:id/receipt', auth, async (req, reply) => {
+    const a = await applicationsService.get(uid(req), (req.params as { id: string }).id);
+    if (!a) return reply.status(404).send({ error: 'Not found' });
+    for (const kind of ['receipts', 'diagnostics'] as const) {
+      const path = receiptPath(a.exec_job_id, kind);
+      const file = path ? await readFile(path).catch(() => null) : null;
+      if (file) return reply.header('Content-Type', 'image/png').header('Cache-Control', 'private, no-store').send(file);
+    }
+    return reply.status(404).send({ error: 'No screenshot for this application' });
   });
   // Answer the question it's paused on, or approve the review ({"action":"approve","values":{…}}).
   app.post('/me/applications/:id/respond', auth, async (req, reply) => {

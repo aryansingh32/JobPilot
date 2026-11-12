@@ -4,6 +4,7 @@ import type { InputCardMessage } from "@/lib/chat-types";
 import { resolveCard } from "@/lib/backend-connector";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { useSequentialQuestions } from "@/lib/sequential-questions";
 
 interface Props {
   msg: InputCardMessage;
@@ -49,7 +50,7 @@ function CardShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-[18px] border border-border bg-card p-4 shadow-[0_1px_2px_rgba(13,24,40,0.04)] sm:p-5">
+    <div className="needs-answer-card rounded-[18px] border border-border bg-card p-4 shadow-[0_1px_2px_rgba(13,24,40,0.04)] sm:p-5">
       <div className="mb-4 flex items-start gap-3">
         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-warning-soft text-warning-soft-foreground">
           {icon}
@@ -388,9 +389,88 @@ function ChoiceCard({ msg, options }: { msg: InputCardMessage; options: string[]
 }
 
 function TextCard({ msg }: { msg: InputCardMessage }) {
+  if (msg.data?.applicationQuestion) return <ApplicationQuestionCard msg={msg} />;
+  if (msg.data?.questions?.length) return <SequentialQuestionCard msg={msg} />;
   const options = Array.isArray(msg.data?.options) ? (msg.data.options as string[]) : [];
   if (options.length) return <ChoiceCard msg={msg} options={options} />;
   return <FreeTextCard msg={msg} />;
+}
+
+function ApplicationQuestionCard({ msg }: { msg: InputCardMessage }) {
+  const question = msg.data?.question || msg.prompt;
+  const options = msg.data?.options ?? [];
+  const flow = useSequentialQuestions(msg.jobId ?? msg.id, [{ id: "current", question, options }]);
+  const answer = flow.answers.current ?? "";
+  return (
+    <CardShell icon={<Type className="h-4 w-4" />} label="Application question" title={question}>
+      {options.length ? (
+        <select className={INPUT} value={answer} onChange={(e) => flow.setAnswer("current", e.target.value)}>
+          <option value="">Choose an answer…</option>
+          {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+      ) : (
+        <textarea
+          rows={2}
+          className={`${INPUT} h-auto py-3`}
+          inputMode={msg.data?.sensitive ? "numeric" : undefined}
+          autoComplete={msg.data?.sensitive ? "off" : undefined}
+          value={answer}
+          onChange={(e) => flow.setAnswer("current", e.target.value)}
+          placeholder="Type your answer"
+        />
+      )}
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className="text-[11px] text-muted-foreground">{msg.data?.sensitive ? "Only used for this application." : "I used saved details where I could."}</span>
+        <button onClick={() => resolveCard(msg.id, answer.trim(), msg.jobId)} disabled={!answer.trim() || msg.submitting} className={PRIMARY}>
+          {msg.submitting ? "Sending…" : "Continue"}
+        </button>
+      </div>
+    </CardShell>
+  );
+}
+
+function SequentialQuestionCard({ msg }: { msg: InputCardMessage }) {
+  const questions = msg.data?.questions ?? [];
+  const flow = useSequentialQuestions(msg.jobId ?? msg.id, questions);
+  const question = flow.current;
+  if (!question) return null;
+  const answer = flow.answers[question.id] ?? "";
+  const next = () => {
+    const answers = { ...flow.answers, [question.id]: answer.trim() };
+    if (flow.index < flow.count - 1) {
+      flow.setAnswer(question.id, answer.trim());
+      flow.advance();
+      return;
+    }
+    resolveCard(msg.id, JSON.stringify(answers), msg.jobId, `Answered ${flow.count} questions`);
+  };
+  return (
+    <CardShell icon={<Type className="h-4 w-4" />} label={`Question ${flow.index + 1} of ${flow.count}`} title={question.question}>
+      <div className="mb-3 h-1 overflow-hidden rounded-full bg-muted">
+        <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${((flow.index + 1) / flow.count) * 100}%` }} />
+      </div>
+      {question.options?.length ? (
+        <select className={INPUT} value={answer} onChange={(e) => flow.setAnswer(question.id, e.target.value)}>
+          <option value="">Choose an answer…</option>
+          {question.options.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+      ) : (
+        <textarea
+          rows={2}
+          className={`${INPUT} h-auto py-3`}
+          value={answer}
+          onChange={(e) => flow.setAnswer(question.id, e.target.value)}
+          placeholder="Type your answer"
+        />
+      )}
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className="text-[11px] text-muted-foreground">Saved details were used to fill what we could.</span>
+        <button onClick={next} disabled={!answer.trim() || msg.submitting} className={PRIMARY}>
+          {msg.submitting ? "Sending…" : flow.index === flow.count - 1 ? "Send answers" : "Next"}
+        </button>
+      </div>
+    </CardShell>
+  );
 }
 
 function FreeTextCard({ msg }: { msg: InputCardMessage }) {

@@ -17,11 +17,21 @@ describe('voluntary questions pick the decline option', () => {
 });
 
 describe('required consent checkboxes', () => {
-  const box: FormField = {
-    idx: 1, tag: 'input', type: 'checkbox', label: 'I have read and consent to the terms', name: 'agree',
+  // A policy agreement is ticked on its own (policyAcknowledgement); a statement the person signs is asked.
+  const policy: FormField = {
+    idx: 2, tag: 'input', type: 'checkbox', label: 'I have read and consent to the terms', name: 'terms',
     required: true, options: ['Yes', 'No'], value: '', selector: null,
   } as FormField;
-  it('are asked, never ticked on their own', async () => {
+  it('a policy or terms agreement is ticked, not asked', async () => {
+    const { answers, missing } = await planAnswers([policy], {}, async () => null);
+    expect(missing).toEqual([]);
+    expect(answers[0]).toMatchObject({ value: 'Yes', source: 'default', key: 'policyAck' });
+  });
+  const box: FormField = {
+    idx: 1, tag: 'input', type: 'checkbox', label: 'I certify that the information I provided is true and complete', name: 'agree',
+    required: true, options: ['Yes', 'No'], value: '', selector: null,
+  } as FormField;
+  it('a certification is asked, never ticked on its own', async () => {
     const { answers, missing } = await planAnswers([box], {}, async () => null);
     expect(answers).toHaveLength(0);
     expect(missing).toEqual([box]);

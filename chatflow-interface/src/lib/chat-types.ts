@@ -68,8 +68,13 @@ export interface InputCardMessage extends BaseMessage {
     /** A form question the run is paused on, with the site's fixed answers if any. */
     question?: string;
     options?: string[];
+    questions?: { id: string; question: string; options?: string[] }[];
+    /** Do not persist this answer into local chat history. */
+    sensitive?: boolean;
+    applicationQuestion?: boolean;
   };
   resolved?: { value: string; at: number };
+  submitting?: boolean;
   /** Backend job ID, used when resuming a paused job */
   jobId?: string;
   /** Backend step ID, used to target the exact paused step */
@@ -180,6 +185,9 @@ export interface JobCardsMessage extends BaseMessage {
   title: string;
   jobs: import("./api-client").JobListingDTO[];
   empty?: string;
+  hasMore?: boolean;
+  broadened?: boolean;
+  search?: import("./api-client").JobSearchParams & { country?: string; includeRemote?: boolean; experienceLevel?: "fresher" };
 }
 
 /** A one-tap question the assistant asked (code, number, choice, yes/no). */
@@ -221,6 +229,8 @@ export type ChatMessage =
 export interface Thread {
   id: string;
   title: string;
+  /** Whether the title is still generated automatically or was chosen by the user. */
+  titleSource?: "automatic" | "ai" | "manual";
   updatedAt: number;
   messages: ChatMessage[];
   /** Backend session ID associated with this thread */

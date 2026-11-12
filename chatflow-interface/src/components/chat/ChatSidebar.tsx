@@ -14,6 +14,8 @@ import {
   Trash2,
   X,
   Zap,
+  Pencil,
+  Check,
 } from "lucide-react";
 import type { Thread } from "@/lib/chat-types";
 
@@ -23,6 +25,7 @@ interface Props {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
   /** Desktop: expanded panel vs. icon rail. Mobile: drawer open vs. hidden. */
   isOpen?: boolean;
   onOpen: () => void;
@@ -61,6 +64,7 @@ export function ChatSidebar({
   onSelect,
   onNew,
   onDelete,
+  onRename,
   isOpen = true,
   onOpen,
   onClose,
@@ -85,6 +89,8 @@ export function ChatSidebar({
 }: Props) {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -320,6 +326,11 @@ export function ChatSidebar({
               <div className="px-3 pb-1.5 text-[12px] font-medium text-faint">{g.label}</div>
               {g.items.map((t) => {
                 const active = t.id === activeId;
+                const saveRename = () => {
+                  const title = renameValue.trim();
+                  if (title) onRename(t.id, title.slice(0, 72));
+                  setRenamingId(null);
+                };
                 return (
                   <div
                     key={t.id}
@@ -327,27 +338,64 @@ export function ChatSidebar({
                       active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60"
                     }`}
                   >
-                    <button
-                      onClick={() => {
-                        onSelect(t.id);
-                        afterPick();
-                      }}
-                      className={`min-w-0 flex-1 truncate px-3 py-2 text-left text-[14px] ${
-                        active ? "font-medium text-foreground" : "text-ink-2"
-                      }`}
-                    >
-                      {t.title || "New task"}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDelete(t.id);
-                      }}
-                      className="mr-1 rounded-lg p-1.5 text-faint opacity-100 transition hover:text-destructive md:opacity-0 md:group-hover:opacity-100"
-                      aria-label="Delete task"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {renamingId === t.id ? (
+                      <form
+                        className="flex min-w-0 flex-1 items-center gap-1 px-1 py-1"
+                        onSubmit={(e) => { e.preventDefault(); saveRename(); }}
+                      >
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          maxLength={72}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => e.key === "Escape" && setRenamingId(null)}
+                          aria-label="Chat title"
+                          className="min-w-0 flex-1 rounded-md border border-sidebar-border bg-background px-2 py-1 text-[13px] text-foreground outline-none focus:border-primary"
+                        />
+                        <button type="submit" className="rounded-md p-1.5 text-primary hover:bg-sidebar-accent" aria-label="Save title">
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
+                        <button type="button" onClick={() => setRenamingId(null)} className="rounded-md p-1.5 text-muted-foreground hover:bg-sidebar-accent" aria-label="Cancel rename">
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => {
+                            onSelect(t.id);
+                            afterPick();
+                          }}
+                          className={`min-w-0 flex-1 truncate px-3 py-2 text-left text-[14px] ${
+                            active ? "font-medium text-foreground" : "text-ink-2"
+                          }`}
+                        >
+                          {t.title || "New task"}
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRenamingId(t.id);
+                            setRenameValue(t.title || "");
+                          }}
+                          className="mr-0.5 rounded-lg p-1.5 text-faint opacity-100 transition hover:text-foreground md:opacity-0 md:group-hover:opacity-100"
+                          aria-label="Rename chat"
+                          title="Rename chat"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete(t.id);
+                          }}
+                          className="mr-1 rounded-lg p-1.5 text-faint opacity-100 transition hover:text-destructive md:opacity-0 md:group-hover:opacity-100"
+                          aria-label="Delete task"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 );
               })}

@@ -27,6 +27,7 @@ import {
   TeamPanel,
   TestProfilePanel,
 } from "@/components/admin/PlatformPanels";
+import { AnswerDefaultsPanel } from "@/components/admin/AnswerDefaultsPanel";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({
@@ -116,6 +117,8 @@ function AdminPage() {
         return <JobSourcesPanel key={refreshKey} />;
       case "inbox":
         return <InboxPanel key={refreshKey} />;
+      case "answers":
+        return <AnswerDefaultsPanel key={refreshKey} />;
       case "settings":
         return <SettingsPanel key={refreshKey} />;
       case "ai":

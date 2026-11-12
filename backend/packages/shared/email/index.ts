@@ -31,7 +31,7 @@ function getTransporter(): Transporter | null {
   return transporter;
 }
 
-export async function sendEmail(to: string, subject: string, text: string): Promise<void> {
+export async function sendEmail(to: string, subject: string, text: string, attachments?: { filename: string; path: string }[]): Promise<void> {
   const t = getTransporter();
   if (!t) {
     logger.warn('email:dev-fallback-console', { to, subject });
@@ -44,6 +44,7 @@ export async function sendEmail(to: string, subject: string, text: string): Prom
     to,
     subject,
     text,
+    ...(attachments?.length ? { attachments } : {}),
   });
 }
 

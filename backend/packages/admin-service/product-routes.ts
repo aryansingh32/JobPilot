@@ -21,6 +21,24 @@ const n = (v: unknown, d: number, max = 500) => Math.min(Math.max(parseInt(Strin
 export async function registerProductRoutes(app: FastifyInstance): Promise<void> {
   const pool = getPgPool();
 
+  // ── Funnel: where people stop between signing up and a confirmed application ──
+  app.get('/admin/funnel', { preHandler: adminAuth }, async (req) => {
+    const days = n((req.query as { days?: string }).days, 30, 365);
+    const { rows } = await pool.query(
+      `WITH cohort AS (SELECT id::text AS uid FROM users WHERE created_at > NOW() - ($1 || ' days')::interval)
+       SELECT
+         (SELECT COUNT(*) FROM cohort)::int AS signed_up,
+         (SELECT COUNT(*) FROM profiles p JOIN cohort c ON c.uid = p.user_id WHERE p.data #>> '{documents,resumeFileId}' IS NOT NULL)::int AS uploaded_resume,
+         (SELECT COUNT(*) FROM profiles p JOIN cohort c ON c.uid = p.user_id WHERE jsonb_array_length(COALESCE(p.data #> '{preferences,roles}', '[]'::jsonb)) > 0)::int AS chose_roles,
+         (SELECT COUNT(*) FROM profiles p JOIN cohort c ON c.uid = p.user_id WHERE p.onboarding_status = 'done')::int AS finished_onboarding,
+         (SELECT COUNT(*) FROM profiles p JOIN cohort c ON c.uid = p.user_id WHERE p.onboarding_status = 'skipped')::int AS skipped_onboarding,
+         (SELECT COUNT(DISTINCT a.user_id) FROM applications a JOIN cohort c ON c.uid = a.user_id WHERE a.source <> 'admin_test')::int AS started_application,
+         (SELECT COUNT(DISTINCT a.user_id) FROM applications a JOIN cohort c ON c.uid = a.user_id WHERE a.source <> 'admin_test' AND a.status IN ('submitted','completed'))::int AS first_confirmed`,
+      [String(days)],
+    );
+    return { days, ...rows[0] };
+  });
+
   // ── Applications ────────────────────────────────────────
   app.get('/admin/applications', { preHandler: adminAuth }, async (req) => {
     const q = req.query as { status?: string; userId?: string; q?: string; limit?: string; offset?: string };

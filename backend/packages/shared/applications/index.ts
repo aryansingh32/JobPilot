@@ -35,6 +35,28 @@ export const FILTERS: Record<string, ApplicationStatus[] | null> = {
   failed: ['failed', 'cancelled'],
 };
 
+/**
+ * What really happened to the form, in three honest states (not just done / failed):
+ *  confirmed   — the site said it received it
+ *  unconfirmed — it was (or may have been) sent but nothing confirmed it: check the inbox before applying again
+ *  not_sent    — it never went out
+ */
+export type SubmissionState = 'confirmed' | 'unconfirmed' | 'not_sent' | 'in_progress';
+export const UNCONFIRMED_ERROR = /never confirmed the application|site didn't confirm|may have gone through|stopped while submitting/i;
+/** The site itself refused the form — the one failure after the click that proves nothing was accepted. */
+const REJECTED_ERROR = /site rejected the form/i;
+export function submissionState(app: { status: string; error?: string | null; status_detail?: string | null; submit_attempted_at?: unknown }): SubmissionState {
+  // A test run that stopped before the click finishes "completed" but sent nothing.
+  if (app.status === 'completed' && /stopped before submit|test run/i.test(app.status_detail ?? '')) return 'not_sent';
+  if (app.status === 'submitted' || app.status === 'completed') return 'confirmed';
+  if (app.status === 'failed' && app.error && UNCONFIRMED_ERROR.test(app.error)) return 'unconfirmed';
+  // Evidence, not the absence of an exception: once the click was made, any other failure (browser died, timeout,
+  // lost worker) leaves the outcome unknown until someone checks.
+  if ((app.status === 'failed' || app.status === 'cancelled') && app.submit_attempted_at && !REJECTED_ERROR.test(app.error ?? '')) return 'unconfirmed';
+  if (app.status === 'failed' || app.status === 'cancelled') return 'not_sent';
+  return 'in_progress';
+}
+
 /** Marker the engine puts on an error when the posting itself is gone. */
 export const JOB_CLOSED = 'JOB_CLOSED:';
 
@@ -46,6 +68,9 @@ const FRIENDLY: [RegExp, string][] = [
   [/locator\.|waiting for (locator|selector|getBy)|Timeout \d+ms exceeded/i, "I couldn't operate one of the form's controls (it didn't respond in time). Nothing was sent — it's been logged so the form can be taught."],
   [/timed out/i, 'A step took too long. Nothing was sent — try again in a moment.'],
   [/Invalid Username\/Password/i, "The saved sign-in for this company's portal no longer works. Nothing was sent — reset the portal password in Settings and try again."],
+  // Lever shows this stock line (with a 100 MB limit) whenever its upload step fails, even for a one-page résumé; in practice
+  // the send was blocked by the site's bot check, so a smaller file is not the fix.
+  [/File exceeds the maximum upload size of 100\s*MB/i, "The site refused the send with a file-size message that isn't about your résumé (it's well under the limit) — its bot check most likely blocked it. Nothing was sent. Apply on the company's page yourself, then mark it as applied."],
   [/File exceeds the maximum upload size/i, 'The résumé is larger than this site accepts. Upload a smaller PDF (under 2 MB) in your profile and try again.'],
   [/Circuit breaker open/i, 'This site has been failing repeatedly, so I paused it to protect your account. It will be retried automatically shortly.'],
   [/DATADOME_BLOCK|captcha-delivery/i, 'This site shows a human check before its form that I can\'t pass. Open the page and apply yourself, then mark it as applied.'],
@@ -89,7 +114,7 @@ function notificationFor(
     case 'awaiting_review':
       return { kind: 'application.awaiting_review', title: 'Ready to submit — review it', body: label(app), data };
     case 'submitted':
-      return { kind: 'application.submitted', title: 'Application sent', body: label(app), data };
+      return { kind: 'application.submitted', title: 'Application sent', body: `${label(app)} — the site confirmed it. A PDF summary is in your email and in Applications.`, data };
     case 'failed':
       return { kind: 'application.failed', title: "Couldn't finish an application", body: `${label(app)}${app.error ? ` — ${app.error}` : ''}`, data };
     default:
@@ -107,6 +132,13 @@ async function afterStatusChange(
   if (status === 'failed' || status === 'cancelled') await creditsService.settle(row.id, 'refund').catch(() => {});
   const n = notificationFor(status, row);
   if (n) await notificationsService.notify(row.user_id, n);
+}
+
+/** Another live application for the same job already exists (the database refused the second one). */
+export class DuplicateApplicationError extends Error {
+  constructor() {
+    super('You already have an application for this job');
+  }
 }
 
 export const applicationsService = {
@@ -138,6 +170,7 @@ export const applicationsService = {
     execJobId?: string | null;
     sessionId?: string | null;
     source?: ApplicationSource;
+    campaignId?: string | null;
   }) {
     const pool = getPgPool();
     let jobId = input.jobId ?? null;
@@ -150,13 +183,32 @@ export const applicationsService = {
       jobId = rows[0]?.id ?? null;
       company = company ?? rows[0]?.name ?? null;
     }
-    const { rows } = await pool.query(
-      `INSERT INTO applications (user_id, job_id, exec_job_id, session_id, title, company, url, source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [input.userId, jobId, input.execJobId ?? null, input.sessionId ?? null, input.title.slice(0, 300), company, input.url ?? null, input.source ?? 'manual'],
-    );
+    let rows;
+    try {
+      ({ rows } = await pool.query(
+        `INSERT INTO applications (user_id, job_id, exec_job_id, session_id, title, company, url, source, campaign_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [input.userId, jobId, input.execJobId ?? null, input.sessionId ?? null, input.title.slice(0, 300), company, input.url ?? null, input.source ?? 'manual', input.campaignId ?? null],
+      ));
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505' && /uq_applications_live_job/.test(String((err as { constraint?: string }).constraint ?? (err as Error).message))) throw new DuplicateApplicationError();
+      throw err;
+    }
     await this.event(rows[0].id, 'queued');
     return rows[0];
+  },
+
+  /**
+   * Called right before the submit click is made. Persisted first, so whatever happens next (a crash, a lost
+   * worker, a timeout) the application is known to have been at the point of no return.
+   */
+  async markSubmitAttempt(execJobId: string, detail: { url: string }) {
+    const { rows } = await getPgPool().query(
+      `UPDATE applications SET submit_attempted_at = COALESCE(submit_attempted_at, NOW()), updated_at = NOW()
+        WHERE exec_job_id = $1 RETURNING id`,
+      [execJobId],
+    );
+    if (rows[0]) await this.event(rows[0].id, 'submit_attempt', { url: detail.url.split('?')[0].slice(0, 300) });
   },
 
   async event(applicationId: string, phase: string, detail: Record<string, unknown> = {}) {
@@ -199,6 +251,16 @@ export const applicationsService = {
     patch: { status: ApplicationStatus; detail?: string | null; reference?: string | null; error?: string | null },
   ) {
     if (patch.error) logger.warn('application:failed', { execJobId, rawError: String(patch.error).slice(0, 500) });
+    // Stopped by the user after the click: the page may already have accepted it.
+    if (patch.status === 'cancelled') {
+      const t = await getPgPool().query('SELECT 1 FROM applications WHERE exec_job_id = $1 AND submit_attempted_at IS NOT NULL', [execJobId]);
+      if (t.rows[0]) patch = { ...patch, detail: 'Cancelled while submitting — it may have gone through, check your inbox' };
+    }
+    // A failure after the click is not "nothing was sent": say so, whatever the engine's raw error was.
+    if (patch.status === 'failed' && patch.error && !UNCONFIRMED_ERROR.test(patch.error) && !REJECTED_ERROR.test(patch.error)) {
+      const t = await getPgPool().query('SELECT 1 FROM applications WHERE exec_job_id = $1 AND submit_attempted_at IS NOT NULL', [execJobId]);
+      if (t.rows[0]) patch = { ...patch, error: 'The run stopped while submitting. It may have gone through — check your inbox for a confirmation before trying again.' };
+    }
     const { rows } = await getPgPool().query(
       `WITH old AS (SELECT id, status FROM applications WHERE exec_job_id = $1 FOR UPDATE)
        UPDATE applications a SET
@@ -237,13 +299,13 @@ export const applicationsService = {
     const statuses = FILTERS[filter] ?? null;
     const { rows } = await getPgPool().query(
       `SELECT a.id, a.title, a.company, a.url, a.status, a.status_detail, a.reference, a.error, a.source, a.outcome,
-              a.job_id, a.exec_job_id, a.session_id, a.created_at, a.updated_at, a.finished_at
+              a.job_id, a.exec_job_id, a.session_id, a.created_at, a.updated_at, a.finished_at, a.submit_attempted_at
          FROM applications a
         WHERE a.user_id = $1 AND ($2::text[] IS NULL OR a.status = ANY($2))
         ORDER BY a.updated_at DESC LIMIT $3 OFFSET $4`,
       [userId, statuses, Math.min(limit, 200), offset],
     );
-    return rows;
+    return rows.map((r) => ({ ...r, submission: submissionState(r) }));
   },
 
   async counts(userId: string) {
@@ -272,7 +334,22 @@ export const applicationsService = {
     );
     // resume_state carries the run's internal plan — admins only.
     const { resume_state, ...app } = rows[0];
-    return { ...app, ...(userId === null ? { resume_state } : {}), events: events.rows };
+    // What the run cost in model calls, by purpose — admins only (users see credits, not our spend).
+    let usage: { calls: number; tokens: number; costUsd: number; byPurpose: Record<string, number> } | undefined;
+    if (userId === null && app.exec_job_id) {
+      const u = await pool.query(
+        `SELECT purpose, COUNT(*)::int AS calls, COALESCE(SUM(prompt_tokens + completion_tokens), 0)::int AS tokens, COALESCE(SUM(cost_usd), 0)::float AS cost
+           FROM llm_usage WHERE job_id = $1 GROUP BY purpose`,
+        [app.exec_job_id],
+      );
+      usage = {
+        calls: u.rows.reduce((n, r) => n + r.calls, 0),
+        tokens: u.rows.reduce((n, r) => n + r.tokens, 0),
+        costUsd: Math.round(u.rows.reduce((n, r) => n + r.cost, 0) * 1e6) / 1e6,
+        byPurpose: Object.fromEntries(u.rows.map((r) => [r.purpose, r.cost])),
+      };
+    }
+    return { ...app, submission: submissionState(app), ...(usage ? { usage } : {}), ...(userId === null ? { resume_state } : {}), events: events.rows };
   },
 
   async cancel(userId: string | null, id: string) {
@@ -289,7 +366,9 @@ export const applicationsService = {
       await redis.del(`captcha:pending:${app.exec_job_id}`).catch(() => {});
     }
     await getPgPool().query(
-      `UPDATE applications SET status = 'cancelled', status_detail = 'Cancelled — nothing was sent', parked_at = NULL,
+      `UPDATE applications SET status = 'cancelled',
+              status_detail = CASE WHEN submit_attempted_at IS NOT NULL THEN 'Cancelled while submitting — it may have gone through, check your inbox' ELSE 'Cancelled — nothing was sent' END,
+              parked_at = NULL,
               resume_state = NULL, updated_at = NOW(), finished_at = NOW() WHERE id = $1`,
       [id],
     );
@@ -360,7 +439,8 @@ export const applicationsService = {
       if (['active', 'waiting', 'delayed', 'prioritized', 'waiting-children'].includes(state)) continue;
       // Past the final check, the submit click may already have gone through.
       const reachedSubmit = await getPgPool().query(
-        `SELECT 1 FROM application_events WHERE application_id = $1 AND phase = 'verified' LIMIT 1`,
+        `SELECT 1 FROM applications WHERE id = $1 AND submit_attempted_at IS NOT NULL
+         UNION ALL SELECT 1 FROM application_events WHERE application_id = $1 AND phase = 'verified' LIMIT 1`,
         [r.id],
       );
       await this.updateByExecJob(r.exec_job_id, {

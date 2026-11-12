@@ -22,6 +22,24 @@ export function countryKey(c: string | null | undefined): string {
   return hit?.[0] ?? u;
 }
 
+const DEMONYM: Record<string, string[]> = {
+  IN: ['indian'], US: ['american', 'us citizen', 'usa'], GB: ['british', 'english', 'uk'], CA: ['canadian'], DE: ['german'],
+  SG: ['singaporean'], IE: ['irish'], NL: ['dutch'], FR: ['french'], AU: ['australian'], AE: ['emirati'], JP: ['japanese'],
+  ES: ['spanish'], PL: ['polish'], BR: ['brazilian'], MX: ['mexican'], PT: ['portuguese'], SE: ['swedish'], CH: ['swiss'],
+};
+
+/** Is this nationality ("Indian", "India", "IN") the job country's own? undefined when either is unknown. */
+export function isCitizenOf(nationality: string | null | undefined, country: string | null | undefined): boolean | undefined {
+  const nat = (nationality ?? '').trim().toLowerCase();
+  const here = countryKey(country);
+  if (!nat || !here) return undefined;
+  if (countryKey(nat) === here) return true;
+  if ((DEMONYM[here] ?? []).some((d) => nat === d || nat.includes(d))) return true;
+  // A known nationality of another country is a "no"; an unrecognised word is not evidence.
+  const other = Object.entries(DEMONYM).some(([code, ds]) => code !== here && ds.some((d) => nat === d));
+  return other || Object.keys(COUNTRY_NAME).some((c) => c !== here && countryKey(nat) === c) ? false : undefined;
+}
+
 export const countryLabel = (c: string) => COUNTRY_NAME[countryKey(c)] ?? c;
 
 export interface ProfileGap {

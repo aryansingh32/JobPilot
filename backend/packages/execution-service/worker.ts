@@ -9,6 +9,7 @@ import { workflowLoader } from '../shared/workflow-loader.js';
 import { newWorkerId, registerCommandHandlers, startHeartbeat } from '../shared/control-bus/index.js';
 import { recorderService, type RecordInput } from './recorder.js';
 import { applicationsService } from '../shared/applications/index.js';
+import { createLogger } from '../shared/logger/index.js';
 import { runResumeParse } from '../shared/profile/resume-parser.js';
 import { pollBoard } from '../shared/jobs/poller.js';
 import { runDiscovery } from '../shared/jobs/discovery.js';
@@ -49,6 +50,17 @@ const activeBrowsers = new Gauge({
   name: 'worker_active_browsers',
   help: 'Active browser contexts in pool',
 });
+const logger = createLogger('execution-worker');
+
+// BrowserPool contexts are keyed by sessionId and shared across jobs. Keep
+// jobs for one session exclusive across worker processes; otherwise one job's
+// cleanup can close the page another job is actively driving.
+const SESSION_LOCK_TTL_MS = 90_000;
+const SESSION_LOCK_REFRESH_MS = 20_000;
+const SESSION_LOCK_RELEASE_LUA = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+const SESSION_LOCK_REFRESH_LUA = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ─── Worker Handlers ─────────────────────────────────────────
 
@@ -283,12 +295,82 @@ const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
   const end = jobDuration.startTimer({ type: 'execute' });
   let warningTimer: NodeJS.Timeout | undefined;
   let killTimer: NodeJS.Timeout | undefined;
+  let sessionLockHeartbeat: NodeJS.Timeout | undefined;
+  let sessionLockKey: string | undefined;
+  let sessionLockToken: string | undefined;
+  let sessionLockAcquired = false;
 
   try {
+    const redis = await getRedisClient();
+    if (!job.payload.dryRun) {
+      sessionLockKey = `browser:session-lock:${job.payload.sessionId}`;
+      sessionLockToken = `${job.id}:${newWorkerId('execute')}`;
+      let waitingLogged = false;
+      while ((await redis.set(sessionLockKey, sessionLockToken, { NX: true, PX: SESSION_LOCK_TTL_MS })) !== 'OK') {
+        if (await redis.get(CacheKeys.jobCancel(job.id))) {
+          await applicationsService.updateByExecJob(job.id, {
+            status: 'cancelled',
+            detail: 'Cancelled while waiting for this browser session',
+          }).catch(() => {});
+          await updateRuntime(job, { status: 'failed', error: 'Cancelled while waiting for this browser session' }).catch(() => {});
+          jobCounter.inc({ type: 'execute', status: 'cancelled' });
+          return {
+            jobId: job.id,
+            success: false,
+            steps: [],
+            duration: 0,
+            screenshots: [],
+            sessionId: job.payload.sessionId,
+            error: 'Cancelled while waiting for this browser session',
+          };
+        }
+        if (!waitingLogged) {
+          logger.info('execute:waiting-for-session-browser', { jobId: job.id, sessionId: job.payload.sessionId });
+          waitingLogged = true;
+        }
+        await sleep(350);
+      }
+      sessionLockAcquired = true;
+      if (await redis.get(CacheKeys.jobCancel(job.id))) {
+        await applicationsService.updateByExecJob(job.id, {
+          status: 'cancelled',
+          detail: 'Cancelled while waiting for this browser session',
+        }).catch(() => {});
+        await updateRuntime(job, { status: 'failed', error: 'Cancelled while waiting for this browser session' }).catch(() => {});
+        jobCounter.inc({ type: 'execute', status: 'cancelled' });
+        return {
+          jobId: job.id,
+          success: false,
+          steps: [],
+          duration: 0,
+          screenshots: [],
+          sessionId: job.payload.sessionId,
+          error: 'Cancelled while waiting for this browser session',
+        };
+      }
+      let refreshing = false;
+      sessionLockHeartbeat = setInterval(() => {
+        if (refreshing || !sessionLockKey || !sessionLockToken) return;
+        refreshing = true;
+        void redis.eval(SESSION_LOCK_REFRESH_LUA, {
+          keys: [sessionLockKey],
+          arguments: [sessionLockToken, String(SESSION_LOCK_TTL_MS)],
+        }).then((result) => {
+          if (Number(result) !== 1) {
+            logger.error('execute:session-lock-lost', { jobId: job.id, sessionId: job.payload.sessionId });
+            return redis.setEx(`job-cancel:${job.id}`, 86400, '1').then(() => redis.publish(`job:cancel:${job.id}`, 'cancel'));
+          }
+        }).catch((err) => {
+          logger.warn('execute:session-lock-refresh-failed', { jobId: job.id, error: (err as Error).message });
+          return redis.setEx(CacheKeys.jobCancel(job.id), 86400, '1')
+            .then(() => redis.publish(`job:cancel:${job.id}`, 'cancel'))
+            .catch(() => {});
+        }).finally(() => { refreshing = false; });
+      }, SESSION_LOCK_REFRESH_MS);
+    }
+
     await updateRuntime(job, { status: 'running' });
     await applicationsService.updateByExecJob(job.id, { status: 'running', detail: 'Started' }).catch(() => {});
-
-    const redis = await getRedisClient();
 
     // 10-minute warning
     warningTimer = setTimeout(async () => {
@@ -405,9 +487,16 @@ const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
     if (killTimer) clearTimeout(killTimer);
     end();
     await releaseTaskLock(job).catch(() => {});
-    if (!job.payload.dryRun) {
+    if (sessionLockHeartbeat) clearInterval(sessionLockHeartbeat);
+    if (!job.payload.dryRun && sessionLockAcquired) {
       await getBrowserPool().releaseContextBySessionId(job.payload.sessionId, false).catch(() => {});
       activeBrowsers.set(getBrowserPool().getStats().activeContexts);
+    }
+    if (sessionLockAcquired && sessionLockKey && sessionLockToken) {
+      await getRedisClient().then((redis) => redis.eval(SESSION_LOCK_RELEASE_LUA, {
+        keys: [sessionLockKey!],
+        arguments: [sessionLockToken!],
+      })).catch((err) => logger.warn('execute:session-lock-release-failed', { jobId: job.id, error: (err as Error).message }));
     }
   }
   // A run that loses its worker must never be replayed (it may have already

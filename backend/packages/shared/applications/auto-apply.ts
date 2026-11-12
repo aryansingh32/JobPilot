@@ -8,6 +8,7 @@ import { notificationsService } from '../notifications/index.js';
 import { createLogger } from '../logger/index.js';
 import { ApplyError, startApplication } from './apply.js';
 import { LimitError } from './index.js';
+import { campaignsService, type Campaign } from './campaigns.js';
 
 // ============================================================
 // AUTO APPLY — applies to the user's best new matches on a schedule.
@@ -26,6 +27,8 @@ export interface AutoApplySettings {
   dailyCap: number;
   minScore: number;
   excludeCompanies: string[];
+  /** Send without a review when nothing was guessed; otherwise the application waits for the person. */
+  autoSubmit: boolean;
   lastRunAt: string | null;
 }
 
@@ -38,6 +41,8 @@ export interface AutoApplyPlan {
   capacity: { now: number; leftToday: number; freeSlots: number; affordable: number | null; dailyLimitLeft: number };
   candidates: { jobId: string; title: string; company: string; score: number; atsType: string }[];
   /** Matches the guard rules held back, so the screen can say why a good match isn't being applied to. */
+  /** The "apply to N" campaign this plan serves; it replaces the daily cap while it is active. */
+  campaign?: Campaign;
   guards?: { companyCooldown: number; repeatedFailures: number; unhealthySystem: string[] };
 }
 
@@ -46,6 +51,7 @@ const toSettings = (r: Record<string, unknown> | undefined): AutoApplySettings =
   dailyCap: (r?.daily_cap as number) ?? 10,
   minScore: (r?.min_score as number) ?? 75,
   excludeCompanies: (r?.exclude_companies as string[]) ?? [],
+  autoSubmit: (r?.auto_submit as boolean) ?? true,
   lastRunAt: r?.last_run_at ? new Date(r.last_run_at as string).toISOString() : null,
 });
 
@@ -119,11 +125,12 @@ export const autoApplyService = {
   },
 
   /** Validated update; the cap and score are clamped to the admin limits. */
-  async update(userId: string, patch: Partial<Pick<AutoApplySettings, 'enabled' | 'dailyCap' | 'minScore' | 'excludeCompanies'>>) {
+  async update(userId: string, patch: Partial<Pick<AutoApplySettings, 'enabled' | 'dailyCap' | 'minScore' | 'excludeCompanies' | 'autoSubmit'>>) {
     const [maxCap, floor] = await Promise.all([getNumber('autoapply.max_daily_cap'), getNumber('autoapply.min_score_floor')]);
     const cur = await this.get(userId);
     const next = {
       enabled: typeof patch.enabled === 'boolean' ? patch.enabled : cur.enabled,
+      autoSubmit: typeof patch.autoSubmit === 'boolean' ? patch.autoSubmit : cur.autoSubmit,
       dailyCap: Math.min(Math.max(Math.round(Number(patch.dailyCap ?? cur.dailyCap)) || 1, 1), maxCap),
       minScore: Math.min(Math.max(Math.round(Number(patch.minScore ?? cur.minScore)) || floor, floor), 100),
       excludeCompanies: Array.isArray(patch.excludeCompanies)
@@ -131,17 +138,20 @@ export const autoApplyService = {
         : cur.excludeCompanies,
     };
     await getPgPool().query(
-      `INSERT INTO auto_apply_settings (user_id, enabled, daily_cap, min_score, exclude_companies, updated_at)
-       VALUES ($1,$2,$3,$4,$5,NOW())
-       ON CONFLICT (user_id) DO UPDATE SET enabled = $2, daily_cap = $3, min_score = $4, exclude_companies = $5, updated_at = NOW()`,
-      [userId, next.enabled, next.dailyCap, next.minScore, next.excludeCompanies],
+      `INSERT INTO auto_apply_settings (user_id, enabled, daily_cap, min_score, exclude_companies, auto_submit, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,NOW())
+       ON CONFLICT (user_id) DO UPDATE SET enabled = $2, daily_cap = $3, min_score = $4, exclude_companies = $5, auto_submit = $6, updated_at = NOW()`,
+      [userId, next.enabled, next.dailyCap, next.minScore, next.excludeCompanies, next.autoSubmit],
     );
     return this.get(userId);
   },
 
   /** What a run would do right now — also the "could already be applying to N jobs" preview. */
   async plan(userId: string, settings?: AutoApplySettings): Promise<AutoApplyPlan> {
-    const s = settings ?? (await this.get(userId));
+    const base = settings ?? (await this.get(userId));
+    const campaign = await campaignsService.active(userId);
+    // A campaign has its own score floor and its own quota: the number still to fill, not a daily cap.
+    const s = campaign ? { ...base, minScore: campaign.minScore } : base;
     const pool = getPgPool();
     const blockers: string[] = [];
     const [profile, globalOn, maxConcurrent, dailyLimit, creditsOn, cost] = await Promise.all([
@@ -167,11 +177,11 @@ export const autoApplyService = {
          FROM applications WHERE user_id = $1`,
       [userId, OPEN],
     );
-    const leftToday = Math.max(0, s.dailyCap - rows[0].auto_today);
+    const leftToday = campaign ? campaign.remaining : Math.max(0, s.dailyCap - rows[0].auto_today);
     const freeSlots = Math.max(0, maxConcurrent - rows[0].running);
     const dailyLimitLeft = dailyLimit > 0 ? Math.max(0, dailyLimit - rows[0].all_today) : Number.POSITIVE_INFINITY;
     const affordable = creditsOn && cost > 0 ? Math.floor((await creditsService.balance(userId)) / cost) : null;
-    if (leftToday === 0) blockers.push(`Today's Auto Apply cap (${s.dailyCap}) is used up`);
+    if (leftToday === 0) blockers.push(campaign ? 'Every place in your campaign is taken by an application that is running or already sent' : `Today's Auto Apply cap (${s.dailyCap}) is used up`);
     if (affordable === 0) blockers.push('Out of credits');
     const now = Math.min(leftToday, freeSlots, dailyLimitLeft, affordable ?? Number.POSITIVE_INFINITY);
 
@@ -203,6 +213,7 @@ export const autoApplyService = {
     }
 
     return {
+      campaign: campaign ?? undefined,
       guards: held,
       blockers,
       capacity: { now: blockers.length ? 0 : now, leftToday, freeSlots, affordable, dailyLimitLeft: Number.isFinite(dailyLimitLeft) ? dailyLimitLeft : -1 },
@@ -226,6 +237,7 @@ export const autoApplyService = {
     let considered = 0;
     let note: string | null = null;
     let status: 'done' | 'skipped' | 'failed' = 'done';
+    let campaignEnd: string | null = null;
     try {
       const settings = await this.get(userId);
       const plan = await this.plan(userId, settings);
@@ -233,6 +245,11 @@ export const autoApplyService = {
       if (plan.blockers.length) {
         status = 'skipped';
         note = plan.blockers.join('; ');
+        // Only "no more matches" ends a campaign short; a cap, credits or setup gap is temporary.
+        if (plan.campaign && plan.blockers.length === 1) {
+          if (!plan.candidates.length && /^No new matches/.test(plan.blockers[0])) campaignEnd = plan.blockers[0];
+          else if (plan.campaign.remaining === 0) campaignEnd = `${plan.campaign.progress.unconfirmed} application(s) may have been sent but were never confirmed — check your email`;
+        }
       } else {
         const companiesThisRun = new Set<string>();
         for (const c of plan.candidates) {
@@ -241,7 +258,7 @@ export const autoApplyService = {
           const co = (c.company ?? '').toLowerCase();
           if (co && companiesThisRun.has(co)) continue;
           try {
-            const r = await startApplication(userId, { jobId: c.jobId, source: 'auto', requireDedicatedWorkflow: true });
+            const r = await startApplication(userId, { jobId: c.jobId, source: 'auto', requireDedicatedWorkflow: true, autoSubmit: settings.autoSubmit, campaignId: plan.campaign?.id });
             started.push(r.application.id);
             if (co) companiesThisRun.add(co);
           } catch (err) {
@@ -271,6 +288,7 @@ export const autoApplyService = {
          ON CONFLICT (user_id) DO UPDATE SET last_run_at = NOW()`,
         [userId],
       );
+      await campaignsService.settle(userId, campaignEnd).catch((err) => logger.error('auto-apply:campaign-settle-failed', err, { userId, runId }));
       await redis.del(lock).catch(() => {});
     }
     if (started.length) {
@@ -290,8 +308,10 @@ export const autoApplyService = {
     if (!(await getBool('autoapply.enabled'))) return 0;
     const [interval, batch] = await Promise.all([getNumber('autoapply.interval_minutes'), getNumber('autoapply.users_per_tick')]);
     const { rows } = await getPgPool().query(
-      `SELECT s.user_id FROM auto_apply_settings s JOIN users u ON u.id::text = s.user_id
-        WHERE s.enabled AND u.suspended_at IS NULL
+      `SELECT u.id::text AS user_id FROM users u
+         LEFT JOIN auto_apply_settings s ON s.user_id = u.id::text
+        WHERE u.suspended_at IS NULL
+          AND (s.enabled OR EXISTS (SELECT 1 FROM campaigns c WHERE c.user_id = u.id::text AND c.status = 'active'))
           AND (s.last_run_at IS NULL OR s.last_run_at < NOW() - ($1 || ' minutes')::interval)
         ORDER BY s.last_run_at NULLS FIRST LIMIT $2`,
       [String(interval), batch],

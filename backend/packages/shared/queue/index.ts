@@ -102,8 +102,15 @@ export async function acquireTaskLock(job: AnyJob): Promise<void> {
     if (state && ['active', 'waiting', 'delayed', 'prioritized', 'waiting-children'].includes(state)) {
       throw new DuplicateTaskError(holder);
     }
-    // Holder finished, vanished or died: the lock is stale, take it over.
-    await redis.del(key);
+    // Remove only the value we inspected. A plain DEL here can erase a lock
+    // acquired between GET and DEL by another producer.
+    const removed = await redis.eval(
+      "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+      1,
+      key,
+      holder,
+    );
+    if (Number(removed) === 0) continue;
   }
   throw new DuplicateTaskError((await redis.get(key)) ?? job.id);
 }
@@ -113,7 +120,12 @@ export async function releaseTaskLock(job: AnyJob): Promise<void> {
   const key = taskLockKey(job);
   if (!key) return;
   const redis = await getQueue('execute').client;
-  if ((await redis.get(key)) === job.id) await redis.del(key);
+  await redis.eval(
+    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+    1,
+    key,
+    job.id,
+  );
 }
 
 // ─── Enqueue Job ─────────────────────────────────────────────

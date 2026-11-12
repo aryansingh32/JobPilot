@@ -16,7 +16,10 @@ const job = (location: string, country: string | null, workplace: JobRow['workpl
 
 describe('scoreJob location', () => {
   it('treats the metro area as the chosen city', () => {
-    expect(scoreJob(profile, job('Menlo Park, CA', 'US', 'Hybrid'))).toMatchObject({ score: 100, eligible: true });
+    // Skill coverage is shrunk toward a prior, so a full match is just under 100.
+    const r = scoreJob(profile, job('Menlo Park, CA', 'US', 'Hybrid'));
+    expect(r.eligible).toBe(true);
+    expect(r.score).toBeGreaterThanOrEqual(90);
   });
   it('keeps another US city below local roles', () => {
     const r = scoreJob(profile, job('Seattle, WA', 'US', null));
@@ -24,7 +27,8 @@ describe('scoreJob location', () => {
     expect(r.reasons).toContain('Another city — may need to relocate');
   });
   it('penalises a workplace the user did not pick', () => {
-    expect(scoreJob(profile, job('San Francisco, CA', 'US', 'On-site')).score).toBe(90);
+    const hybrid = scoreJob(profile, job('Menlo Park, CA', 'US', 'Hybrid')).score;
+    expect(scoreJob(profile, job('San Francisco, CA', 'US', 'On-site')).score).toBe(hybrid - 10);
   });
   it('hides remote roles tied to a country the user cannot work in', () => {
     expect(scoreJob(profile, job('Remote - Canada', 'CA', 'Remote')).eligible).toBe(false);

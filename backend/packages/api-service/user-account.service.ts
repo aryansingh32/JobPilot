@@ -66,12 +66,21 @@ export const userAccountService = {
       if (byEmail.rows[0]) return byEmail.rows[0];
     }
 
-    const { rows } = await pool.query(
-      `INSERT INTO users (google_id, email, email_verified, display_name, last_login_at)
-       VALUES ($1, $2, $3, $4, NOW()) RETURNING ${SELECT}`,
-      [input.googleId, email, input.emailVerified, displayName]
-    );
-    return rows[0];
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO users (google_id, email, email_verified, display_name, last_login_at)
+         VALUES ($1, $2, $3, $4, NOW()) RETURNING ${SELECT}`,
+        [input.googleId, email, input.emailVerified, displayName]
+      );
+      return rows[0];
+    } catch (err) {
+      if ((err as { code?: string }).code !== '23505') throw err;
+      // Two sign-ins at once: the other one created the row first, so this is the same person.
+      const again = await pool.query(`SELECT ${SELECT} FROM users WHERE google_id = $1`, [input.googleId]);
+      if (again.rows[0]) return again.rows[0];
+      // The address belongs to an account Google can't vouch for (different Google identity, or unverified).
+      throw Object.assign(new Error('An account with this email already exists. Sign in the way you used before.'), { statusCode: 409 });
+    }
   },
 
   async upsertEmailUser(email: string): Promise<UserAccount> {

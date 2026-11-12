@@ -62,6 +62,27 @@ export function useAutoApplyRuns(enabled = true) {
   });
 }
 
+export function useCampaign(enabled = true) {
+  return useQuery({
+    queryKey: ["auto-apply", "campaign"] as const,
+    queryFn: jp.campaign,
+    enabled,
+    refetchInterval: 20_000,
+  });
+}
+
+export function useCampaignActions() {
+  const qc = useQueryClient();
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ["auto-apply"] });
+    void qc.invalidateQueries({ queryKey: ["applications"] });
+  };
+  return {
+    start: useMutation({ mutationFn: (v: { target: number; minScore?: number }) => jp.startCampaign(v.target, v.minScore), onSuccess: refresh }),
+    stop: useMutation({ mutationFn: (id: string) => jp.stopCampaign(id), onSuccess: refresh }),
+  };
+}
+
 /** Save settings / run now; refreshes everything Auto Apply touches. */
 export function useAutoApplyActions() {
   const qc = useQueryClient();
@@ -164,7 +185,14 @@ export function useApplicationActions() {
     respond: useMutation({
       mutationFn: ({ id, value }: { id: string; value: string }) =>
         jp.respondToApplication(id, value),
-      onSuccess: refresh,
+      onSuccess: (_result, variables) => {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("application-answer-resolved", {
+            detail: { applicationId: variables.id, value: variables.value, source: "application" },
+          }));
+        }
+        refresh();
+      },
     }),
   };
 }

@@ -12,6 +12,11 @@ export interface IslandEvent {
   action?: { label: string; view?: IslandTarget; appId?: string };
   /** ms on screen; default 6000. */
   ttl?: number;
+  /** Events of one group arriving close together merge into one ("3 applications sent"). */
+  group?: "sent";
+  /** How many the merged event stands for, and what to name them. */
+  count?: number;
+  names?: string[];
 }
 
 export const ISLAND_EVENT = "island:show";

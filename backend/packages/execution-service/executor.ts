@@ -1,3 +1,7 @@
+import { loadAnswerDefaults } from '../shared/answers/defaults.js';
+import { saveSubmissionSummary } from './submission-summary.js';
+import { canAutoSubmit } from '../shared/applications/review-policy.js';
+import { receiptDir, receiptPath } from '../shared/applications/receipts.js';
 import type { Page, Locator } from 'playwright';
 import { copyFile, mkdir, readFile } from 'fs/promises';
 import { join } from 'path';
@@ -19,6 +23,10 @@ import { createLogger } from '../shared/logger/index.js';
 import { cryptoService } from './crypto-service.js';
 import { beginChallenge, attemptAutomatedResolution, finalizeResolution } from './captcha/orchestrator.js';
 import { profileService, answerMemory, type ProfileData } from '../shared/profile/index.js';
+import { formSchemas } from '../shared/applications/form-schema.js';
+import { workdayPass } from './workday.js';
+import { pickResumeVariant } from '../shared/profile/resume-variant.js';
+import { scamReason, suspiciousOrigin } from '../shared/security/page-safety.js';
 import { portalPassword } from '../shared/profile/portal-password.js';
 import { applicationsService, JOB_CLOSED } from '../shared/applications/index.js';
 import { applicationEmail } from '../shared/inbox/index.js';
@@ -28,10 +36,10 @@ import { aiAnswers } from './ai-answers.js';
 import { govRuleFor, imageRule, identityFieldKind, IDENTITY_GO, IDENTITY_SEND, isIdentityGate, isLoginIdField, isOtpField, isSecretField } from './gov-forms.js';
 import { fitImage, nearbyText, pressOtpButton } from './gov-runtime.js';
 import { parkApplication, continueParked, type ParkState } from '../shared/applications/apply.js';
-import { getNumber } from '../shared/config/settings.js';
+import { getBool, getNumber } from '../shared/config/settings.js';
 import { randomBytes } from 'crypto';
 import {
-  buildAnswerBook, captchaImageFor, fillField, pickOption, untickedCheckbox, visibleClickChallenge, planAnswers, readComboOptions, readFormErrors, realOptions, ruleFor, scanForm,
+  buildAnswerBook, captchaImageFor, fillField, formSurface, invalidFieldIdx, verifyFilled, pickOption, untickedCheckbox, visibleClickChallenge, planAnswers, sourceOption, readComboOptions, readFormErrors, unsetRequiredLabels, realOptions, ruleFor, scanForm,
   type FieldAnswer, type FormField,
   pageDiagnostic,
 } from './form-filler.js';
@@ -61,6 +69,7 @@ class JobParkedError extends Error {
 interface ParkSpec {
   kind: ParkState['kind'];
   question?: string;
+  sensitive?: boolean;
   questions?: ParkState['questions'];
   reviewFields?: ParkState['reviewFields'];
 }
@@ -834,7 +843,15 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
             }).catch(() => {});
             await cleanup().catch(() => {});
             reject(new JobParkedError(
-              { kind: park.kind, stepId: step.id, pending: { type: pendingType, ...pendingPayload }, question: park.question, questions: park.questions, reviewFields: park.reviewFields },
+              {
+                kind: park.kind,
+                stepId: step.id,
+                pending: { type: pendingType, ...pendingPayload },
+                question: park.question,
+                sensitive: park.sensitive,
+                questions: park.questions,
+                reviewFields: park.reviewFields,
+              },
               () => lateAnswer,
             ));
             return;
@@ -1371,9 +1388,14 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
     if (!fields.length) {
       // A bot-wall (DataDome etc.) in front of the form is a person's job, not a missing form.
       if (ctx.page.frames().some((f) => /captcha-delivery\.com|datadome/i.test(f.url()))) throw new Error('DATADOME_BLOCK: a human check stands in front of the form');
+      // The same wall shown as a plain page (SmartRecruiters: "Access is temporarily restricted").
+      const wall = await ctx.page.evaluate(() => (document.body?.innerText ?? '').slice(0, 1500)).catch(() => '');
+      if (/access is temporarily restricted|unusual activity from your (device|network)|verify (that )?you are (a )?human|automated \(bot\) activity/i.test(wall)) throw new Error('DATADOME_BLOCK: the site is blocking automated visits from this network');
       throw new Error('No application form found on this page');
     }
+    await assertSafePage(ctx);
     await stage(ctx, 'parse', { fields: fields.length, required: fields.filter((f) => f.required).length, url: ctx.page.url() });
+    await recordSchema(ctx, fields, 1, true);
     if (!ctx.jobContext?.title || ctx.jobContext.title === 'Job application') {
       await applicationsService.nameFromPage(ctx.jobId, await ctx.page.title().catch(() => '')).catch(() => {});
     }
@@ -1385,7 +1407,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
     await stage(ctx, 'answers', {
       filled: filled.length,
       missing: stillMissing.map((f) => f.label),
-      answers: filled.map((a) => ({ label: a.field.label || a.field.name, source: a.source, required: a.field.required, kind: a.field.type })),
+      answers: filled.map((a) => ({ label: a.field.label || a.field.name, source: a.source, required: a.field.required, kind: a.field.type, ...(a.note ? { note: a.note } : {}) })),
     });
     ctx.extractedData.fieldsFilled = filled.length;
     if (stillMissing.length) ctx.extractedData.fieldsMissing = stillMissing.map((f) => f.label).join('; ');
@@ -1479,6 +1501,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
     // The password the user chose for portals (Settings): new accounts use it, so they can always sign in by hand too.
     const userPortalPassword = await portalPassword.get(ctx.userId).catch(() => null);
     let triedPortal = false;
+    let triedReset = false;
     if (!password) {
       password = userPortalPassword ?? generatePassword();
       // Saved before the site sees it: a run that dies after creating the account can still sign in.
@@ -1590,6 +1613,20 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
         triedCreate = true;
         continue;
       }
+      // An account exists under a password we don't have: reset it through the site's own email before asking the person.
+      if (mode === 'signin' && !triedReset && /password|credentials|incorrect|invalid|wrong/i.test(problem)) {
+        triedReset = true;
+        const fresh: string = userPortalPassword ?? generatePassword();
+        if (await resetForgottenPassword(ctx, email, fresh).catch(() => false)) {
+          password = fresh;
+          await writeSecret(ctx, keyName, password);
+          if (userPortalPassword) await writeSecret(ctx, `${keyName}:user`, '1');
+          await stage(ctx, 'account', { site: host, action: 'password reset by email' });
+          await ctx.page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+          continue;
+        }
+        await ctx.page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+      }
       if (mode === 'signin' && /password|credentials|incorrect|invalid|wrong/i.test(problem)) {
         // Asked masked and stored encrypted — never remembered as a form answer, never parked.
         password = await askUser(ctx, `${step.id}_password_${attempt}`, 'credentialFill',
@@ -1662,14 +1699,14 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
         if (await shown(sel.code)) state = 'code';
         else if (await onForm()) state = 'form';
         else if ((await shown(sel.phone)) && !(await onSignIn())) state = 'phone';
-        else if ((await readFormErrors(ctx.page).catch(() => [] as string[])).length) state = 'error';
+        else if ((await readFormErrors(ctx.page).catch(() => [] as string[])).filter(realError).length) state = 'error';
       }
       if (state === 'form') {
         await stage(ctx, 'account', { site: host, action: 'signed in', via: 'email code' });
         return;
       }
       if (state === 'error') {
-        const errors = await readFormErrors(ctx.page).catch(() => [] as string[]);
+        const errors = (await readFormErrors(ctx.page).catch(() => [] as string[])).filter(realError);
         if (attempt < 2 && errors.some((e) => /agree|terms|consent/i.test(e)) && (await onSignIn())) {
           await tickBox(ctx.page, sel.terms);
           await clickThrough(ctx.page.locator(sel.next).first());
@@ -1735,6 +1772,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
     };
 
     const finalRe = step.metadata?.finalPattern ? new RegExp(String(step.metadata.finalPattern), 'i') : /submit/i;
+    await assertSafePage(ctx);
     for (let i = 0; i < maxPages; i++) {
       // Each page renders client-side: wait for its Next button.
       await ctx.page.locator(nextSel).first().waitFor({ state: 'visible', timeout: 30_000 });
@@ -1769,9 +1807,18 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
         }
         ctx.form = { fields: allFields, answers, missing, pages };
         await stage(ctx, 'parse', { pages: pages.length, fields: allFields.length, required: allFields.filter((f) => f.required).length, url: ctx.page.url() });
+        await recordSchema(ctx, allFields, pages.length, true);
         return;
       }
       const title = await pageTitle();
+      // Workday: fix résumé-parsed history panels, sign today's date, fill searchable prompts before the generic scan.
+      if (ctx.profile) {
+        const wd = await workdayPass(ctx.page, ctx.profile, {
+          wanted: (label) => (/hear about/i.test(label) ? 'Job Board' : null),
+          pick: pickOption,
+        }).catch(() => null);
+        if (wd && (wd.filled || wd.removed || wd.dates || wd.prompts)) await stage(ctx, 'workday', { page: title, ...wd });
+      }
       // Client-rendered pages show Next before their fields: give them a few seconds to appear.
       let fields = await scanForm(ctx.page, step.target?.value).catch(() => [] as FormField[]);
       for (let w = 0; w < 6 && !fields.length; w++) {
@@ -1869,9 +1916,34 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
 
   reviewForm: async (step, ctx) => {
     await loadProfile(ctx);
-    if (ctx.profile?.settings?.reviewBeforeSubmit === false && !ctx.stopBeforeSubmit) return;
     const form = ctx.form;
+    // Every application is sent without asking. A person's saved "review first" is only honoured when an admin turns on
+    // apply.respect_review_setting (most were never a choice: it was the onboarding default).
+    const wantsReview = ctx.profile?.settings?.reviewBeforeSubmit === true && (await getBool('apply.respect_review_setting'));
+    if (!form && !ctx.stopBeforeSubmit && !wantsReview) return;
     if (!form) throw new Error('reviewForm needs autofillForm first');
+    // AI-authored content is never user-approved. The admin setting may add
+    // stricter holds, but must not weaken this invariant.
+    let heldBecause: string | undefined;
+    if (!ctx.stopBeforeSubmit && (!wantsReview || ctx.jobContext?.autoSubmit === '1')) {
+      // Always evaluate the complete answer set. Filtering AI answers here
+      // would make an AI-authored answer disappear from the approval check.
+      const verdict = canAutoSubmit(form.answers, form.missing);
+      if (verdict.ok) {
+        const sources: Record<string, number> = {};
+        for (const a of form.answers) sources[a.source] = (sources[a.source] ?? 0) + 1;
+        await stage(ctx, 'approved', { via: 'auto-submit', answers: form.answers.length, sources });
+        return;
+      }
+      heldBecause = verdict.reason;
+      // Auto Apply with auto-submit on is unattended: nobody is there to review, so the job ends here, saying which
+      // questions to answer once (in the profile notes) rather than waiting on a person who never asked to be involved.
+      if (ctx.jobContext?.autoSubmit === '1') {
+        const labels = form.missing.map((f) => f.label || f.name).filter(Boolean).slice(0, 8);
+        await stage(ctx, 'skipped', { reason: verdict.reason, questions: labels });
+        throw new Error(`Skipped, nothing was sent: ${verdict.reason}${labels.length ? ` (${labels.join('; ')})` : ''}. Answer these once in your profile notes and Auto Apply will use them next time.`);
+      }
+    }
     const kindOf = (f: FormField) =>
       f.type === 'file' ? 'file' : f.tag === 'textarea' ? 'textarea' : f.tag === 'select' || f.type === 'radio' || f.type === 'checkbox' ? 'select'
         : f.type === 'email' ? 'email' : f.type === 'tel' ? 'phone' : f.type === 'number' ? 'number' : 'text';
@@ -1891,6 +1963,22 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
       required: a.field.required,
       options: realOptions(a.field.options).length ? realOptions(a.field.options).map((o) => ({ label: o, value: o })) : undefined,
     }));
+    // Required pickers that look filled but never registered a choice: pick them again, report what is still empty.
+    if (!wizard) {
+      const clean = (t: string) => t.replace(/\*/g, '').replace(/\s+/g, ' ').trim();
+      let unsetNow = await unsetRequiredLabels(ctx.page);
+      const refillErrors: string[] = [];
+      for (const label of unsetNow) {
+        const a = form.answers.find((x) => clean(x.field.label) === label);
+        if (!a) refillErrors.push(`${label}: no answer planned`);
+        else if (a.field.type !== 'file') await fillField(ctx.page, a).catch((e) => refillErrors.push(`${label}: ${String(e?.message ?? e).slice(0, 120)}`));
+      }
+      if (unsetNow.length) unsetNow = await unsetRequiredLabels(ctx.page);
+      if (unsetNow.length) {
+        logger.warn('review:unset-required', { jobId: ctx.jobId, labels: unsetNow });
+        await stage(ctx, 'diagnostic', { why: 'required fields still empty before review', labels: unsetNow, refillErrors });
+      }
+    }
     const reviewId = `${step.id}_review`;
     // Continuation of a parked review: the user already approved these exact
     // answers. Only a form that grew new answers since then is shown again.
@@ -1908,7 +1996,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
       expectedInput: 'review' as any,
       timeout: step.timeout && step.timeout > 60_000 ? step.timeout : 24 * 60 * 60_000,
       description: 'Review before submitting',
-      contextMessage: `Ready to submit — check ${fields.length} answers`,
+      contextMessage: heldBecause ? `Held for your review — ${heldBecause}` : `Ready to submit — check ${fields.length} answers`,
       metadata: {
         skipChallengeDetection: true,
         pauseData: {
@@ -1952,7 +2040,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
       }
       await fillField(ctx.page, { field: a.field, value });
       a.value = value;
-      if (a.source !== 'profile') await answerMemory.remember(ctx.userId, a.field.label, value).catch(() => {});
+      if (a.source !== 'profile') await answerMemory.remember(ctx.userId, a.field.label, value, 'user', { country: ctx.jobContext?.country }).catch(() => {});
     }
   },
 
@@ -1977,7 +2065,18 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
         }
       }
       if (fixed) logger.warn('submit:drift-corrected', { jobId: ctx.jobId, fixed });
-      await stage(ctx, 'verified', { answers: ctx.form.answers.length, corrected: fixed, ...(fixed ? { fields: fixedLabels } : {}) });
+      // Required pickers that look filled but never registered a choice: pick them again, then report what is still empty.
+      let unset = await unsetRequiredLabels(ctx.page);
+      for (const label of unset) {
+        const a = ctx.form.answers.find((x) => x.field.label.replace(/\*/g, '').replace(/\s+/g, ' ').trim() === label);
+        if (a && a.field.type !== 'file') await fillField(ctx.page, a).catch((e) => logger.warn('submit:refill-failed', { jobId: ctx.jobId, label, error: String(e?.message ?? e).slice(0, 160) }));
+      }
+      if (unset.length) unset = await unsetRequiredLabels(ctx.page);
+      if (unset.length) logger.warn('submit:unset-required', { jobId: ctx.jobId, labels: unset });
+      // Where the answers came from: the share written without a model is a product metric (and a trust one).
+      const sources: Record<string, number> = {};
+      for (const a of ctx.form.answers) sources[a.source] = (sources[a.source] ?? 0) + 1;
+      await stage(ctx, 'verified', { answers: ctx.form.answers.length, sources, corrected: fixed, ...(unset.length ? { unset } : {}), ...(fixed ? { fields: fixedLabels } : {}) });
     }
     if (ctx.stopBeforeSubmit) {
       await stage(ctx, 'submit_skipped', { reason: 'test run' });
@@ -2001,10 +2100,10 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
       if (explicit) return explicit;
       const tiers = [
         // Lever: the visible button is type=button; the type=submit one is hCaptcha's hidden trigger.
-        ctx.page.locator('#btn-submit, [data-qa="btn-submit"], button.template-btn-submit'),
-        ctx.page.locator('button[type="submit"]:visible, input[type="submit"]:visible'),
-        ctx.page.locator('button, [role="button"]').filter({ hasText: /submit|send application|finish|complete application/i }),
-        ctx.page.locator('button, [role="button"]').filter({ hasText: /apply/i }),
+        formSurface(ctx.page).locator('#btn-submit, [data-qa="btn-submit"], button.template-btn-submit'),
+        formSurface(ctx.page).locator('button[type="submit"]:visible, input[type="submit"]:visible'),
+        formSurface(ctx.page).locator('button, [role="button"]').filter({ hasText: /submit|send application|finish|complete application/i }),
+        formSurface(ctx.page).locator('button, [role="button"]').filter({ hasText: /apply/i }),
       ];
       for (const tier of tiers) if (await tier.count().catch(() => 0)) return tier.last();
       return tiers[0];
@@ -2017,6 +2116,16 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
     };
     ctx.page.on('response', onResponse);
     let clickedAt = Date.now();
+    // Point of no return: written down first, so a crash from here on is "may have been sent", never "not sent".
+    try {
+      await applicationsService.markSubmitAttempt(ctx.jobId, { url: ctx.page.url() });
+    } catch (err) {
+      throw new Error(`Could not record the submission, so nothing was sent — try again. (${(err as Error).message.slice(0, 80)})`);
+    }
+    // Text that was already on the page before the click ("Thank you for your interest…") is not a confirmation.
+    const textOfPage = async () => (await ctx.page.evaluate(() => document.body?.innerText ?? '').catch(() => ''))
+      + '\n' + (formSurface(ctx.page) === ctx.page ? '' : await formSurface(ctx.page).evaluate(() => document.body?.innerText ?? '').catch(() => ''));
+    const textBefore = await textOfPage();
     await clickThrough(await submitButton());
     await ctx.page.waitForLoadState('domcontentloaded').catch(() => {});
     let securityCodes = 0;
@@ -2026,6 +2135,7 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
     const submitWindow = step.timeout && step.timeout > 10_000 ? step.timeout : 30_000;
     let deadline = Date.now() + submitWindow;
     let captchaRetries = 0;
+    let repairs = 0;
     while (Date.now() < deadline) {
       // Invisible reCAPTCHA may open a picture challenge after the click.
       const challenge = await visibleClickChallenge(ctx.page);
@@ -2044,14 +2154,30 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
         await ctx.page.waitForTimeout(1500);
         continue;
       }
-      const text = await ctx.page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
+      // The confirmation shows in the form's frame or the page around it.
+      const text = await textOfPage();
       const match = text.match(confirm);
-      if (match) {
+      // This site's own "received" signal, taught by a recording: its confirmation page path or headline, only once the page moved on.
+      const taught = step.metadata?.confirmation as { urlPath?: string; text?: string } | undefined;
+      if (taught && !match) {
+        const pathNow = (() => { try { return new URL(ctx.page.url()).pathname; } catch { return ''; } })();
+        const urlHit = !!taught.urlPath && pathNow === taught.urlPath && ctx.page.url() !== startUrl;
+        const textHit = !!taught.text && text.toLowerCase().includes(taught.text.toLowerCase()) && !textBefore.toLowerCase().includes(taught.text.toLowerCase());
+        if (urlHit || textHit) {
+          ctx.extractedData.confirmation = taught.text ?? 'Reached the confirmation page';
+          await stage(ctx, 'submitted', { confirmation: ctx.extractedData.confirmation, reference: null, receipt: await saveReceipt(ctx), taught: true });
+          await summarise(ctx);
+          return;
+        }
+      }
+      // A match that was already there before the click only counts once the page has moved on.
+      if (match && (!confirm.test(textBefore) || ctx.page.url() !== startUrl || !/<form/i.test(await ctx.page.content().catch(() => '<form')))) {
         ctx.extractedData.confirmation = match[0];
         // A reference has a digit — "Application Submitted" is not one.
         const ref = text.match(/\b(?:reference|application|confirmation)\s*(?:id|no\.?|number|#)?\s*[:#]?\s*((?=[A-Z0-9-]*\d)[A-Z0-9-]{5,})\b/i);
         if (ref) ctx.extractedData.reference = ref[1];
-        await stage(ctx, 'submitted', { confirmation: match[0], reference: ref?.[1] ?? null });
+        await stage(ctx, 'submitted', { confirmation: match[0], reference: ref?.[1] ?? null, receipt: await saveReceipt(ctx) });
+        await summarise(ctx);
         return;
       }
       const errors = await readFormErrors(ctx.page).catch(() => []);
@@ -2070,28 +2196,38 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
         continue;
       }
       if (errors.length && onForm) {
+        // Fix what the site flagged (re-resolve → memory → notes → ask once) and send again, before giving up.
+        if (repairs < 2 && (await askAboutRejectedPage(step, ctx, `${step.id}_fix${repairs}`).catch(() => 0)) > 0) {
+          repairs++;
+          deadline = Date.now() + submitWindow;
+          await stage(ctx, 'repair', { pass: repairs, errors: errors.slice(0, 3) });
+          await clickThrough(await submitButton());
+          await ctx.page.waitForTimeout(1500);
+          continue;
+        }
         throw new Error(`The site rejected the form: ${errors.slice(0, 3).join('; ')}`);
       }
       await ctx.page.waitForTimeout(1000);
     }
     const formGone = !(await scanForm(ctx.page).catch(() => [] as FormField[])).some((f) => f.type !== 'file');
-    if (ctx.page.url() !== startUrl && formGone) {
+    // Leaving the form is only evidence when it lands somewhere that looks like a confirmation — not a login or error page.
+    if (ctx.page.url() !== startUrl && formGone && /thank|confirm|success|submitted|complete|received|applied|done|acknowledg/i.test(new URL(ctx.page.url()).pathname + new URL(ctx.page.url()).search)) {
       ctx.extractedData.confirmation = 'Moved past the form';
-      await stage(ctx, 'submitted', { confirmation: 'Moved past the form', reference: null });
+      await stage(ctx, 'submitted', { confirmation: 'Moved past the form', reference: null, receipt: await saveReceipt(ctx) });
+      await summarise(ctx);
       return;
     }
     // Say what the page showed, so "never confirmed" can be told apart from a missed code step or a block.
     const shown = await ctx.page.evaluate(() => (document.body?.innerText ?? '').replace(/\s+/g, ' ').slice(0, 700)).catch(() => '');
     ctx.page.off('response', onResponse);
     const alerts = await ctx.page.evaluate(() => Array.from(document.querySelectorAll('[role="alert"], [class*="error" i], [class*="invalid" i], .recaptcha-error')).map((e) => (e as HTMLElement).innerText?.replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 6)).catch(() => []);
-    const shotDir = join(process.cwd(), '..', '.dev-data', 'diagnostics');
-    await mkdir(shotDir, { recursive: true }).catch(() => {});
-    const shotPath = join(shotDir, `${ctx.jobId}.png`);
-    await ctx.page.screenshot({ path: shotPath, fullPage: true }).catch(() => {});
+    await mkdir(receiptDir('diagnostics'), { recursive: true, mode: 0o700 }).catch(() => {});
+    const shotPath = receiptPath(ctx.jobId, 'diagnostics') ?? '';
+    if (shotPath) await ctx.page.screenshot({ path: shotPath, fullPage: true }).catch(() => {});
     await stage(ctx, 'diagnostic', { why: 'submit not confirmed', url: ctx.page.url(), posts: posts.slice(-8), alerts, screenshot: shotPath, securityBoxes: await ctx.page.locator('input[id^="security-input"]').count().catch(() => -1), shown: shown.slice(0, 200) });
     // Visible validation messages mean the form was refused, not "sent but unconfirmed".
     const refusals = [...new Set((alerts as string[]).filter((m) => m.length < 160 && /required|must|invalid|please|select|enter|choose|error/i.test(m)))];
-    if (refusals.length && !posts.some((x) => /^2\d\d /.test(x))) throw new Error(`The site rejected the form: ${refusals.slice(0, 3).join('; ')}`);
+    if (refusals.length && !posts.some((x) => /^2\d\d /.test(x) && !/amazonaws\.com|blob\.core\.windows|storage\.googleapis|\/upload/i.test(x))) throw new Error(`The site rejected the form: ${refusals.slice(0, 3).join('; ')}`);
     throw new Error('Submitted, but the site never confirmed the application');
   },
 };
@@ -2188,6 +2324,9 @@ async function acceptSignupTerms(ctx: ExecutionContext, termsSel: string, accept
 }
 
 /** Tick a consent box that may be a real checkbox, a role="checkbox" widget, or a clickable label. */
+/** Sites show success banners in the same alert regions as errors ("You're all set!"): those are not refusals. */
+const realError = (m: string) => !/you.?re all set|success|thank you|verified|welcome|code (was )?sent|check your (e-?mail|inbox)/i.test(m);
+
 async function tickBox(page: Page, containerSel: string): Promise<void> {
   // The first attempt may fail on a hidden/overlaid box; the visible-text fallbacks below take over.
   await tickBoxOnce(page, containerSel).catch(() => {});
@@ -2216,7 +2355,16 @@ async function tickBoxOnce(page: Page, containerSel: string): Promise<void> {
   if (!(await box.count())) return;
   const input = box.locator('input[type="checkbox"]').first();
   if (await input.count()) {
-    if (!(await input.isChecked().catch(() => true))) await input.check({ force: true, timeout: 5_000 }).catch(() => box.click({ timeout: 5_000, force: true }));
+    if (!(await input.isChecked().catch(() => true))) {
+      // A visually hidden input (Oracle JET) only registers a real interaction: a forced check flips the DOM
+      // but the site's own model never hears it. The keyboard, then the label's edge (not its link text), do.
+      if (!(await input.isVisible().catch(() => false))) {
+        await input.focus({ timeout: 3_000 }).catch(() => {});
+        await page.keyboard.press('Space').catch(() => {});
+        if (!(await input.isChecked().catch(() => true))) await box.click({ position: { x: 6, y: 10 }, timeout: 4_000 }).catch(() => {});
+      }
+      if (!(await input.isChecked().catch(() => true))) await input.check({ force: true, timeout: 5_000 }).catch(() => box.click({ timeout: 5_000, force: true }));
+    }
     return;
   }
   const widget = box.locator('[role="checkbox"]').first();
@@ -2363,26 +2511,69 @@ const baseDomain = (host: string) => host.split('.').slice(-2).join('.');
 const VERIFY_LINK_HOSTS = /(^|\.)(myworkdayjobs\.com|myworkday\.com|successfactors\.(com|eu)|sapsf\.(com|eu|cn)|oraclecloud\.com|taleo\.net|zohorecruit\.(com|in|eu)|freshteam\.com|keka\.com)$/i;
 
 /**
+ * "Forgot your password?": ask the site to email a reset link, follow it (only to the site's own hosts) and set a new
+ * password. Used when an account exists that we hold no working password for, before bothering the person.
+ * Returns true when the reset page accepted the new password.
+ */
+async function resetForgottenPassword(ctx: ExecutionContext, email: string, newPassword: string): Promise<boolean> {
+  if (!mailReadForUser(ctx)) return false;
+  const forgot = ctx.page.locator('[data-automation-id="forgotPasswordLink"], a:has-text("Forgot your password"), button:has-text("Forgot your password"), [role="button"]:has-text("Forgot your password")').first();
+  if (!(await forgot.isVisible().catch(() => false))) return false;
+  const since = Date.now() - 5_000;
+  await clickThrough(forgot);
+  const box = ctx.page.locator('[data-automation-id="email"], input[type="email"]').first();
+  await box.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {});
+  await box.fill(email).catch(() => {});
+  const send = ctx.page.locator('[data-automation-id="resetPasswordSubmitButton"], [data-automation-id="forgotPasswordSubmitButton"], button:has-text("Reset"), button:has-text("Send"), button:has-text("Submit")').first();
+  await clickThrough(send).catch(() => {});
+  await stage(ctx, 'account', { action: 'asked the site to email a password reset' });
+  const link = await waitForMail(ctx, 'link', since, 90_000);
+  const url = link ? allowedMailLink(ctx, link) : null;
+  if (!url) return false;
+  const tab = await ctx.page.context().newPage();
+  try {
+    await tab.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    const pw = tab.locator('input[type="password"]');
+    await pw.first().waitFor({ state: 'visible', timeout: 15_000 });
+    for (let i = 0; i < await pw.count(); i++) await pw.nth(i).fill(newPassword).catch(() => {});
+    await tab.locator('button[type="submit"], [data-automation-id*="ubmit" i], button:has-text("Reset"), button:has-text("Save"), button:has-text("Submit")').first().click({ timeout: 5_000 }).catch(() => {});
+    await tab.waitForTimeout(3_000);
+    const stillAsking = await tab.locator('input[type="password"]').first().isVisible().catch(() => false);
+    const text = await tab.evaluate(() => document.body?.innerText ?? '').catch(() => '');
+    return !stillAsking || /password (has been )?(reset|changed|updated)|successfully/i.test(text);
+  } catch {
+    return false;
+  } finally {
+    await tab.close().catch(() => {});
+  }
+}
+
+/**
  * Open a verification link from the site's email in this browser (same
  * cookies), then come back. Only links to the site itself or a known
  * applicant system are opened — never an arbitrary address from an email.
  */
-async function openVerifyLink(ctx: ExecutionContext, link: string): Promise<boolean> {
+/** A link from the site's email is followed only if it is https and points at the site itself or a known applicant system. */
+function allowedMailLink(ctx: ExecutionContext, link: string): URL | null {
   let url: URL;
   try {
     url = new URL(link);
   } catch {
-    return false;
+    return null;
   }
   const siteHost = new URL(ctx.page.url()).hostname;
   // Plain http only between local test sites (tools/mock-ats).
   const local = (h: string) => h === '127.0.0.1' || h === 'localhost';
   const secure = url.protocol === 'https:' || (local(url.hostname) && local(siteHost));
   const ok = secure && (baseDomain(url.hostname) === baseDomain(siteHost) || VERIFY_LINK_HOSTS.test(url.hostname));
-  if (!ok) {
-    logger.warn('account:verify-link-refused', { jobId: ctx.jobId, host: url.hostname });
-    return false;
-  }
+  if (!ok) logger.warn('account:verify-link-refused', { jobId: ctx.jobId, host: url.hostname });
+  return ok ? url : null;
+}
+
+async function openVerifyLink(ctx: ExecutionContext, link: string): Promise<boolean> {
+  const url = allowedMailLink(ctx, link);
+  if (!url) return false;
+  const siteHost = new URL(ctx.page.url()).hostname;
   const redis = await getRedisClient();
   await redis.sAdd(`verify-used:${ctx.userId}`, link);
   await redis.expire(`verify-used:${ctx.userId}`, 7 * 24 * 3600);
@@ -2442,9 +2633,14 @@ export async function waitForMail(ctx: ExecutionContext, kind: 'code' | 'link', 
       // Known mailer domains first; after 25 s the site may be mailing from somewhere unexpected: accept any code/verify mail.
       await gmailService.sync(ctx.userId, { since: new Date(sinceMs - 60_000), allowFrom, broad: Date.now() - startedAt > 25_000 }).catch(() => 0);
     }
+    // Mail from the site's own mailer first; only after 25 s may an unexpected sender's code be used (sites do mail from odd domains).
+    const strict = allowFrom.length > 0 && Date.now() - startedAt <= 25_000;
+    const patterns = allowFrom.flatMap((d) => [`%@${d}`, `%.${d}`]);
     const { rows } = await pool.query(
-      `SELECT ${col} AS v FROM emails WHERE user_id = $1 AND ${col} IS NOT NULL AND received_at > $2 ORDER BY received_at DESC LIMIT 1`,
-      [ctx.userId, new Date(sinceMs)],
+      `SELECT ${col} AS v FROM emails WHERE user_id = $1 AND ${col} IS NOT NULL AND received_at > $2
+          AND (NOT $4::boolean OR lower(from_address) LIKE ANY($3::text[]))
+        ORDER BY received_at DESC LIMIT 1`,
+      [ctx.userId, new Date(sinceMs), patterns, strict],
     );
     if (rows[0]?.v) {
       await applicationsService.updateByExecJob(ctx.jobId, { status: 'running', detail: kind === 'code' ? 'Got the code — entering it' : 'Got the email — verifying' }).catch(() => {});
@@ -2541,14 +2737,21 @@ const APPLY_BUTTON = /^\s*(apply( now| for this (job|position|role)| to this job
  */
 /** The site refused a page: re-read it and ask the person about every required box still empty. Returns how many were filled. */
 async function askAboutRejectedPage(step: ActionStep, ctx: ExecutionContext, askPrefix: string): Promise<number> {
-  const fields = (await scanForm(ctx.page, step.target?.value).catch(() => [] as FormField[])).filter(
-    (f) => f.required && !f.value && f.type !== 'file',
+  const scanned = await scanForm(ctx.page, step.target?.value).catch(() => [] as FormField[]);
+  // Boxes the page itself marks invalid (aria-invalid / error row) are redone even when something is typed in them.
+  const bad = new Set(await invalidFieldIdx(ctx.page));
+  const fields = scanned.filter(
+    (f) => f.type !== 'file' && f.type !== 'captcha' && ((f.required && !f.value) || (bad.has(f.idx) && f.type !== 'checkbox')),
   );
+  for (const f of fields) if (bad.has(f.idx)) f.value = '';
   if (!fields.length) return 0;
   await stage(ctx, 'answers', { page: 'Fixing what the site refused', filled: 0, missing: fields.map((f) => f.label), answers: [] });
   const { filled } = await fillPage(step, ctx, fields, askPrefix);
   return filled.length;
 }
+
+/** The site's version of a value carries different characters (not merely different punctuation). */
+const flatDiffers = (a: string, b: string) => a.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '') !== b.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 
 async function fillPage(
   step: ActionStep,
@@ -2558,7 +2761,7 @@ async function fillPage(
 ): Promise<{ filled: FieldAnswer[]; stillMissing: FormField[] }> {
   await loadProfile(ctx);
   const book = buildAnswerBook(ctx.profile!, { country: ctx.jobContext?.country });
-  const { answers, missing } = await planAnswers(fields, book, (q) => answerMemory.recall(ctx.userId, q).catch(() => null));
+  const { answers, missing } = await planAnswers(fields, book, (q) => answerMemory.recall(ctx.userId, q, { country: ctx.jobContext?.country }).catch(() => null), undefined, await loadAnswerDefaults());
 
   const filled: FieldAnswer[] = [];
   for (const a of answers) {
@@ -2572,7 +2775,8 @@ async function fillPage(
         if (!a.field.options.length) a.field.options = await readComboOptions(ctx.page, a.field);
         const opts = realOptions(a.field.options);
         if (opts.length) {
-          const pick = pickOption(opts, a.value);
+          // A generic "how did you hear" has no fixed wording: the list's own plain source stands in for it.
+          const pick = pickOption(opts, a.value) ?? (a.rule === 'how-did-you-hear' ? sourceOption(opts) : null);
           if (!pick) {
             if (a.field.required) missing.push(a.field);
             continue;
@@ -2594,6 +2798,22 @@ async function fillPage(
         if (split) a.value = splitPhone(a.value, countryCode(ctx)).national;
       }
       await fillField(ctx.page, a, file);
+      // Did the page keep it? Masks reformat, limits truncate, scripts reject: say so instead of finding out at submit.
+      const landed = await verifyFilled(ctx.page, a.field, a.value).catch(() => null);
+      if (landed && landed.state === 'rejected' && a.key === 'phone') {
+        // A digits-only phone mask: retry once without spaces, dashes and the +.
+        const digits = a.value.replace(/\D/g, '');
+        await fillField(ctx.page, { ...a, value: digits }).catch(() => {});
+        const again = await verifyFilled(ctx.page, a.field, digits).catch(() => null);
+        if (again && again.state !== 'rejected') a.note = `the site stores this as ${again.actual}`;
+      } else if (landed && landed.state === 'truncated') {
+        a.note = `the site cut this to “${landed.actual.slice(0, 60)}”`;
+      } else if (landed && landed.state === 'rejected') {
+        a.note = 'the site did not keep this value';
+        logger.warn('autofill:value-rejected', { jobId: ctx.jobId, label: a.field.label });
+      } else if (landed && landed.state === 'reformatted' && flatDiffers(landed.actual, a.value)) {
+        a.note = `the site shows this as “${landed.actual.slice(0, 60)}”`;
+      }
       filled.push(a);
       await humanDelay(30, 90);
     } catch (err) {
@@ -2615,11 +2835,10 @@ async function fillPage(
   // only what's left is asked of the user.
   const written = step.metadata?.aiAnswers === false
     ? new Map<number, string>()
-    : await aiAnswers(ctx.profile!, { title: ctx.jobContext?.title, company: ctx.jobContext?.company }, missing.filter((f) => identityFieldKind(f.label, f.type) !== 'aadhaar'), { userId: ctx.userId, jobId: ctx.jobId });
+    : await aiAnswers(ctx.profile!, { title: ctx.jobContext?.title, company: ctx.jobContext?.company, skills: ctx.jobContext?.skills, summary: ctx.jobContext?.summary }, missing.filter((f) => identityFieldKind(f.label, f.type) !== 'aadhaar'), { userId: ctx.userId, jobId: ctx.jobId });
 
   // Ask for each required answer we don't have, then remember it.
   const stillMissing: FormField[] = [];
-  const batchAnswers = new Map<number, string>();
   for (const field of missing) {
     const aiValue = written.get(field.idx);
     if (aiValue) {
@@ -2727,40 +2946,7 @@ async function fillPage(
       }
     }
     if (field.type === 'combobox' && !field.options.length) field.options = await readComboOptions(ctx.page, field);
-    const normalize = (f: FormField, raw: string) => {
-      const r = raw.trim();
-      return f.options.length ? (f.options.find((o) => o.toLowerCase() === r.toLowerCase()) ?? f.options.find((o) => o.toLowerCase().startsWith(r.toLowerCase())) ?? '') : r;
-    };
-    // Every other question this form will ask goes in ONE form, not one run (and one wait) per question.
-    if (!batchAnswers.has(field.idx)) {
-      const rest = missing.slice(missing.indexOf(field) + 1).filter((f) => genericAsk(f, written, fields, ctx, step));
-      if (rest.length) {
-        for (const f of rest) if (f.type === 'combobox' && !f.options.length) f.options = await readComboOptions(ctx.page, f).catch(() => []);
-        const group = [field, ...rest];
-        const batchId = `${askPrefix}_${field.idx}_batch`;
-        const questions = group.map((f) => ({ id: String(f.idx), question: f.label.replace(/\s*\*$/, ''), options: realOptions(f.options) }));
-        await ACTION_HANDLERS.pauseForUserInput({
-          id: batchId,
-          action: 'pauseForUserInput',
-          expectedInput: 'text',
-          timeout: 10 * 60_000,
-          description: `The application asks ${group.length} more questions`,
-          contextMessage: `The application asks ${group.length} more questions — answer them together`,
-          metadata: {
-            skipChallengeDetection: true,
-            pauseData: { question: `${group.length} questions from the application`, questions },
-            park: { kind: 'question', questions: questions.map((q) => ({ id: q.id, question: q.question })) } satisfies ParkSpec,
-          },
-        }, ctx);
-        let given: Record<string, string> = {};
-        try { given = JSON.parse(ctx.runtimeInputs[batchId] ?? '{}'); } catch { /* a plain answer: it belongs to the first question */ given = { [String(field.idx)]: ctx.runtimeInputs[batchId] ?? '' }; }
-        delete ctx.runtimeInputs[batchId];
-        for (const f of group) batchAnswers.set(f.idx, normalize(f, String(given[String(f.idx)] ?? '')));
-      }
-    }
     const askId = `${askPrefix}_${field.idx}`;
-    if (batchAnswers.has(field.idx)) ctx.runtimeInputs[askId] = batchAnswers.get(field.idx) ?? '';
-    else
     await ACTION_HANDLERS.pauseForUserInput({
       id: askId,
       action: 'pauseForUserInput',
@@ -2772,8 +2958,17 @@ async function fillPage(
         : `The application asks: "${field.label}"`,
       metadata: {
         skipChallengeDetection: true,
-        pauseData: { question: field.label, options: realOptions(field.options), sensitive: identityFieldKind(field.label, field.type) === 'aadhaar' || undefined },
-        park: { kind: 'question', question: field.label } satisfies ParkSpec,
+        pauseData: {
+          question: field.label,
+          options: realOptions(field.options),
+          applicationQuestion: true,
+          sensitive: identityFieldKind(field.label, field.type) === 'aadhaar' || undefined,
+        },
+        park: {
+          kind: 'question',
+          question: field.label,
+          sensitive: identityFieldKind(field.label, field.type) === 'aadhaar' || undefined,
+        } satisfies ParkSpec,
       },
     }, ctx);
     const raw = (ctx.runtimeInputs[askId] ?? '').trim();
@@ -2786,7 +2981,7 @@ async function fillPage(
     await fillField(ctx.page, answer);
     filled.push(answer);
     // An Aadhaar / Virtual ID number is never remembered.
-    if (identityFieldKind(field.label, field.type) !== 'aadhaar') await answerMemory.remember(ctx.userId, field.label, value).catch(() => {});
+    if (identityFieldKind(field.label, field.type) !== 'aadhaar') await answerMemory.remember(ctx.userId, field.label, value, 'user', { country: ctx.jobContext?.country }).catch(() => {});
     // Asked once: parents' names, date of birth, category… belong to the profile for every later portal.
     const govKey = govRuleFor(field.label.toLowerCase().replace(/[*✱]/g, ' ').replace(/\s+/g, ' ').trim());
     if (govKey) await saveGovAnswer(ctx, govKey, value);
@@ -2900,10 +3095,64 @@ async function saveGovAnswer(ctx: ExecutionContext, key: string, value: string):
 async function coverLetter(ctx: ExecutionContext): Promise<string> {
   if (typeof ctx.extractedData.coverLetter === 'string') return ctx.extractedData.coverLetter;
   await loadProfile(ctx);
-  const letter = await coverLetterText(ctx.profile!, { title: ctx.jobContext?.title, company: ctx.jobContext?.company || undefined }, { userId: ctx.userId, jobId: ctx.jobId });
+  const letter = await coverLetterText(ctx.profile!, { title: ctx.jobContext?.title, company: ctx.jobContext?.company || undefined, skills: ctx.jobContext?.skills }, { userId: ctx.userId, jobId: ctx.jobId });
   ctx.extractedData.coverLetter = letter;
   await stage(ctx, 'cover_letter', { words: letter.split(/\s+/).length });
   return letter;
+}
+
+/**
+ * Before anything personal is typed: a look-alike address or a page asking for money/ID up front stops the run
+ * with a plain reason. Government portals are exempt from the text check (they do ask for ID numbers).
+ */
+async function assertSafePage(ctx: ExecutionContext): Promise<void> {
+  const urls = [ctx.page.url(), ...ctx.page.frames().map((f) => f.url()).filter((u) => /^https?:/i.test(u))];
+  for (const u of urls) {
+    const bad = suspiciousOrigin(u);
+    if (bad) throw new Error(`UNSAFE_SITE: I stopped before entering anything — ${bad} (${new URL(u).hostname})`);
+  }
+  if (/gov/i.test(ctx.workflowKey ?? '')) return;
+  const text = await ctx.page.evaluate(() => (document.body?.innerText ?? '').slice(0, 20000)).catch(() => '');
+  const why = scamReason(text);
+  if (why) throw new Error(`SUSPECTED_SCAM: this posting ${why}. I stopped before entering anything.`);
+}
+
+/** A picture of the page that confirmed the submission: proof for the person, and for us when a site later disputes it. */
+async function saveReceipt(ctx: ExecutionContext): Promise<string | null> {
+  try {
+    const path = receiptPath(ctx.jobId, 'receipts');
+    if (!path) return null;
+    await mkdir(receiptDir('receipts'), { recursive: true, mode: 0o700 });
+    await ctx.page.screenshot({ path, fullPage: true });
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+/** The PDF record of a confirmed submission; noted on the application so the app can offer it. */
+async function summarise(ctx: ExecutionContext): Promise<void> {
+  const answers = (ctx.form?.answers ?? []).map((a) => ({
+    label: a.key === 'resume' ? 'Résumé' : a.field.label || a.field.name,
+    value: a.key === 'resume' ? ctx.profile?.documents?.resumeFileName ?? 'Résumé' : a.value,
+    source: a.source,
+  }));
+  const path = await saveSubmissionSummary(
+    ctx.page,
+    { jobId: ctx.jobId, userId: ctx.userId, confirmation: String(ctx.extractedData.confirmation ?? '') || null, reference: String(ctx.extractedData.reference ?? '') || null },
+    { title: ctx.jobContext?.title || 'Job application', company: ctx.jobContext?.company || null, url: ctx.jobContext?.url || null, answers },
+  );
+  if (path) await stage(ctx, 'summary', { pdf: true, answers: answers.length });
+}
+
+/** Remember what this posting asked (questions only) for previews and pre-resolution. Never fails the run. */
+async function recordSchema(ctx: ExecutionContext, fields: FormField[], pages: number, complete: boolean): Promise<void> {
+  const real = fields.filter((f) => f.type !== 'captcha' && f.type !== 'password');
+  await formSchemas.record(
+    ctx.jobContext?.url || ctx.page.url(),
+    real.map((f) => ({ label: f.label, type: f.type, tag: f.tag, required: f.required, options: f.options, name: f.name })),
+    { pages, complete },
+  ).catch(() => {});
 }
 
 /** Pipeline stage on the application's timeline (never fails the run). */
@@ -2970,13 +3219,16 @@ function mailboxPhrase(ctx: ExecutionContext): string {
 const mailReadForUser = (ctx: ExecutionContext) => ctx.emailVia === 'inbox' || ctx.emailVia === 'gmail';
 
 async function resumePath(ctx: ExecutionContext): Promise<string | undefined> {
-  const id = ctx.profile?.documents?.resumeFileId;
+  // A role-specific résumé when the person keeps several and one fits this title.
+  const variant = pickResumeVariant(ctx.profile?.documents?.resumeVariants, ctx.jobContext?.title ?? '', ctx.profile?.skills);
+  if (variant) await stage(ctx, 'resume', { variant: variant.label });
+  const id = variant?.fileId ?? ctx.profile?.documents?.resumeFileId;
   try {
     const stored = id
       ? await userFileStore.resolveInputReference(ctx.userId, `file:${id}`)
       : await userFileStore.resolveInputReference(ctx.userId, 'file-category:resume');
     // Employers see the uploaded file's name: send "Jane_Doe_Resume.pdf", not our storage id.
-    const original = ctx.profile?.documents?.resumeFileName?.replace(/[\\/:*?"<>|]+/g, '_').trim();
+    const original = (variant?.fileName ?? ctx.profile?.documents?.resumeFileName)?.replace(/[\\/:*?"<>|]+/g, '_').trim();
     if (!original) return stored;
     const dir = userFileStore.getTempPath('uploads', ctx.jobId);
     await mkdir(dir, { recursive: true });

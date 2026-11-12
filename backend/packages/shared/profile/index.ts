@@ -1,3 +1,5 @@
+import { payPeriod, classifyIntent, scopeFor, isDeclaration } from './intent.js';
+import type { ResumeVariant } from './resume-variant.js';
 import { createHash } from 'crypto';
 import { getPgPool, withTransaction } from '../db/index.js';
 
@@ -26,6 +28,9 @@ export interface ProfileData {
     summary?: string;
     /** Where the person is a citizen; guessed from their network location until they say otherwise. */
     nationality?: string;
+    /** ISO country the person connects from (network location). Used only to rank jobs; never overrides `country`. */
+    detectedCountry?: string;
+    detectedAt?: string;
   };
   work?: {
     experienceLevel?: string;
@@ -69,6 +74,8 @@ export interface ProfileData {
     highlights?: string[];
   }>;
   skills?: string[];
+  /** Ready-made answers to the open questions every form asks, built from the résumé once so applications never wait on a model. */
+  answerBank?: import('./resume-analysis.js').AnswerBank;
   /** Tell us more about you: free text in the person's own words. The AI answers form questions from it. */
   about?: string;
   certifications?: string[];
@@ -87,7 +94,7 @@ export interface ProfileData {
     pwd?: boolean;
     exServiceman?: boolean;
   };
-  documents?: { resumeFileId?: string; resumeFileName?: string; photoFileId?: string; signatureFileId?: string };
+  documents?: { resumeFileId?: string; resumeFileName?: string; resumeVariants?: ResumeVariant[]; photoFileId?: string; signatureFileId?: string };
   settings?: {
     reviewBeforeSubmit?: boolean;
     resumeTailoring?: 'off' | 'honest' | 'aggressive';
@@ -318,26 +325,55 @@ export const answerMemory = {
     return rows;
   },
 
-  async remember(userId: string, question: string, answer: string, source = 'user') {
+  /**
+   * Keep an answer. Its intent (what the question means) is derived from the wording; `country` scopes the
+   * country-dependent ones (work authorisation, sponsorship, salary…) so they aren't reused abroad.
+   */
+  async remember(userId: string, question: string, answer: string, source = 'user', opts: { country?: string | null } = {}) {
+    // A declaration is never carried to another application: it is confirmed again each time.
+    if (isDeclaration(question)) return null;
+    const intent = source === 'ai-cache' ? null : classifyIntent(question);
+    const scope = intent ? scopeFor(intent, opts.country) : 'global';
+    const keep = intent && intent !== 'other' && intent !== 'free_text' ? intent : null;
+    const hash = scope === 'global' ? questionHash(question) : questionHash(`${question} @${scope}`);
     const { rows } = await getPgPool().query(
-      `INSERT INTO answer_memory (user_id, question_hash, question, answer, source)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO answer_memory (user_id, question_hash, question, answer, source, intent, scope)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (user_id, question_hash)
-       DO UPDATE SET answer = EXCLUDED.answer, source = EXCLUDED.source, updated_at = NOW()
+       DO UPDATE SET answer = EXCLUDED.answer, source = EXCLUDED.source, intent = EXCLUDED.intent, updated_at = NOW()
        RETURNING id, question, answer, source, use_count, updated_at`,
-      [userId, questionHash(question), question.trim(), answer.trim(), source],
+      [userId, hash, question.trim(), answer.trim(), source, keep, scope],
     );
     return rows[0];
   },
 
-  /** Exact (normalized) lookup — used by the form filler before any AI. */
-  async recall(userId: string, question: string): Promise<string | null> {
-    const { rows } = await getPgPool().query(
+  /**
+   * Remembered answer for a question: the same wording first (scoped to the job's country, then anywhere),
+   * then the same meaning asked another way.
+   */
+  async recall(userId: string, question: string, opts: { country?: string | null } = {}): Promise<string | null> {
+    if (isDeclaration(question)) return null;
+    const intent = classifyIntent(question);
+    const scope = scopeFor(intent, opts.country);
+    const hashes = scope === 'global' ? [questionHash(question)] : [questionHash(`${question} @${scope}`), questionHash(question)];
+    const same = await getPgPool().query(
       `UPDATE answer_memory SET use_count = use_count + 1, last_used_at = NOW()
-        WHERE user_id = $1 AND question_hash = $2 RETURNING answer`,
-      [userId, questionHash(question)],
+        WHERE id = (SELECT id FROM answer_memory WHERE user_id = $1 AND question_hash = ANY($2)
+                    ORDER BY (question_hash = $2[1]) DESC, updated_at DESC LIMIT 1) RETURNING answer`,
+      [userId, hashes],
     );
-    return rows[0]?.answer ?? null;
+    if (same.rows[0]) return same.rows[0].answer;
+    if (['other', 'free_text', 'resume', 'cover_letter', 'years_technology', 'consent', 'signature_name', 'todays_date'].includes(intent)) return null;
+    // A remembered yearly figure never answers an hourly or monthly box that merely means the same thing.
+    if (intent.startsWith('salary_') && ['hour', 'month'].includes(payPeriod(question) ?? '')) return null;
+    // Only one fact per meaning in the user's scope: "right to work" reuses what "authorised to work" was answered.
+    const byMeaning = await getPgPool().query(
+      `UPDATE answer_memory SET use_count = use_count + 1, last_used_at = NOW()
+        WHERE id = (SELECT id FROM answer_memory WHERE user_id = $1 AND intent = $2 AND scope IN ($3, 'global') AND source <> 'ai-cache'
+                    ORDER BY (scope = $3) DESC, updated_at DESC LIMIT 1) RETURNING answer`,
+      [userId, intent, scope],
+    );
+    return byMeaning.rows[0]?.answer ?? null;
   },
 
   async forget(userId: string, id: number) {

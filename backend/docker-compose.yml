@@ -1,5 +1,3 @@
-version: '3.9'
-
 x-common-env: &common-env
   NODE_ENV: ${NODE_ENV:-production}
   HOST: 0.0.0.0
@@ -33,16 +31,20 @@ x-common-env: &common-env
   TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+  OPENROUTER_FALLBACK_MODEL: ${OPENROUTER_FALLBACK_MODEL:-nvidia/nemotron-3.5-lightning:free}
   OPENROUTER_ENABLE_REASONING: ${OPENROUTER_ENABLE_REASONING:-true}
-  CHAT_LLM_MODEL: ${CHAT_LLM_MODEL:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free}
-  AI_PLANNER_MODEL: ${AI_PLANNER_MODEL:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free}
+  COARENA_API_KEY: ${COARENA_API_KEY:-}
+  COARENA_BASE_URL: ${COARENA_BASE_URL:-https://coarena.ai/api/v1}
+  COARENA_MODEL: ${COARENA_MODEL:-claude-haiku-5-5}
+  CHAT_LLM_MODEL: ${CHAT_LLM_MODEL:-claude-haiku-5-5}
+  AI_PLANNER_MODEL: ${AI_PLANNER_MODEL:-claude-haiku-5-5}
   # Element-matching/recovery are cheap classification tasks — default to the
   # non-reasoning sibling model, not the heavier reasoning one used for chat/planning.
-  AI_SELECTOR_MODEL: ${AI_SELECTOR_MODEL:-nvidia/nemotron-3-nano-30b-a3b:free}
-  AI_RECOVERY_MODEL: ${AI_RECOVERY_MODEL:-nvidia/nemotron-3-nano-30b-a3b:free}
+  AI_SELECTOR_MODEL: ${AI_SELECTOR_MODEL:-claude-haiku-5-5}
+  AI_RECOVERY_MODEL: ${AI_RECOVERY_MODEL:-claude-haiku-5-5}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-  LLM_MODEL: ${LLM_MODEL:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free}
+  LLM_MODEL: ${LLM_MODEL:-claude-haiku-5-5}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
   USER_FILE_STORAGE_ROOT: ${USER_FILE_STORAGE_ROOT:-/data/user-files}
@@ -84,7 +86,7 @@ x-healthcheck-defaults: &healthcheck-defaults
 
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-automation}
@@ -93,7 +95,8 @@ services:
     ports:
       - "${POSTGRES_PUBLIC_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # Keep the old PostgreSQL 15 volume intact; PG16 cannot open its data directory.
+      - postgres16_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-automation}"]
       <<: *healthcheck-defaults
@@ -104,9 +107,9 @@ services:
     command: >
       sh -c '
       if [ -n "$$REDIS_PASSWORD" ]; then
-        exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 512mb --maxmemory-policy allkeys-lru --save 60 1000;
+        exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 512mb --maxmemory-policy noeviction --appendonly yes --appendfsync everysec --save 60 1000;
       else
-        exec redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save 60 1000;
+        exec redis-server --maxmemory 512mb --maxmemory-policy noeviction --appendonly yes --appendfsync everysec --save 60 1000;
       fi'
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -225,7 +228,7 @@ services:
       - prometheus
 
 volumes:
-  postgres_data:
+  postgres16_data:
   redis_data:
   user_files_data:
   worker_screenshots:

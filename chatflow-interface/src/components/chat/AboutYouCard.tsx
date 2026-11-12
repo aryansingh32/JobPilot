@@ -10,7 +10,9 @@ export const ABOUT_PLACEHOLDER = `Anything employers tend to ask, in your own wo
 • I don't need visa sponsorship in India
 • Experienced with React, Node, Postgres; built X that did Y
 • Pronouns: prefer not to say
-• How I heard about jobs: LinkedIn`;
+• How I heard about jobs: LinkedIn
+• Previous employers: Acme, Globex  (only these are answered "Yes" to "have you worked for X before?")
+• Licenses I hold: none`;
 
 /** Lines employers ask again and again: one tap adds the line to fill in. */
 const SUGGESTIONS = [
@@ -23,6 +25,7 @@ const SUGGESTIONS = [
   "Gender: ",
   "How I heard about jobs: LinkedIn",
   "Anyone I know at the company: No",
+  "Previous employers: ",
 ];
 
 /** The free-text box itself — used in onboarding and Settings. */

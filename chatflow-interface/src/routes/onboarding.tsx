@@ -1,4 +1,5 @@
 import { AboutYouField } from "@/components/chat/AboutYouCard";
+import { ResumeAnalysisCard } from "@/components/chat/ResumeAnalysisCard";
 import { jp } from "@/lib/api-client";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { GmailConnect } from "@/components/chat/GmailConnect";
@@ -197,20 +198,39 @@ function Onboarding() {
     return saved.id;
   };
 
+  // Every application asks these, so the steps that collect them cannot be skipped or continued empty.
+  const blockedBy = useMemo(
+    () => ({
+      about: [
+        !data.fullName?.trim() && "your name",
+        (data.mobile ?? "").replace(/\D/g, "").length < 10 && "a mobile number",
+        !data.city?.trim() && "your city",
+        !data.experienceLevel && "your experience",
+        !data.workAuthorization && "your work authorization",
+      ].filter(Boolean) as string[],
+      prefs: [
+        toList(data.targetRoles).length === 0 && "the roles you want",
+        toList(data.targetLocations).length === 0 && toList(data.workplace).length === 0 && "where or how you want to work",
+        !data.noticePeriod && "your notice period",
+        !data.expectedSalary?.trim() && "your expected salary",
+      ].filter(Boolean) as string[],
+    }),
+    [data],
+  );
   const canContinue = useMemo(() => {
     switch (step.id) {
       case "resume":
         return !!data.resumeSource;
       case "about":
-        return !!data.fullName?.trim() && (data.mobile ?? "").replace(/\D/g, "").length >= 10;
+        return blockedBy.about.length === 0;
       case "prefs":
-        return toList(data.targetRoles).length > 0;
+        return blockedBy.prefs.length === 0;
       case "email":
         return !!data.applicationEmailMode;
       default:
         return true;
     }
-  }, [step.id, data]);
+  }, [step.id, data, blockedBy]);
 
   const next = async () => {
     setError(null);
@@ -252,16 +272,7 @@ function Onboarding() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canContinue, saving, stepIdx, data]);
 
-  const skipAll = async () => {
-    try {
-      await persist({ [ONBOARDED_KEY]: "skipped" });
-      if (draftKey) localStorage.removeItem(draftKey);
-    } finally {
-      navigate({ to: "/" });
-    }
-  };
-
-  if (!ready) {
+    if (!ready) {
     return (
       <div className="grid h-[100dvh] place-items-center bg-background">
         <Loader2 className="h-5 w-5 animate-spin text-faint" />
@@ -333,14 +344,6 @@ function Onboarding() {
             </div>
           </div>
           <div className="hidden flex-1 lg:block" />
-          {step.id !== "done" && (
-            <button
-              onClick={skipAll}
-              className="shrink-0 text-[13px] font-medium text-muted-foreground hover:text-foreground"
-            >
-              Skip for now
-            </button>
-          )}
         </header>
         <div className="h-1 bg-muted lg:hidden">
           <div
@@ -402,7 +405,11 @@ function Onboarding() {
             )}
             {!error && (
               <span className="flex-1 truncate text-[12px] text-faint">
-                {step.id === "done" ? "" : `${timeLeft(STEPS.length - 1 - stepIdx)}`}
+                {step.id === "done"
+                  ? ""
+                  : (step.id === "about" || step.id === "prefs") && blockedBy[step.id].length
+                    ? `Add ${blockedBy[step.id].join(", ")} to continue`
+                    : `${timeLeft(STEPS.length - 1 - stepIdx)}`}
               </span>
             )}
             {step.optional && (
@@ -673,6 +680,39 @@ function AboutStep({
             placeholder="e.g. Lucknow"
           />
         </Field>
+        <Field label="Address" optional hint="Forms ask for it. Saved once, so no application stops to ask.">
+          <input
+            className={INPUT}
+            value={data.address ?? ""}
+            onChange={(e) => set({ address: e.target.value })}
+            autoComplete="address-line1"
+            placeholder="Street address"
+          />
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            <input
+              className={INPUT}
+              value={data.state ?? ""}
+              onChange={(e) => set({ state: e.target.value })}
+              autoComplete="address-level1"
+              placeholder="State"
+            />
+            <input
+              className={INPUT}
+              value={data.postalCode ?? ""}
+              onChange={(e) => set({ postalCode: e.target.value })}
+              autoComplete="postal-code"
+              inputMode="numeric"
+              placeholder="PIN / ZIP"
+            />
+            <input
+              className={INPUT}
+              value={data.country ?? ""}
+              onChange={(e) => set({ country: e.target.value.toUpperCase().slice(0, 2) })}
+              autoComplete="country"
+              placeholder="Country (IN)"
+            />
+          </div>
+        </Field>
         <Field group auto={auto.has("experienceLevel")} label="Experience">
           <Chips
             options={["Student / fresher", "0–2 years", "2–5 years", "5–10 years", "10+ years"]}
@@ -787,6 +827,14 @@ function PrefsStep({ data, set, auto }: StepProps) {
               value={data.expectedSalary ?? ""}
               onChange={(e) => set({ expectedSalary: e.target.value })}
               placeholder="e.g. 6 LPA"
+            />
+          </Field>
+          <Field label="Current salary" optional hint="Used only when a form asks.">
+            <input
+              className={INPUT}
+              value={data.currentSalary ?? ""}
+              onChange={(e) => set({ currentSalary: e.target.value })}
+              placeholder="e.g. 4 LPA"
             />
           </Field>
           <Field label="Notice period">
@@ -1066,7 +1114,7 @@ function PermissionsStep({ data, set }: Pick<StepProps, "data" | "set">) {
 }
 
 function ApplyStep({ data, set }: Pick<StepProps, "data" | "set">) {
-  const review = data.reviewBeforeSubmit ?? "on";
+  const review = data.reviewBeforeSubmit ?? "off";
   const tailoring = data.resumeTailoring ?? "honest";
   useEffect(() => {
     if (!data.reviewBeforeSubmit || !data.resumeTailoring)
@@ -1084,19 +1132,19 @@ function ApplyStep({ data, set }: Pick<StepProps, "data" | "set">) {
         <div className="space-y-3">
           <div className="text-[13px] font-semibold text-foreground">Before submitting</div>
           <OptionCard
-            selected={review === "on"}
-            onClick={() => set({ reviewBeforeSubmit: "on" })}
-            icon={<ShieldCheck className="h-5 w-5" />}
-            title="Show me every application first"
-            badge="Recommended"
-            description="I fill the form and pause. You check the answers, edit anything, then approve. Exactly what you approve is sent."
-          />
-          <OptionCard
             selected={review === "off"}
             onClick={() => set({ reviewBeforeSubmit: "off" })}
             icon={<Zap className="h-5 w-5" />}
             title="Submit automatically"
-            description="Faster. I still stop and ask whenever an answer isn't in your profile — I never guess salary, IDs or legal questions."
+            badge="Recommended"
+            description="I fill every form from your profile, notes and earlier answers and send it. You get a summary PDF of what was sent as soon as the site confirms."
+          />
+          <OptionCard
+            selected={review === "on"}
+            onClick={() => set({ reviewBeforeSubmit: "on" })}
+            icon={<ShieldCheck className="h-5 w-5" />}
+            title="Show me every application first"
+            description="I fill the form and pause. You check the answers, edit anything, then approve."
           />
         </div>
         <div>
@@ -1202,6 +1250,9 @@ function DoneStep({ data }: { data: Data }) {
           </div>
         ))}
       </dl>
+      <div className="mt-5">
+        <ResumeAnalysisCard autoPrepare />
+      </div>
       <p className="mt-4 flex items-center justify-center gap-1.5 text-[12px] text-faint">
         <FileText className="h-3.5 w-3.5" /> Everything here is editable from your profile.
       </p>

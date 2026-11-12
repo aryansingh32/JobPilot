@@ -17,6 +17,7 @@ import { HomeScreen } from "@/components/chat/JobsHome";
 import { Splash } from "@/components/Splash";
 import { ViewBoundary } from "@/components/ViewBoundary";
 import { JobsExplorer } from "@/components/chat/JobsExplorer";
+import type { JobSearchParams } from "@/lib/api-client";
 import { JobDetailSheet } from "@/components/chat/JobDetail";
 import { TasksView } from "@/components/chat/TasksView";
 import { InboxView } from "@/components/chat/InboxView";
@@ -25,6 +26,7 @@ import { BuyCreditsDialog } from "@/components/chat/BuyCredits";
 import { ProfileGapsDialog } from "@/components/chat/ProfileGapsDialog";
 import { PortalPasswordCard } from "@/components/chat/PortalPasswordCard";
 import { AboutYouCard } from "@/components/chat/AboutYouCard";
+import { ResumeAnalysisCard } from "@/components/chat/ResumeAnalysisCard";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { taskStatus } from "@/lib/task-status";
 import {
@@ -96,7 +98,10 @@ function Index() {
   const [liveHot, setLiveHot] = useState(false);
   const liveCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [typing, setTyping] = useState(false);
+  const [activityLabel, setActivityLabel] = useState("Putting together a helpful answer…");
   const [view, setView] = useState<MainView>("chat");
+  const [jobsSearchSeed, setJobsSearchSeed] = useState<(JobSearchParams & { country?: string; includeRemote?: boolean; experienceLevel?: "fresher" }) | null>(null);
+  const [jobsSearchTick, setJobsSearchTick] = useState(0);
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null);
@@ -120,6 +125,14 @@ function Index() {
   const meQ = useMe(signedIn);
   const recsQ = useRecommendations(signedIn);
   const appsQ = useApplications("all", signedIn);
+  const applicationsRef = useRef(appsQ.data?.applications ?? []);
+  applicationsRef.current = appsQ.data?.applications ?? [];
+  const threadsRef = useRef(store.threads);
+  threadsRef.current = store.threads;
+  const updateMessageRef = useRef(store.updateMessage);
+  updateMessageRef.current = store.updateMessage;
+  const refetchApplicationsRef = useRef(appsQ.refetch);
+  refetchApplicationsRef.current = appsQ.refetch;
   const inboxQ = useInbox("all", signedIn && view === "inbox");
   const autoApplyQ = useAutoApply(signedIn);
   const [buyOpen, setBuyOpen] = useState(false);
@@ -264,6 +277,7 @@ function Index() {
         },
         setTyping: (t: boolean) => setTyping(t),
         setBusy: (b: boolean) => setBusy(b),
+        setThreadTitle: (threadId: string, title: string) => store.setAiTitle(threadId, title),
       };
     }
     return emitterRef.current;
@@ -322,11 +336,17 @@ function Index() {
       cardActionsRef.current.apply((e as CustomEvent<JobListingDTO>).detail);
     const onSend = (e: Event) => void sendRef.current?.((e as CustomEvent<string>).detail, []);
     const onNav = (e: Event) => {
-      const [view, id] = String((e as CustomEvent<string>).detail).split(":");
+      const detail = (e as CustomEvent).detail as string | { view?: string; search?: JobSearchParams & { country?: string; includeRemote?: boolean; experienceLevel?: "fresher" } };
+      const [legacyView, id] = (typeof detail === "string" ? detail : detail?.view ?? "").split(":");
+      const view = typeof detail === "string" ? legacyView : detail?.view;
       if (view === "tasks") {
         setFocusAppId(id || null);
         setView("tasks");
-      } else if (view === "inbox" || view === "jobs" || view === "autoapply") setView(view);
+      } else if (view === "jobs") {
+        setJobsSearchSeed(typeof detail === "string" ? null : detail.search ?? null);
+        setJobsSearchTick((tick) => tick + 1);
+        setView("jobs");
+      } else if (view === "inbox" || view === "autoapply") setView(view);
     };
     window.addEventListener(OPEN_JOB_EVENT, onOpenJob);
     window.addEventListener(APPLY_JOB_EVENT, onApplyJob);
@@ -369,12 +389,61 @@ function Index() {
     const handleResolve = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (store.activeId) {
+        const card = store.activeThread?.messages.find((message) => message.id === detail.id);
+        const sensitive = card?.type === "input-card" && (
+          card.data?.sensitive ||
+          ["otp", "captcha", "clickCaptcha", "gridCaptcha", "sliderCaptcha", "credentialFill"].includes(card.kind) ||
+          card.data?.inputType === "password"
+        );
         store.updateMessage(store.activeId, detail.id, {
-          resolved: { value: detail.value, at: Date.now() },
+          resolved: {
+            value: sensitive ? "Submitted" : detail.displayValue ?? detail.value,
+            at: Date.now(),
+          },
         });
       }
     };
     window.addEventListener("agent-card-resolve", handleResolve);
+
+    const handleCardSubmitting = (e: Event) => {
+      const detail = (e as CustomEvent<{ id: string; submitting: boolean }>).detail;
+      const ownerThread = threadsRef.current.find((thread) =>
+        thread.messages.some((message) => message.id === detail.id && message.type === "input-card"),
+      );
+      if (ownerThread) updateMessageRef.current(ownerThread.id, detail.id, { submitting: detail.submitting });
+    };
+    window.addEventListener("agent-card-submitting", handleCardSubmitting);
+
+    const handleApplicationAnswer = (e: Event) => {
+      const detail = (e as CustomEvent<{ applicationId?: string; execJobId?: string; value: string; source?: string }>).detail;
+      const application = applicationsRef.current.find((item) =>
+        (detail.applicationId && item.id === detail.applicationId) ||
+        (detail.execJobId && item.exec_job_id === detail.execJobId),
+      );
+      const execJobId = detail.execJobId ?? application?.exec_job_id;
+      if (execJobId) {
+        for (const thread of threadsRef.current) {
+          for (const message of thread.messages) {
+            if (message.type !== "input-card" || message.resolved || message.jobId !== execJobId) continue;
+            const sensitive = message.data?.sensitive ||
+              ["otp", "captcha", "clickCaptcha", "gridCaptcha", "sliderCaptcha", "credentialFill"].includes(message.kind) ||
+              message.data?.inputType === "password";
+            updateMessageRef.current(thread.id, message.id, {
+              resolved: {
+                value: sensitive
+                  ? "Submitted"
+                  : message.data?.questions?.length
+                    ? `Answered ${message.data.questions.length} questions`
+                    : detail.value,
+                at: Date.now(),
+              },
+            });
+          }
+        }
+      }
+      if (detail.source !== "application") void refetchApplicationsRef.current();
+    };
+    window.addEventListener("application-answer-resolved", handleApplicationAnswer);
 
     const handleReviewResolve = (e: Event) => {
       const detail = (e as CustomEvent).detail as {
@@ -392,6 +461,8 @@ function Index() {
     return () => {
       clearInterval(interval);
       window.removeEventListener("agent-card-resolve", handleResolve);
+      window.removeEventListener("agent-card-submitting", handleCardSubmitting);
+      window.removeEventListener("application-answer-resolved", handleApplicationAnswer);
       window.removeEventListener("agent-review-resolve", handleReviewResolve);
     };
   }, [store.hydrated, getEmitter]);
@@ -414,6 +485,7 @@ function Index() {
   const send = async (text: string, files: File[]) => {
     if (!store.activeId) return;
     const tid = store.activeId;
+    setActivityLabel(activityForRequest(text, files.length));
 
     // Push the user message into the chat
     if (files.length) {
@@ -451,7 +523,19 @@ function Index() {
     // effect above — rather than eagerly here before there's anything to show.
 
     try {
-      await sendChatMessage(text || "Process my upload", files, getEmitter());
+      const latestJobs = [...messages].reverse().find((message) => message.type === "job-cards");
+      const chatContext = {
+        threadId: tid,
+        generateTitle: store.threads.find((thread) => thread.id === tid)?.titleSource === "automatic",
+        visibleJobs: latestJobs?.type === "job-cards" ? latestJobs.jobs.slice(0, 8).map((job) => ({
+          id: job.id, title: job.title, company: job.company, location: job.location,
+          url: job.url, atsType: job.atsType,
+        })) : [],
+        recentApplications: (appsQ.data?.applications ?? []).slice(0, 8).map((app) => ({
+          id: app.id, title: app.title, company: app.company, status: app.status,
+        })),
+      };
+      await sendChatMessage(text || "Process my upload", files, getEmitter(), chatContext);
     } catch (err) {
       logger.error("chat:send-failed", err);
       store.appendMessage(tid, {
@@ -588,6 +672,7 @@ function Index() {
           setView("chat");
         }}
         onDelete={store.deleteThread}
+        onRename={store.renameThread}
         onOpen={() => setSidebarOpen(true)}
         onClose={() => setSidebarOpen(false)}
         userLabel={userLabel}
@@ -627,6 +712,7 @@ function Index() {
         <DialogContent className="max-w-xl">
           <DialogTitle>Settings</DialogTitle>
           <div className="max-h-[70vh] space-y-3 overflow-y-auto">
+            <ResumeAnalysisCard />
             <AboutYouCard />
             <PortalPasswordCard />
           </div>
@@ -709,6 +795,8 @@ function Index() {
         <ViewBoundary key={view === "chat" ? `chat-${store.activeId}` : view}>
           {view === "jobs" ? (
             <JobsExplorer
+              key={`jobs-${jobsSearchTick}`}
+              initialSearch={jobsSearchSeed}
               savedIds={savedIds}
               onOpen={setOpenJob}
               onApply={applyToJob}
@@ -795,12 +883,12 @@ function Index() {
                   {messages.map((m) => (
                     <MessageItem key={m.id} msg={m} />
                   ))}
-                  {typing && <TypingIndicator />}
+                  {typing && <TypingIndicator label={activityLabel} />}
                 </div>
               </div>
               {busy && !activePause && !pendingReview && (
                 <WorkingStrip
-                  label={progress}
+                  label={typing ? activityLabel : progress}
                   frame={liveFrame}
                   onWatch={() => liveFrame && setLiveOpen(true)}
                 />
@@ -866,6 +954,25 @@ function currentProgress(messages: ChatMessage[]): string {
     if (m.type === "status") return (m as StatusMessage).content;
   }
   return "Working on it…";
+}
+
+function activityForRequest(text: string, fileCount: number): string {
+  const message = text.toLowerCase();
+  if (/\b(application|applications)\b.*\b(status|progress|update|submitted|review)\b|\b(status|progress)\b.*\b(application|applications)\b/.test(message)) {
+    return "Checking your application progress…";
+  }
+  if (/\b(apply|application|resume|résumé|cover letter|job form)\b/.test(message)) {
+    return "Preparing your application…";
+  }
+  if (/\b(job|jobs|role|roles|opening|openings|career)\b/.test(message) && /\b(find|search|look|show|browse|match|recommend)\b/.test(message)) {
+    return "Searching Jobpilot’s job listings…";
+  }
+  if (/\b(inbox|email|emails|mail)\b/.test(message)) return "Checking your inbox…";
+  if (fileCount > 0 || /\b(read|review|summari[sz]e|analy[sz]e)\b.*\b(file|document|resume|résumé|cv)\b/.test(message)) {
+    return "Reading through your file…";
+  }
+  if (/\b(fill|update|download|register|book|submit|verify|cancel)\b/.test(message)) return "Preparing your task…";
+  return "Putting together a helpful answer…";
 }
 
 function firstName(user: AuthUser | null, profileName?: string | null): string | null {

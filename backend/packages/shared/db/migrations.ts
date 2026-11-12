@@ -473,4 +473,101 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_jobs_closes ON jobs(closes_at) WHERE closes_at IS NOT NULL;
     `,
   },
+  {
+    id: '0014_answer_intent_form_schemas',
+    up: `
+      -- Remembered answers are keyed by what the question MEANS (its intent) and where it holds (scope),
+      -- so a reworded question reuses the answer, and a US work-authorisation answer isn't sent to a UK job.
+      ALTER TABLE answer_memory ADD COLUMN intent TEXT;
+      ALTER TABLE answer_memory ADD COLUMN scope TEXT NOT NULL DEFAULT 'global';
+      CREATE INDEX idx_answer_memory_intent ON answer_memory(user_id, intent, scope) WHERE intent IS NOT NULL;
+
+      -- What an application asks, learned from the first run at each posting (questions only, never anyone's answers).
+      -- Later users see "this application asks N questions, M need you" before spending anything, and answers
+      -- are resolved ahead of opening a browser.
+      CREATE TABLE form_schemas (
+        id           BIGSERIAL PRIMARY KEY,
+        schema_key   TEXT NOT NULL UNIQUE,
+        ats          TEXT,
+        host         TEXT NOT NULL,
+        url_sample   TEXT NOT NULL,
+        fields       JSONB NOT NULL,
+        pages        INTEGER NOT NULL DEFAULT 1,
+        complete     BOOLEAN NOT NULL DEFAULT FALSE,
+        seen_count   INTEGER NOT NULL DEFAULT 1,
+        first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX idx_form_schemas_host ON form_schemas(host, last_seen DESC);
+    `,
+  },
+  {
+    id: '0015_submit_attempt_unique_application',
+    up: `
+      -- Written just before the submit click: from then on a failure may still have sent the application,
+      -- so a crash or timeout is "unconfirmed", never "not sent".
+      ALTER TABLE applications ADD COLUMN submit_attempted_at TIMESTAMPTZ;
+      UPDATE applications a SET submit_attempted_at = (SELECT MIN(e.at) FROM application_events e WHERE e.application_id = a.id AND e.phase = 'verified')
+       WHERE a.status = 'failed' AND a.source <> 'admin_test';
+
+      -- One live application per person per job, enforced by the database (two workers can both pass an
+      -- application-level check). Skipped, not failed, if old data already breaks it.
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM applications WHERE job_id IS NOT NULL AND source <> 'admin_test' AND status NOT IN ('failed','cancelled')
+           GROUP BY user_id, job_id HAVING COUNT(*) > 1
+        ) THEN
+          CREATE UNIQUE INDEX uq_applications_live_job ON applications(user_id, job_id)
+            WHERE job_id IS NOT NULL AND source <> 'admin_test' AND status NOT IN ('failed','cancelled');
+        ELSE
+          RAISE NOTICE 'uq_applications_live_job skipped: duplicate live applications exist';
+        END IF;
+      END $$;
+    `,
+  },
+  {
+    id: '0016_campaigns',
+    up: `
+      -- "Apply to N jobs": a target with an honest end state, not just a daily cap.
+      CREATE TABLE campaigns (
+        id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id      TEXT NOT NULL,
+        target       INT NOT NULL CHECK (target BETWEEN 1 AND 500),
+        min_score    INT NOT NULL DEFAULT 75,
+        status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'completed', 'exhausted', 'stopped')),
+        stop_reason  TEXT,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        finished_at  TIMESTAMPTZ
+      );
+      CREATE UNIQUE INDEX uq_campaigns_one_active ON campaigns(user_id) WHERE status = 'active';
+      CREATE INDEX idx_campaigns_user ON campaigns(user_id, created_at DESC);
+      ALTER TABLE applications ADD COLUMN campaign_id UUID REFERENCES campaigns(id) ON DELETE SET NULL;
+      CREATE INDEX idx_applications_campaign ON applications(campaign_id) WHERE campaign_id IS NOT NULL;
+    `,
+  },
+  {
+    id: '0017_auto_submit',
+    up: `
+      -- Auto Apply sends by itself when nothing in the application was guessed (see review-policy.ts).
+      ALTER TABLE auto_apply_settings ADD COLUMN auto_submit BOOLEAN NOT NULL DEFAULT true;
+    `,
+  },
+  {
+    id: '0018_clean_board_tokens',
+    up: `
+      -- Discovery once kept a link's query string as part of the board ("lithia/wd5/site?q=…"): thousands of
+      -- junk candidates that only ever failed. Keep the real board, retire the junk rows.
+      INSERT INTO job_boards (ats_type, board_token, status, discovered_via, next_poll_at)
+      SELECT DISTINCT ats_type, split_part(board_token, '?', 1), 'candidate', 'cleanup', NULL::timestamptz
+        FROM job_boards WHERE board_token LIKE '%?%' AND split_part(board_token, '?', 1) <> ''
+      ON CONFLICT (ats_type, board_token) DO NOTHING;
+      UPDATE job_boards SET status = 'dead', enabled = false, last_error = 'Token carried a query string' WHERE board_token LIKE '%?%' AND job_count = 0;
+    `,
+  },
+  {
+    id: '0019_llm_cache_write_tokens',
+    up: `
+      ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];

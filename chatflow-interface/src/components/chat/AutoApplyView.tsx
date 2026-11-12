@@ -4,6 +4,7 @@ import { CircleAlert, Loader2, Play, X, Zap } from "lucide-react";
 import { useAutoApply, useAutoApplyActions, useAutoApplyPreview, useAutoApplyRuns } from "@/lib/live";
 import type { AutoApplyRunDTO } from "@/lib/api-client";
 import { PortalPasswordCard } from "./PortalPasswordCard";
+import { CampaignCard } from "./CampaignCard";
 
 const CAPS = [5, 10, 15, 25];
 const SCORES = [60, 70, 75, 80, 90];
@@ -103,6 +104,32 @@ export function AutoApplyView({
           >
             <span
               className={`absolute top-0.5 h-6 w-6 rounded-full bg-background shadow transition-transform ${on ? "translate-x-[22px]" : "translate-x-0.5"}`}
+            />
+          </button>
+        </div>
+
+        <CampaignCard minScore={s?.minScore} />
+
+        {/* Submit by itself */}
+        <div className="flex items-center gap-3 rounded-[18px] border border-border bg-card p-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-[15px] font-semibold text-foreground">Send without asking me</p>
+            <p className="text-[12px] text-muted-foreground">
+              {s?.autoSubmit
+                ? "Applications go out on their own when every answer comes from your profile, your notes or your earlier replies. If any answer had to be guessed, it waits for your review."
+                : "Every application waits for your review before it is sent."}
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={!!s?.autoSubmit}
+            aria-label="Send without asking me"
+            disabled={!s || save.isPending}
+            onClick={() => update({ autoSubmit: !s?.autoSubmit })}
+            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50 ${s?.autoSubmit ? "bg-primary" : "bg-muted ring-1 ring-inset ring-border"}`}
+          >
+            <span
+              className={`absolute top-0.5 h-6 w-6 rounded-full bg-background shadow transition-transform ${s?.autoSubmit ? "translate-x-[22px]" : "translate-x-0.5"}`}
             />
           </button>
         </div>

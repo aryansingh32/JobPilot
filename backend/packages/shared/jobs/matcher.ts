@@ -1,6 +1,9 @@
 import { getPgPool } from '../db/index.js';
+import { loadSkillStats, weightedCoverage, yearsFit as yearsGauss } from './fit-math.js';
 import { getNumber, getBool, getSetting } from '../config/settings.js';
 import type { ProfileData } from '../profile/index.js';
+import { extractSkills } from './normalize.js';
+import { yearsOfExperience } from '../profile/years.js';
 
 // ============================================================
 // MATCHER — rules only, zero AI tokens per match.
@@ -102,7 +105,36 @@ function yearsBand(p: ProfileData): { min: number; max: number } | null {
   return bands[p.work?.experienceLevel ?? ''] ?? null;
 }
 
-export function scoreJob(p: ProfileData, j: JobRow): { score: number; reasons: string[]; eligible: boolean; matchedSkills: string[] } {
+/** Two-letter country the person is based in: their own answer first, else where they connect from. */
+export function homeCountry(p: ProfileData): string | null {
+  for (const c of [p.personal?.country, p.personal?.detectedCountry]) if (c && /^[A-Za-z]{2}$/.test(c.trim())) return c.trim().toUpperCase();
+  return null;
+}
+
+/**
+ * What the résumé and the person's answers show beyond the skills list: tools named in their achievements, projects,
+ * certifications and notes, and the titles they have held. Worked out once per profile (scoring runs thousands of times).
+ */
+const derivedCache = new WeakMap<ProfileData, { skills: Set<string>; pastTitles: { tokens: string[]; company: string }[] }>();
+function derived(p: ProfileData) {
+  let d = derivedCache.get(p);
+  if (!d) {
+    const text = [
+      ...(p.experience ?? []).flatMap((e) => e.highlights ?? []),
+      ...(p.projects ?? []).flatMap((x) => [x.description ?? '', ...(x.tech ?? [])]),
+      ...(p.certifications ?? []),
+      p.personal?.summary ?? '',
+      p.about ?? '',
+    ].join('\n');
+    const skills = new Set([...(p.skills ?? []), ...extractSkills(text, 40)].map((x) => x.toLowerCase()));
+    const titles = [...(p.experience ?? []).map((e) => ({ t: e.title, company: e.company })), ...(p.work?.currentTitle ? [{ t: p.work.currentTitle, company: p.work.currentEmployer ?? '' }] : [])];
+    d = { skills, pastTitles: titles.filter((x) => x.t).map((x) => ({ tokens: tokens(x.t), company: x.company })).filter((x) => x.tokens.length) };
+    derivedCache.set(p, d);
+  }
+  return d;
+}
+
+export function scoreJob(p: ProfileData, j: JobRow, opts: { regionOnly?: boolean } = {}): { score: number; reasons: string[]; eligible: boolean; matchedSkills: string[] } {
   const reasons: string[] = [];
   let score = 0;
 
@@ -116,24 +148,39 @@ export function scoreJob(p: ProfileData, j: JobRow): { score: number; reasons: s
     const hit = rt.filter((t) => titleTokens.has(t)).length / rt.length;
     roleFit = Math.max(roleFit, hit);
   }
-  if (!roles.length) roleFit = 0.4;
+  // A job like one they have already held counts nearly as much as one they named.
+  const mineDerived = derived(p);
+  let pastFit = 0;
+  let pastCompany = '';
+  for (const t of mineDerived.pastTitles) {
+    const hit = t.tokens.filter((x) => titleTokens.has(x)).length / t.tokens.length;
+    if (hit > pastFit) { pastFit = hit; pastCompany = t.company; }
+  }
+  const named = roleFit;
+  roleFit = Math.max(roleFit, pastFit * 0.85);
+  if (!roles.length && !pastFit) roleFit = 0.4;
   score += roleFit * 40;
-  if (roleFit >= 0.99) reasons.push('Matches a role you want');
-  else if (roleFit >= 0.5) reasons.push('Close to a role you want');
+  if (named >= 0.99) reasons.push('Matches a role you want');
+  else if (named >= 0.5) reasons.push('Close to a role you want');
+  else if (pastFit >= 0.99 && roleFit > named) reasons.push(pastCompany ? `Like your work at ${pastCompany}` : 'Like a role you have held');
 
   // Skills (30)
-  const mine = new Set((p.skills ?? []).map((s) => s.toLowerCase()));
+  const mine = mineDerived.skills;
   const overlap = j.skills.filter((s) => mine.has(s.toLowerCase()));
-  const skillFit = j.skills.length ? Math.min(1, overlap.length / Math.min(j.skills.length, 6)) : mine.size ? 0.3 : 0.5;
+  // IDF-weighted, shrunk coverage: a rare skill counts more, and a job naming one skill can't score 100%.
+  const skillFit = j.skills.length ? weightedCoverage(j.skills, (s) => mine.has(s.toLowerCase())) : mine.size ? 0.3 : 0.5;
   score += skillFit * 30;
   if (overlap.length) reasons.push(`${overlap.length} of your skills`);
 
   // Location / workplace (20)
-  const wantRemote = (p.preferences?.workplace ?? []).includes('Remote') || (p.preferences?.locations ?? []).some((l) => /remote/i.test(l));
+  const regionOnly = opts.regionOnly ?? true;
+  const home = homeCountry(p);
+  // Remote is always welcome unless they said they only want office/hybrid.
+  const wantRemote = (p.preferences?.workplace ?? []).includes('Remote') || (p.preferences?.locations ?? []).some((l) => /remote/i.test(l)) || !(p.preferences?.workplace ?? []).length;
   const locs = (p.preferences?.locations ?? []).flatMap((l) => cityAliases(l));
   const wantCountries = new Set(locs.map((l) => CITY_COUNTRY[l]).filter(Boolean));
   const userCountry = CITY_COUNTRY[(p.personal?.city ?? '').toLowerCase()] ?? [...wantCountries][0];
-  const authorizedIn = new Set([...(p.authorization?.countries ?? []), ...(userCountry ? [userCountry] : [])]);
+  const authorizedIn = new Set([...(p.authorization?.countries ?? []), ...(userCountry ? [userCountry] : []), ...(home ? [home] : [])]);
   const jobLoc = (j.location ?? '').toLowerCase();
   let locFit = 0;
   if (j.workplace === 'Remote' && wantRemote) {
@@ -145,9 +192,13 @@ export function scoreJob(p: ProfileData, j: JobRow): { score: number; reasons: s
   } else if (locs.some((l) => l !== 'remote' && jobLoc.includes(l))) locFit = 1;
   // Same country, another city: possible only by relocating — shown, but well below local roles.
   else if (j.country && wantCountries.has(j.country)) locFit = 0.3;
+  // No city named: anything in their own region is a good fit; a job in another country is out when region-only.
+  else if (!locs.length && j.country && authorizedIn.has(j.country)) locFit = 0.8;
+  else if (!locs.length && regionOnly && authorizedIn.size && j.country && j.workplace !== 'Remote') locFit = 0;
   else if (!locs.length) locFit = 0.5;
   score += locFit * 20;
   if (locFit === 1) reasons.push(j.workplace === 'Remote' ? 'Remote' : 'In your city');
+  else if (locFit === 0.8) reasons.push(home && j.country === home ? 'In your region' : 'In a country you can work in');
   else if (locFit === 0.3) reasons.push(j.workplace === 'Remote' ? `Remote (${j.country}-based)` : 'Another city — may need to relocate');
 
   // Workplace they didn't pick (an office job when they asked for remote/hybrid).
@@ -167,7 +218,9 @@ export function scoreJob(p: ProfileData, j: JobRow): { score: number; reasons: s
     yearsFit = yours.max + 1 >= lo && yours.min - 2 <= hi ? 1 : yours.max + 1 < lo ? -1 : 0;
     if (yearsFit === 1) reasons.push(jobMin !== null && jobMax !== null ? `Fits your experience (${lo}–${hi} yrs)` : 'Fits your experience');
   }
-  const senFit = yearsFit !== null ? Math.max(yearsFit, 0) : !allowed || !j.seniority ? 0.5 : allowed.includes(j.seniority) ? 1 : 0;
+  const exact = yearsOfExperience(p);
+  const smooth = exact !== null && (jobMin !== null || jobMax !== null) ? yearsGauss(exact, jobMin, jobMax) : null;
+  const senFit = smooth !== null ? smooth : yearsFit !== null ? Math.max(yearsFit, 0) : !allowed || !j.seniority ? 0.5 : allowed.includes(j.seniority) ? 1 : 0;
   score += senFit * 10;
 
   // Hard filters: wrong level by a mile, or a location the user excluded entirely.
@@ -177,7 +230,7 @@ export function scoreJob(p: ProfileData, j: JobRow): { score: number; reasons: s
   if (yearsFit === -1 && jobMin !== null && yours && jobMin - yours.max >= 2) eligible = false;
   const earlyCareer = ['Student / fresher', '0–2 years'].includes(p.work?.experienceLevel ?? '');
   if (earlyCareer && j.seniority && ['senior', 'lead'].includes(j.seniority)) eligible = false;
-  if ((locs.length || wantRemote) && locFit === 0) eligible = false;
+  if ((locs.length || wantRemote || (regionOnly && authorizedIn.size)) && locFit === 0) eligible = false;
   // Remote but tied to a country they can't work in — only worth showing if they'd seek sponsorship.
   if (locFit === 0.3 && j.workplace === 'Remote' && !p.authorization?.needsSponsorship) eligible = false;
   // "Remote – Hungary": remote but tied to a place we can't confirm they can work in.
@@ -205,8 +258,10 @@ const JOB_COLUMNS = `
 
 /** Every job that fits the user, best first (one per company/title/location). */
 async function rankedMatches(userId: string, profile: ProfileData) {
+  await loadSkillStats();
   const maxAge = await getNumber('jobs.max_age_days');
   const minScore = await getNumber('jobs.match.min_score');
+  const regionOnly = await getBool('jobs.region_only');
   // Only jobs in countries the user can work in (plus remote / unplaced ones):
   // with hundreds of thousands of jobs worldwide, "the newest 3000 anywhere"
   // would bury an Indian user's matches under other countries' jobs.
@@ -214,6 +269,7 @@ async function rankedMatches(userId: string, profile: ProfileData) {
     ...new Set(
       [
         profile.personal?.country,
+        profile.personal?.detectedCountry,
         ...(profile.authorization?.countries ?? []),
         ...(profile.preferences?.locations ?? []).flatMap((l) => cityAliases(l)).map((l) => CITY_COUNTRY[l]),
       ]
@@ -240,7 +296,7 @@ async function rankedMatches(userId: string, profile: ProfileData) {
   // One card per role: big employers post the same title/location as several requisitions.
   const seen = new Set<string>();
   const ranked = rows
-    .map((j) => ({ job: j, ...scoreJob(profile, j) }))
+    .map((j) => ({ job: j, ...scoreJob(profile, j, { regionOnly }) }))
     .filter((r) => r.eligible && r.score >= minScore)
     .filter((r) => {
       const key = `${r.job.company}|${r.job.title.toLowerCase().trim()}|${(r.job.location ?? '').toLowerCase()}`;
@@ -352,8 +408,12 @@ export async function searchJobs(q: {
   text?: string;
   country?: string;
   workplace?: string;
+  includeRemote?: boolean;
   location?: string;
   employmentType?: string;
+  experienceLevel?: 'fresher' | 'any';
+  /** The person's own countries: unless they picked a country or place, only these and remote jobs are listed, theirs first. */
+  region?: string[];
   page?: number;
   pageSize?: number;
 }) {
@@ -364,21 +424,26 @@ export async function searchJobs(q: {
     params.push(ready);
     where.push(`b.ats_type = ANY($${params.length})`);
   }
-  const text = q.text?.trim();
-  if (text) {
-    // Every word has to hit the title, the company or the skills.
-    for (const word of text.split(/\s+/).slice(0, 5)) {
-      params.push(`%${word}%`);
-      where.push(`(j.title ILIKE $${params.length} OR c.name ILIKE $${params.length} OR array_to_string(j.skills, ' ') ILIKE $${params.length})`);
-    }
+  const ignoredSearchWords = new Set([
+    'a', 'an', 'and', 'any', 'for', 'find', 'freshers', 'fresher', 'fresh', 'the', 'job', 'jobs', 'me', 'my', 'of', 'please',
+    'remote', 'india', 'indian', 'location', 'role', 'roles', 'search', 'tech', 'technology', 'zero', 'experience', 'exp', 'entry', 'level', 'no', 'with', 'work',
+  ]);
+  const rawTerms = (q.text ?? '').toLowerCase().match(/[a-z0-9+#.]+/g) ?? [];
+  const expandedTerms = rawTerms.flatMap((word) => ['tech', 'technology'].includes(word) ? ['software', 'developer', 'engineer'] : [word]);
+  const searchTerms = [...new Set(expandedTerms.filter((word) => word.length > 1 && !ignoredSearchWords.has(word)))].slice(0, 6);
+  const textClauses: string[] = [];
+  for (const word of searchTerms) {
+    params.push(`%${word}%`);
+    textClauses.push(`(j.title ILIKE $${params.length} OR c.name ILIKE $${params.length} OR array_to_string(j.skills, ' ') ILIKE $${params.length})`);
   }
+  if (textClauses.length) where.push(`(${textClauses.join(' OR ')})`);
   if (q.location?.trim()) {
     params.push(`%${q.location.trim()}%`);
     where.push(`j.location ILIKE $${params.length}`);
   }
   if (q.country) {
     params.push(q.country.toUpperCase());
-    where.push(`j.country = $${params.length}`);
+    where.push(q.includeRemote ? `(j.country = $${params.length} OR j.workplace = 'Remote')` : `j.country = $${params.length}`);
   }
   if (q.workplace) {
     params.push(q.workplace);
@@ -389,13 +454,27 @@ export async function searchJobs(q: {
     params.push(`%${q.employmentType.replace(/[-\s]+/g, '%')}%`);
     where.push(`j.employment_type ILIKE $${params.length}`);
   }
+  if (q.experienceLevel === 'fresher') {
+    where.push(`(j.seniority IS NULL OR j.seniority IN ('intern', 'entry'))`);
+    where.push(`(j.experience_min IS NULL OR j.experience_min <= 1)`);
+  }
+  const region = !q.country && !q.location?.trim() && q.region?.length ? q.region.map((c) => c.toUpperCase()) : null;
+  let order = 'j.posted_at DESC NULLS LAST';
+  if (textClauses.length) {
+    order = `(${textClauses.map((clause) => `CASE WHEN ${clause} THEN 1 ELSE 0 END`).join(' + ')}) DESC, ${order}`;
+  }
+  if (region) {
+    params.push(region);
+    where.push(`(j.country = ANY($${params.length}) OR j.workplace = 'Remote' OR j.country IS NULL)`);
+    order = `CASE WHEN j.country = ANY($${params.length}) THEN 0 WHEN j.workplace = 'Remote' THEN 1 ELSE 2 END, ${order}`;
+  }
   const pageSize = Math.min(Math.max(q.pageSize ?? 20, 1), 100);
   const page = Math.max(q.page ?? 1, 1);
   params.push(pageSize + 1, (page - 1) * pageSize);
   const { rows } = await getPgPool().query<JobRow>(
     `SELECT ${JOB_COLUMNS} FROM jobs j JOIN job_boards b ON b.id = j.board_id LEFT JOIN companies c ON c.id = j.company_id
       WHERE ${where.join(' AND ')}
-      ORDER BY j.posted_at DESC NULLS LAST
+      ORDER BY ${order}
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );

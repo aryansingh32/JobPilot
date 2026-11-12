@@ -34,6 +34,7 @@ export function RecorderPanel() {
   const [pageUrl, setPageUrl] = useState("");
   const [raw, setRaw] = useState<RawStep[]>([]);
   const [compiled, setCompiled] = useState<PlanStep[] | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [typeBox, setTypeBox] = useState("");
   const [fileIndex, setFileIndex] = useState(1);
@@ -89,6 +90,7 @@ export function RecorderPanel() {
       setSessionId(id);
       setRaw([]);
       setCompiled(null);
+      setWarnings([]);
       setFrame(null);
       await controlApi.recordStart(url.trim(), id);
     });
@@ -107,6 +109,10 @@ export function RecorderPanel() {
       setRaw(steps);
       const c = await controlApi.recordCompile(steps, jobApply);
       setCompiled(c.steps);
+      setWarnings([
+        ...(c.warnings ?? []),
+        ...(c.confirmation ? [`Learned this site's confirmation: ${[c.confirmation.urlPath, c.confirmation.text && `"${c.confirmation.text}"`].filter(Boolean).join(" · ")}`] : []),
+      ]);
       const host = (() => {
         try {
           return new URL(url).hostname;
@@ -324,6 +330,11 @@ export function RecorderPanel() {
               <input className={cn(inputCls, "font-mono text-xs")} value={save.patterns} onChange={(e) => setSave({ ...save, patterns: e.target.value })} />
             </Field>
           </div>
+          {warnings.length > 0 && (
+            <ul className="mb-3 list-disc space-y-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 pl-7 text-xs">
+              {warnings.map((w) => <li key={w}>{w}</li>)}
+            </ul>
+          )}
           <JsonEditor value={compiled} onChange={(v) => Array.isArray(v) && setCompiled(v as PlanStep[])} rows={20} />
         </Section>
       )}

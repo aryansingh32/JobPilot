@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { getPgPool, getRedisClient } from '../shared/db/index.js';
 import { hashPassword } from '../shared/auth/index.js';
 import { listSettings, resetSetting, setSetting, getBool, getNumber } from '../shared/config/settings.js';
+import { BUILTIN_RULES, loadAnswerDefaults, validateDefaults } from '../shared/answers/defaults.js';
+import { buildAnswerBook, planAnswers, type FormField } from '../execution-service/form-filler.js';
 import { adminAuth, type AdminRequest, type AdminRole } from './admin-auth.js';
 
 // ============================================================
@@ -13,6 +15,29 @@ const clampInt = (v: unknown, def: number, min: number, max: number) =>
   Math.min(max, Math.max(min, parseInt(String(v ?? def), 10) || def));
 
 export async function registerPlatformRoutes(app: FastifyInstance): Promise<void> {
+  // ── Default answers: what is answered without asking ────────────────
+  app.get('/admin/answer-defaults', { preHandler: adminAuth }, async () => ({ builtin: BUILTIN_RULES, config: await loadAnswerDefaults() }));
+
+  app.put('/admin/answer-defaults', { preHandler: adminAuth }, async (req, reply) => {
+    const v = validateDefaults((req.body ?? {}) as unknown);
+    if (!v.ok) return reply.status(400).send({ error: v.error });
+    await setSetting('answers.defaults', v.value, (req as AdminRequest).admin.id);
+    return { config: v.value };
+  });
+
+  /** Runs the real planner on one question, with an empty profile, so "what would happen" is never a guess. */
+  app.get('/admin/answer-defaults/test', { preHandler: adminAuth }, async (req) => {
+    const q = req.query as { question?: string; options?: string; type?: string };
+    const question = String(q.question ?? '').trim().slice(0, 400);
+    if (!question) return { result: null };
+    const options = String(q.options ?? '').split('|').map((o) => o.trim()).filter(Boolean).slice(0, 40);
+    const type = q.type === 'checkbox' ? 'checkbox' : options.length ? 'radio' : 'text';
+    const field: FormField = { idx: 0, tag: 'input', type, label: question, name: '', required: true, options, value: '', selector: null };
+    const { answers, missing } = await planAnswers([field], buildAnswerBook({}), async () => null, undefined, await loadAnswerDefaults());
+    const a = answers[0];
+    return { result: a ? { answered: true, value: a.value, source: a.source, rule: a.rule ?? a.key } : { answered: false, reason: missing.length ? 'Would be asked' : 'Left blank (optional)' } };
+  });
+
   // ── Settings ────────────────────────────────────────────
   app.get('/admin/settings', { preHandler: adminAuth }, async () => ({ settings: await listSettings() }));
 
@@ -137,6 +162,8 @@ export async function registerPlatformRoutes(app: FastifyInstance): Promise<void
       pool.query(
         `SELECT COUNT(*)::int AS calls, COALESCE(SUM(prompt_tokens),0)::bigint AS prompt_tokens,
                 COALESCE(SUM(completion_tokens),0)::bigint AS completion_tokens,
+                COALESCE(SUM(cached_tokens),0)::bigint AS cached_tokens,
+                COALESCE(SUM(cache_write_tokens),0)::bigint AS cache_write_tokens,
                 COALESCE(SUM(cost_usd),0)::float AS cost_usd,
                 COUNT(*) FILTER (WHERE NOT ok)::int AS errors,
                 COALESCE(AVG(latency_ms),0)::int AS avg_latency_ms
@@ -145,12 +172,14 @@ export async function registerPlatformRoutes(app: FastifyInstance): Promise<void
       ),
       pool.query(
         `SELECT purpose, COUNT(*)::int AS calls, SUM(prompt_tokens + completion_tokens)::bigint AS tokens,
+                SUM(cached_tokens)::bigint AS cached_tokens, SUM(cache_write_tokens)::bigint AS cache_write_tokens,
                 SUM(cost_usd)::float AS cost_usd, COUNT(*) FILTER (WHERE NOT ok)::int AS errors
            FROM llm_usage WHERE at > ${since} GROUP BY purpose ORDER BY tokens DESC`,
         [days],
       ),
       pool.query(
         `SELECT model, COUNT(*)::int AS calls, SUM(prompt_tokens + completion_tokens)::bigint AS tokens,
+                SUM(cached_tokens)::bigint AS cached_tokens, SUM(cache_write_tokens)::bigint AS cache_write_tokens,
                 SUM(cost_usd)::float AS cost_usd
            FROM llm_usage WHERE at > ${since} GROUP BY model ORDER BY tokens DESC`,
         [days],

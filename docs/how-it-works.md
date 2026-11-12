@@ -1,3 +1,5 @@
+> **Partly stale.** Added since: Auto Apply campaigns (`/me/campaign`), answer memory by intent, submission tri-state, recorder confirmation learning. See `docs/competitive/production-status.md` and `readiness-audit.md`.
+
 # How JobPilot works — system, APIs and the apply engine
 
 _Last verified end to end: 2026-10-21/22, local stack (Postgres, Redis, API, admin service, worker on real Chrome)._

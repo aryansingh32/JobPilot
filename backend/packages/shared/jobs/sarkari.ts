@@ -160,8 +160,12 @@ export function portalKind(url: string | null): string {
   return 'psu';
 }
 
-function stateOf(categories: number[]): string | null {
-  for (const c of categories) if (STATE_BY_CATEGORY[c]) return STATE_BY_CATEGORY[c];
+function stateOf(categories: number[], title = '', source: keyof typeof SOURCES = 'sn'): string | null {
+  // Category ids belong to sarkarinaukri.com; another site's ids mean something else.
+  if (source === 'sn') for (const c of categories) if (STATE_BY_CATEGORY[c]) return STATE_BY_CATEGORY[c];
+  const t = title.toLowerCase();
+  const alias: Array<[RegExp, string]> = [[/up|uttar pradesh|uppsc|upsssc/, 'Uttar Pradesh'], [/mp|madhya pradesh|mppsc|mpesb/, 'Madhya Pradesh'], [/hp|himachal|hpsc?/, 'Himachal Pradesh'], [/jk|j&k|jammu/, 'Jammu & Kashmir'], [/wb|west bengal|wbpsc/, 'West Bengal'], [/tn|tamil nadu|tnpsc/, 'Tamil Nadu'], [/ap|andhra|appsc/, 'Andhra Pradesh'], [/ts|telangana|tspsc/, 'Telangana'], [/hr|haryana|hssc|hpsc/, 'Haryana'], [/uk|uttarakhand|ukpsc|ukssc/, 'Uttarakhand'], [/kpsc|karnataka/, 'Karnataka'], [/mpsc|maharashtra/, 'Maharashtra'], [/gpsc|gujarat/, 'Gujarat'], [/rpsc|rajasthan|rssb|rsmssb/, 'Rajasthan'], [/bpsc|bihar|bssc|bpssc/, 'Bihar'], [/jpsc|jharkhand|jssc/, 'Jharkhand'], [/opsc|odisha|osssc/, 'Odisha'], [/kerala|kpsc/, 'Kerala'], [/punjab|ppsc/, 'Punjab'], [/delhi|dsssb/, 'Delhi'], [/assam|apsc/, 'Assam'], [/chhattisgarh|cgpsc|cgvyapam/, 'Chhattisgarh']];
+  for (const [re, name] of alias) if (re.test(t)) return name;
   return null;
 }
 
@@ -185,7 +189,7 @@ export function postToJob(p: SarkariPost, now = new Date(), source: keyof typeof
   const applyUrl = official ?? p.link;
   const vacancies = vacancyCount(title, text);
   const org = hiringOrg(title);
-  const state = stateOf(p.categories);
+  const state = stateOf(p.categories, title, source);
   const header = [
     closes ? `Last date to apply: ${closes.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' })}` : null,
     vacancies ? `Vacancies: ${vacancies}` : null,

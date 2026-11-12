@@ -13,11 +13,12 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import type { ApplicationSummary, PendingDTO } from "@/lib/api-client";
+import type { ApplicationSummary, CampaignDTO, PendingDTO } from "@/lib/api-client";
 import { applyProgress } from "@/lib/apply-progress";
-import { useApplication, useApplicationActions } from "@/lib/live";
+import { useApplication, useApplicationActions, useCampaign } from "@/lib/live";
 import { ISLAND_EVENT, type IslandEvent, type IslandTone, type IslandTarget } from "@/lib/island";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
+import { useSequentialQuestions } from "@/lib/sequential-questions";
 
 const ACTIVE = ["queued", "running", "needs_input", "awaiting_review"];
 const NEEDS = ["needs_input", "awaiting_review"];
@@ -99,14 +100,58 @@ export function DynamicIsland({
 }) {
   const [event, setEvent] = useState<IslandEvent | null>(null);
   const [expanded, setExpanded] = useState(false);
+  /** The "working" pill opened into the list of what is running. */
+  const [workingOpen, setWorkingOpen] = useState(false);
   /** The ask key the user minimised; a new/changed ask opens again. */
   const [snoozed, setSnoozed] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // What is on screen, and what is waiting its turn: several results arriving together are all shown, never lost.
+  const current = useRef<IslandEvent | null>(null);
+  const queue = useRef<IslandEvent[]>([]);
 
-  const show = (ev: IslandEvent) => {
+  const present = (ev: IslandEvent | null) => {
     if (timer.current) clearTimeout(timer.current);
+    current.current = ev;
     setEvent(ev);
-    timer.current = setTimeout(() => setEvent(null), ev.ttl ?? 6000);
+    if (ev) timer.current = setTimeout(() => present(queue.current.shift() ?? null), ev.ttl ?? 6000);
+  };
+  const merged = (a: IslandEvent, b: IslandEvent): IslandEvent => {
+    const names = [...(a.names ?? []), ...(b.names ?? [])];
+    const count = (a.count ?? 1) + (b.count ?? 1);
+    return {
+      ...b,
+      id: a.id,
+      count,
+      names,
+      title: `${count} applications sent`,
+      body: `${names.slice(0, 2).join(" · ")}${names.length > 2 ? ` · +${names.length - 2} more` : ""}`,
+      action: { label: "View", view: "tasks" },
+    };
+  };
+  const show = (ev: IslandEvent) => {
+    // Same group as what's showing (or waiting): fold in.
+    if (ev.group) {
+      if (current.current?.group === ev.group) return present(merged(current.current, ev));
+      const i = queue.current.findIndex((q) => q.group === ev.group);
+      if (i >= 0) {
+        queue.current[i] = merged(queue.current[i], ev);
+        return;
+      }
+    }
+    if (current.current && current.current.id !== ev.id) {
+      queue.current = [...queue.current.filter((q) => q.id !== ev.id), ev].slice(-5);
+      return;
+    }
+    present(ev);
+  };
+  // Reading takes a moment: hovering holds a notice on screen, leaving gives it a little longer.
+  const hold = () => {
+    if (timer.current) clearTimeout(timer.current);
+  };
+  const release = () => {
+    if (!current.current) return;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => present(queue.current.shift() ?? null), 2500);
   };
 
   // Notices from the AI and the rest of the app.
@@ -134,6 +179,19 @@ export function DynamicIsland({
           title: "Application sent",
           body: a.reference ? `${who} — ref ${a.reference}` : who,
           action: { label: "View", view: "tasks", appId: a.id },
+          group: "sent",
+          count: 1,
+          names: [a.company || a.title],
+        });
+      // The click was made but nothing confirmed it: say so rather than "couldn't finish".
+      else if ((a.status === "failed" || a.status === "cancelled") && a.submission === "unconfirmed")
+        show({
+          id: `maybe-${a.id}`,
+          tone: "warn",
+          title: "May already be sent",
+          body: `${who} — check your email before applying again`,
+          action: { label: "Check", view: "tasks", appId: a.id },
+          ttl: 9000,
         });
       else if (a.status === "failed")
         show({
@@ -171,6 +229,13 @@ export function DynamicIsland({
     (a) => ["queued", "running"].includes(a.status) && !watching.includes(a.id),
   );
   const ask = asks[0] ?? null;
+  const campaign = useCampaign().data?.active ?? null;
+  const sentToday = applications.filter(
+    (a) => ["submitted", "completed"].includes(a.status) && new Date(a.updated_at).toDateString() === new Date().toDateString(),
+  ).length;
+  useEffect(() => {
+    if (!running.length && !campaign) setWorkingOpen(false);
+  }, [running.length, campaign]);
 
   // Pending detail for the application that's asking.
   const detail = useApplication(ask?.id ?? null).data;
@@ -203,12 +268,13 @@ export function DynamicIsland({
         ? "event"
         : ask
           ? "ask"
-          : running.length
+          : running.length || campaign
             ? "working"
             : null;
 
   const go = (to: IslandTarget, appId?: string) => {
-    setEvent(null);
+    queue.current = [];
+    present(null);
     setExpanded(false);
     onNavigate(to, appId);
   };
@@ -276,8 +342,10 @@ export function DynamicIsland({
             key={event.id}
             tone={event.tone}
             open
-            onToggle={() => setEvent(null)}
+            onToggle={() => present(queue.current.shift() ?? null)}
             compact={null}
+            onHold={hold}
+            onRelease={release}
           >
             <div className="flex flex-wrap items-start gap-3 sm:flex-nowrap">
               <span
@@ -301,18 +369,33 @@ export function DynamicIsland({
                 </button>
               )}
             </div>
-            <Countdown ms={event.ttl ?? 6000} tone={event.tone} />
+            <Countdown key={`${event.id}-${event.count ?? 1}`} ms={event.ttl ?? 6000} tone={event.tone} />
           </IslandShell>
         )}
 
-        {mode === "working" && running[0] && (
+        {mode === "working" && (running[0] || campaign) && (
           <IslandShell
             key="working"
             tone="info"
-            open={false}
-            onToggle={() => go("tasks", running[0].id)}
-            compact={<WorkingPill apps={running} />}
-          />
+            open={workingOpen}
+            tuck
+            onToggle={() => setWorkingOpen((o) => !o)}
+            compact={<WorkingPill apps={running} campaign={campaign} />}
+          >
+            <RunningList
+              apps={running}
+              campaign={campaign}
+              sentToday={sentToday}
+              onOpen={(id) => {
+                setWorkingOpen(false);
+                go("tasks", id);
+              }}
+              onCampaign={() => {
+                setWorkingOpen(false);
+                go("autoapply");
+              }}
+            />
+          </IslandShell>
         )}
       </AnimatePresence>
     </div>
@@ -326,33 +409,41 @@ function IslandShell({
   open,
   onToggle,
   compact,
+  onHold,
+  onRelease,
+  tuck,
   children,
 }: {
   tone: IslandTone | "ask";
+  /** Esc, a tap outside or the chevron tucks it back to the pill (questions always do). */
+  tuck?: boolean;
   open: boolean;
   onToggle: () => void;
   compact: React.ReactNode;
+  /** Pointer or focus is on it: don't dismiss. */
+  onHold?: () => void;
+  onRelease?: () => void;
   children?: React.ReactNode;
 }) {
   const calm = useReducedMotion();
   // Desktop: Esc tucks a question away (the pill stays). Phones have no Esc; the chevron does it.
   useEffect(() => {
-    if (!open || tone !== "ask") return;
+    if (!open || (tone !== "ask" && !tuck)) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onToggle();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, tone, onToggle]);
+  }, [open, tone, tuck, onToggle]);
   const color = COLOR[tone];
   const shellRef = useRef<HTMLDivElement>(null);
   // Click or tap anywhere outside a question tucks it away (the pill stays).
   useEffect(() => {
-    if (!open || tone !== "ask") return;
+    if (!open || (tone !== "ask" && !tuck)) return;
     const onDown = (e: PointerEvent) => {
       if (shellRef.current && !shellRef.current.contains(e.target as Node)) onToggle();
     };
     document.addEventListener("pointerdown", onDown, true);
     return () => document.removeEventListener("pointerdown", onDown, true);
-  }, [open, tone, onToggle]);
+  }, [open, tone, tuck, onToggle]);
   // A slowly turning ring marks a waiting question; the rest sit still.
   const ring = tone === "ask";
   return (
@@ -369,7 +460,11 @@ function IslandShell({
         borderRadius: open ? 28 : 999,
         boxShadow: `0 18px 50px -14px ${mix(color, 45)}, 0 6px 18px -8px rgba(0,0,0,0.45)`,
       }}
-      role={open && tone === "ask" ? "dialog" : undefined}
+      onPointerEnter={onHold}
+      onPointerLeave={onRelease}
+      onFocus={onHold}
+      onBlur={onRelease}
+      role={open && tone === "ask" ? "dialog" : open ? "status" : undefined}
       aria-label={open && tone === "ask" ? "JobPilot needs your input" : undefined}
       className={`pointer-events-auto relative text-[color:var(--island-fg)] ${
         // Phones: full width minus the gutter, scrolls if the keyboard leaves little room.
@@ -415,7 +510,7 @@ function IslandShell({
           >
             {children}
           </motion.div>
-          {tone === "ask" && (
+          {(tone === "ask" || tuck) && (
             <button
               onClick={onToggle}
               aria-label="Minimise"
@@ -454,33 +549,114 @@ function Countdown({ ms, tone }: { ms: number; tone: IslandTone }) {
 
 // ─── Working pill: real-time progress for background applications ───────────
 
-function WorkingPill({ apps }: { apps: ApplicationSummary[] }) {
+function WorkingPill({
+  apps,
+  campaign,
+}: {
+  apps: ApplicationSummary[];
+  campaign: CampaignDTO | null;
+}) {
   const first = apps[0];
-  const { data } = useApplication(first.id);
-  const p = applyProgress(data ?? first, data?.events);
+  const { data } = useApplication(first?.id ?? null);
+  const p = first ? applyProgress(data ?? first, data?.events) : null;
+  // A campaign is a goal with a count: show how far it is, honestly (only confirmed ones count).
+  const goal = campaign ? Math.min(1, campaign.progress.confirmed / campaign.target) : null;
+  const counted = campaign ? `${campaign.progress.confirmed} of ${campaign.target}` : null;
   return (
     <>
       <Loader2
         style={{ color: COLOR.info }}
-        className="island-motion h-3.5 w-3.5 shrink-0 animate-spin"
+        className={`island-motion h-3.5 w-3.5 shrink-0 ${first ? "animate-spin" : "opacity-60"}`}
       />
       <span className="max-w-[10rem] truncate text-[13px] font-semibold">
-        {apps.length > 1 ? `Applying to ${apps.length} jobs` : first.company || first.title}
+        {!first
+          ? `Campaign · ${counted}`
+          : apps.length > 1
+            ? `Applying to ${apps.length} jobs`
+            : first.company || first.title}
       </span>
       <span className="max-w-[9rem] truncate text-[12px] text-white/60 sm:max-w-[14rem]">
-        {p.now}
+        {p ? p.now : "Looking for your next match"}
       </span>
       <span className="relative h-1 w-10 shrink-0 overflow-hidden rounded-full bg-white/15">
         <motion.span
           style={{ background: COLOR.info }}
           className="absolute inset-y-0 left-0 overflow-hidden rounded-full"
-          animate={{ width: `${Math.max(8, Math.round(p.fraction * 100))}%` }}
+          animate={{ width: `${Math.max(8, Math.round((first ? (p?.fraction ?? 0) : (goal ?? 0)) * 100))}%` }}
           transition={{ type: "spring", stiffness: 120, damping: 20 }}
         >
           <span className="island-motion absolute inset-y-0 w-1/3 animate-[island-shimmer_1.6s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-white/70 to-transparent" />
         </motion.span>
       </span>
+      {first && counted && (
+        <span className="hidden shrink-0 text-[11px] tabular-nums text-white/55 sm:inline">{counted}</span>
+      )}
     </>
+  );
+}
+
+// ─── What is running: the pill opened up ────────────────────────────────────
+
+function RunningList({
+  apps,
+  campaign,
+  sentToday,
+  onOpen,
+  onCampaign,
+}: {
+  apps: ApplicationSummary[];
+  campaign: CampaignDTO | null;
+  sentToday: number;
+  onOpen: (id: string) => void;
+  onCampaign: () => void;
+}) {
+  return (
+    <div className="pr-7">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <p className="text-[14.5px] font-semibold">
+          {apps.length ? `Applying to ${apps.length} job${apps.length === 1 ? "" : "s"}` : "Between applications"}
+        </p>
+        <p className="text-[12px] tabular-nums text-white/55">{sentToday} sent today</p>
+      </div>
+      {campaign && (
+        <button
+          onClick={onCampaign}
+          className="mb-3 flex w-full items-center gap-3 rounded-2xl bg-white/5 px-3 py-2.5 text-left transition-colors hover:bg-white/10"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block text-[12.5px] font-medium">
+              Campaign · {campaign.progress.confirmed} of {campaign.target} confirmed
+            </span>
+            <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-white/15">
+              <span
+                style={{ width: `${Math.round((campaign.progress.confirmed / campaign.target) * 100)}%`, background: COLOR.success }}
+                className="block h-full rounded-full transition-all"
+              />
+            </span>
+          </span>
+        </button>
+      )}
+      <ul className="space-y-1">
+        {apps.slice(0, 5).map((a) => (
+          <li key={a.id}>
+            <button
+              onClick={() => onOpen(a.id)}
+              className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-white/10"
+            >
+              <Loader2 style={{ color: COLOR.info }} className="island-motion h-3.5 w-3.5 shrink-0 animate-spin" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-medium">{a.company || a.title}</span>
+                <span className="block truncate text-[11.5px] text-white/55">
+                  {a.status === "queued" ? "Waiting for a free browser…" : a.status_detail && !/^started$/i.test(a.status_detail) ? a.status_detail : "Working on it…"}
+                </span>
+              </span>
+            </button>
+          </li>
+        ))}
+        {apps.length > 5 && <li className="px-2 pt-1 text-[11.5px] text-white/50">+{apps.length - 5} more</li>}
+        {!apps.length && <li className="px-2 py-1 text-[12.5px] text-white/60">Looking for your next match…</li>}
+      </ul>
+    </div>
   );
 }
 
@@ -504,9 +680,12 @@ function AskBody({
 }) {
   const { respond } = useApplicationActions();
   const [sent, setSent] = useState(false);
-  const send = (value: string) => {
+  const send = (value: string, onSuccess?: () => void) => {
     setSent(true);
-    respond.mutate({ id: app.id, value }, { onError: () => setSent(false) });
+    respond.mutate({ id: app.id, value }, {
+      onSuccess: onSuccess ? () => onSuccess() : undefined,
+      onError: () => setSent(false),
+    });
   };
   const type = pending.type;
   const who = [app.title, app.company].filter(Boolean).join(" · ");
@@ -550,29 +729,13 @@ function AskBody({
       </div>
     );
 
-  // Several questions at once: summarise, answer them together on the Applications page.
+  // Older parked forms may still contain a group; present those questions sequentially.
   if (pending.questions?.length) {
-    const qs = pending.questions;
-    return (
-      <>
-        {head(
-          <Bell className="h-4 w-4" />,
-          `${qs.length} questions`,
-          `This application needs ${qs.length} answers from you`,
-          "Answer them together — I'll remember them for next time.",
-        )}
-        <ul className="mb-3 space-y-1 rounded-2xl bg-white/5 p-3 text-[12.5px]">
-          {qs.slice(0, 4).map((q) => (
-            <li key={q.id} className="truncate text-white/80">{q.question}</li>
-          ))}
-          {qs.length > 4 && <li className="text-white/50">+{qs.length - 4} more</li>}
-        </ul>
-        <button onClick={onOpen} className={`${SEND} w-full`}>
-          Answer {qs.length} questions
-        </button>
-        {foot}
-      </>
-    );
+    return <IslandQuestionSequence app={app} pending={pending} queued={queued} />;
+  }
+
+  if (pending.applicationQuestion) {
+    return <IslandApplicationQuestion app={app} pending={pending} queued={queued} send={send} />;
   }
 
   // Review before submit: summarise, send the user to the full review.
@@ -588,7 +751,9 @@ function AskBody({
           "Check your answers before they're sent",
           blank
             ? `${blank} left blank: ${pending.missing!.slice(0, 3).join(", ")}${blank > 3 ? "…" : ""}`
-            : `${fields.length} answers filled for you`,
+            : pending.contextMessage?.startsWith("Held for your review")
+              ? pending.contextMessage.replace(/^Held for your review — /, "Held because ")
+              : `${fields.length} answers filled for you`,
         )}
         <ul className="mb-3 space-y-1 rounded-2xl bg-white/5 p-3 text-[12.5px]">
           {preview.map((f) => (
@@ -654,6 +819,141 @@ function AskBody({
       foot={foot}
       send={send}
     />
+  );
+}
+
+function IslandApplicationQuestion({
+  app,
+  pending,
+  queued,
+  send,
+}: {
+  app: ApplicationSummary;
+  pending: PendingDTO;
+  queued: number;
+  send: (value: string, onSuccess?: () => void) => void;
+}) {
+  const question = pending.question || pending.contextMessage || "What would you like to answer?";
+  const flow = useSequentialQuestions(app.exec_job_id ?? app.id, [{ id: "current", question, options: pending.options }]);
+  const answer = flow.answers.current ?? "";
+  const head = (
+    <div className="mb-3 flex items-start gap-3 pr-7">
+      <span style={{ color: COLOR.ask, background: mix(COLOR.ask, 18) }} className="grid h-9 w-9 shrink-0 place-items-center rounded-full">
+        <Bell className="h-4 w-4" />
+      </span>
+      <div className="min-w-0">
+        <p style={{ color: COLOR.ask }} className="text-[11px] font-semibold uppercase tracking-[0.12em]">Application question</p>
+        <p className="mt-0.5 text-[14.5px] font-semibold leading-snug">{question}</p>
+        <p className="mt-0.5 text-[12px] text-white/55">{pending.sensitive ? "Only used for this application." : "I’ll look for saved answers for the next questions too."}</p>
+      </div>
+    </div>
+  );
+  return (
+    <>
+      {head}
+      {pending.options?.length ? (
+        <select className={INPUT} value={answer} onChange={(e) => flow.setAnswer("current", e.target.value)} aria-label={question}>
+          <option value="">Choose an answer…</option>
+          {pending.options.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+      ) : (
+        <textarea
+          rows={2}
+          className="w-full resize-y rounded-xl border border-white/15 bg-white/10 px-3.5 py-2.5 text-base text-white placeholder:text-white/40 outline-none transition-colors focus:border-white/40 focus:bg-white/15 md:text-[14px]"
+          inputMode={pending.sensitive ? "numeric" : undefined}
+          autoComplete={pending.sensitive ? "off" : undefined}
+          value={answer}
+          onChange={(e) => flow.setAnswer("current", e.target.value)}
+          placeholder="Your answer"
+          aria-label={question}
+        />
+      )}
+      <button onClick={() => send(answer.trim(), flow.clear)} disabled={!answer.trim()} className={`${SEND} mt-3 w-full`}>
+        Continue
+      </button>
+      <p className="mt-3 flex items-center justify-between gap-2 text-[11px] text-white/40">
+        <span className="min-w-0 truncate">{[app.title, app.company].filter(Boolean).join(" · ")}</span>
+        {queued > 0 && <span className="shrink-0">+{queued} more waiting</span>}
+      </p>
+    </>
+  );
+}
+
+function IslandQuestionSequence({
+  app,
+  pending,
+  queued,
+}: {
+  app: ApplicationSummary;
+  pending: PendingDTO;
+  queued: number;
+}) {
+  const { respond } = useApplicationActions();
+  const questions = pending.questions ?? [];
+  const flow = useSequentialQuestions(app.exec_job_id ?? app.id, questions);
+  const question = flow.current;
+  const [sent, setSent] = useState(false);
+  if (!question) return null;
+  const answer = flow.answers[question.id] ?? "";
+  const continueSequence = () => {
+    const values = { ...flow.answers, [question.id]: answer.trim() };
+    if (flow.index < flow.count - 1) {
+      flow.setAnswer(question.id, answer.trim());
+      flow.advance();
+      return;
+    }
+    setSent(true);
+    respond.mutate(
+      { id: app.id, value: JSON.stringify(values) },
+      { onSuccess: flow.clear, onError: () => setSent(false) },
+    );
+  };
+  if (sent) {
+    return (
+      <div className="flex items-center gap-3 py-3 text-[14px] font-semibold">
+        <Loader2 style={{ color: COLOR.success }} className="h-4 w-4 animate-spin" />
+        Sending your answers…
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <p style={{ color: COLOR.ask }} className="text-[11px] font-semibold uppercase tracking-[0.12em]">Question {flow.index + 1} of {flow.count}</p>
+          <p className="mt-1 text-[14px] font-semibold leading-snug">{question.question}</p>
+        </div>
+        <span className="shrink-0 text-[11px] text-white/50">{flow.count - flow.index - 1} left</span>
+      </div>
+      <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/10">
+        <div className="h-full rounded-full bg-white/75 transition-[width]" style={{ width: `${((flow.index + 1) / flow.count) * 100}%` }} />
+      </div>
+      {question.options?.length ? (
+        <select
+          className={INPUT}
+          value={answer}
+          onChange={(e) => flow.setAnswer(question.id, e.target.value)}
+          aria-label={question.question}
+        >
+          <option value="">Choose an answer…</option>
+          {question.options.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+      ) : (
+        <textarea
+          rows={2}
+          className="w-full resize-y rounded-xl border border-white/15 bg-white/10 px-3.5 py-2.5 text-base text-white placeholder:text-white/40 outline-none transition-colors focus:border-white/40 focus:bg-white/15 md:text-[14px]"
+          value={answer}
+          onChange={(e) => flow.setAnswer(question.id, e.target.value)}
+          placeholder="Your answer"
+          aria-label={question.question}
+        />
+      )}
+      <button onClick={continueSequence} disabled={!answer.trim() || respond.isPending} className={`${SEND} mt-3 w-full`}>
+        {respond.isPending ? "Sending…" : flow.index === flow.count - 1 ? "Send answers" : "Next question"}
+      </button>
+      <p className="mt-2 text-[11px] text-white/45">I’ve used saved details where possible.</p>
+      {queued > 0 && <p className="mt-1 text-[11px] text-white/45">{queued} other application{queued === 1 ? "" : "s"} waiting.</p>}
+    </div>
   );
 }
 

@@ -1,7 +1,8 @@
 import { jobTint } from "@/lib/job-color";
 import { displayCompany } from "@/lib/company";
 import { CompanyLogo } from "@/components/chat/CompanyLogo";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import {
   Bookmark,
   BookmarkCheck,
@@ -39,11 +40,20 @@ export function JobDetailSheet({
   onApply: (job: JobListingDTO) => void;
   onToggleSave: (job: JobListingDTO) => void;
 }) {
+  const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["job", job?.id],
     queryFn: () => jp.job(job!.id),
     enabled: !!job,
     staleTime: 5 * 60_000,
+  });
+  // What the application will ask, from earlier runs at this posting — only shown when we've seen the form.
+  const preview = useQuery({
+    queryKey: ["job-form-preview", job?.id],
+    queryFn: () => jp.formPreview(job!.id),
+    enabled: !!job,
+    staleTime: 10 * 60_000,
+    retry: false,
   });
   // The card already has the headline facts, so the drawer is useful before the full record arrives.
   const detail: JobDetailDTO | null = job
@@ -106,6 +116,15 @@ export function JobDetailSheet({
             </div>
 
             <div className="scroll-thin flex-1 space-y-5 overflow-y-auto px-5 py-4">
+              {detail.eligibility ? (
+                <EligibilityCard
+                  eligibility={detail.eligibility}
+                  onSaved={() => qc.invalidateQueries({ queryKey: ["job", job?.id] })}
+                />
+              ) : null}
+
+              {detail.resumeFit ? <ResumeFitCard fit={detail.resumeFit} /> : null}
+
               {detail.matchReasons?.length ? (
                 <section className="rounded-2xl bg-primary-soft p-4">
                   <h3 className="flex items-center gap-1.5 text-[13px] font-bold text-primary-soft-foreground">
@@ -116,6 +135,27 @@ export function JobDetailSheet({
                       <li key={r}>• {r}</li>
                     ))}
                   </ul>
+                </section>
+              ) : null}
+
+              {preview.data?.known ? (
+                <section className="rounded-2xl border border-border p-4">
+                  <h3 className="text-[13px] font-bold text-foreground">What applying asks</h3>
+                  <p className="mt-1 text-[13px] text-muted-foreground">
+                    About {preview.data.total} questions
+                    {preview.data.pages > 1 ? ` over ${preview.data.pages} pages` : ""} — I can answer{" "}
+                    {preview.data.ready} from your profile.
+                    {preview.data.needYou.length
+                      ? ` ${preview.data.needYou.length} need${preview.data.needYou.length === 1 ? "s" : ""} you:`
+                      : " Nothing needs you."}
+                  </p>
+                  {preview.data.needYou.length > 0 && (
+                    <ul className="mt-2 space-y-1 text-[13px] text-ink-2">
+                      {preview.data.needYou.slice(0, 5).map((n) => (
+                        <li key={n.question}>• {n.question}</li>
+                      ))}
+                    </ul>
+                  )}
                 </section>
               ) : null}
 
@@ -223,5 +263,138 @@ function Fact({ label, value }: { label: string; value: string }) {
       <div className="text-[11px] font-medium uppercase tracking-wide text-faint">{label}</div>
       <div className="mt-0.5 font-medium text-foreground">{value}</div>
     </div>
+  );
+}
+
+const TONE = {
+  eligible: "bg-emerald-50 text-emerald-900",
+  check: "bg-amber-50 text-amber-900",
+  not_eligible: "bg-rose-50 text-rose-900",
+} as const;
+const HEADLINE = {
+  eligible: "You meet the stated requirements",
+  check: "Check eligibility",
+  not_eligible: "You may not be eligible",
+} as const;
+
+/** Government notices state who may apply; this says whether you do, and asks only for what is missing. */
+function EligibilityCard({
+  eligibility,
+  onSaved,
+}: {
+  eligibility: NonNullable<JobDetailDTO["eligibility"]>;
+  onSaved: () => void;
+}) {
+  const [dob, setDob] = useState("");
+  const [category, setCategory] = useState("");
+  const [busy, setBusy] = useState(false);
+  const needsDob = eligibility.needs.includes("date of birth");
+  const needsCategory = eligibility.needs.includes("category");
+  async function save() {
+    setBusy(true);
+    try {
+      await jp.patchProfile({
+        government: {
+          ...(dob ? { dateOfBirth: dob } : {}),
+          ...(category ? { category: category as "General" } : {}),
+        },
+      } as never);
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className={`rounded-2xl p-4 ${TONE[eligibility.status]}`}>
+      <h3 className="text-[13px] font-bold">{HEADLINE[eligibility.status]}</h3>
+      <ul className="mt-2 space-y-1 text-[13px]">
+        {eligibility.reasons.map((r) => (
+          <li key={r}>• {r}</li>
+        ))}
+      </ul>
+      {(needsDob || needsCategory) && (
+        <div className="mt-3 flex flex-wrap items-end gap-2 text-[13px]">
+          {needsDob && (
+            <label className="flex flex-col gap-1">
+              Date of birth
+              <input
+                type="date"
+                value={dob}
+                onChange={(e) => setDob(e.target.value)}
+                className="rounded-lg border border-border bg-white px-2 py-1 text-foreground"
+              />
+            </label>
+          )}
+          {needsCategory && (
+            <label className="flex flex-col gap-1">
+              Category
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="rounded-lg border border-border bg-white px-2 py-1 text-foreground"
+              >
+                <option value="">Choose…</option>
+                {["General", "OBC", "EWS", "SC", "ST"].map((c) => (
+                  <option key={c}>{c}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <button
+            type="button"
+            disabled={busy || (!dob && !category)}
+            onClick={save}
+            className="rounded-lg bg-foreground px-3 py-1.5 font-semibold text-background disabled:opacity-50"
+          >
+            Check again
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const FIT_TONE = {
+  strong: "bg-emerald-50 text-emerald-900",
+  good: "bg-sky-50 text-sky-900",
+  stretch: "bg-amber-50 text-amber-900",
+  unlikely: "bg-rose-50 text-rose-900",
+} as const;
+
+/** Your résumé against this one posting: what it shows, what it lacks, and what to do. */
+function ResumeFitCard({ fit }: { fit: NonNullable<JobDetailDTO["resumeFit"]> }) {
+  const chip = (s: string, ok: boolean) => (
+    <span
+      key={s}
+      className={`rounded-full px-2 py-0.5 text-[12px] font-medium ${ok ? "bg-white/70" : "border border-current/30"}`}
+    >
+      {ok ? "✓ " : ""}
+      {s}
+    </span>
+  );
+  const any = fit.required.have.length + fit.required.missing.length > 0;
+  return (
+    <section className={`rounded-2xl p-4 ${FIT_TONE[fit.verdict]}`}>
+      <h3 className="text-[13px] font-bold">{fit.headline}</h3>
+      {any && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {fit.required.have.map((s) => chip(s, true))}
+          {fit.required.missing.map((s) => chip(s, false))}
+        </div>
+      )}
+      {fit.experience.asks && (
+        <p className="mt-2 text-[13px]">
+          Experience: asks {fit.experience.asks}
+          {fit.experience.yours !== null ? `, you have about ${fit.experience.yours}` : ""}.
+        </p>
+      )}
+      {fit.advice.length > 0 && (
+        <ul className="mt-2 space-y-1 text-[13px]">
+          {fit.advice.map((a) => (
+            <li key={a}>• {a}</li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

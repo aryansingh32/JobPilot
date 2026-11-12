@@ -5,6 +5,7 @@
 import { createHash } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createLogger } from '../shared/logger/index.js';
+import { safeEqual } from '../shared/security/safe-equal.js';
 import { ingestClientEvents } from './observability.service.js';
 
 const logger = createLogger('observability-routes');
@@ -16,7 +17,7 @@ async function apiAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> 
     await reply.status(401).send({ error: 'Unauthorized' });
     return;
   }
-  if (!key || key !== expected) {
+  if (!safeEqual(key, expected)) {
     await reply.status(401).send({ error: 'Unauthorized' });
   }
 }

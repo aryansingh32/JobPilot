@@ -69,7 +69,7 @@ function splitHeader(s: string): { title?: string; company?: string; location?: 
   const out: { title?: string; company?: string; location?: string } = {};
   // "San Francisco, CA" was split at the comma: put city + state back together.
   for (let i = 0; i < parts.length; i++) {
-    const joined = i + 1 < parts.length ? `${parts[i]}, ${parts[i + 1]}` : '';
+    const joined = i + 1 < parts.length && !ROLE_WORDS.test(parts[i]) ? `${parts[i]}, ${parts[i + 1]}` : '';
     if (!out.location && joined && PLACE.test(joined)) {
       out.location = joined;
       parts.splice(i, 2);
@@ -83,7 +83,9 @@ function splitHeader(s: string): { title?: string; company?: string; location?: 
   const titleIdx = parts.findIndex((p) => ROLE_WORDS.test(p));
   if (titleIdx >= 0) {
     out.title = parts[titleIdx];
-    out.company = parts.find((_, i) => i !== titleIdx);
+    const rest = parts.filter((_, i) => i !== titleIdx);
+    out.company = rest[0];
+    if (!out.location && rest.length > 1 && /^[A-Z][A-Za-z.]+(?:\s[A-Z][A-Za-z.]+){0,2}$/.test(rest[1])) out.location = rest[1];
   } else {
     [out.company, out.title] = parts;
   }
@@ -125,7 +127,7 @@ export function extractEducation(text: string): Education[] {
   for (const line of sections(text).education) {
     if (!DEGREE.test(line) && !SCHOOL.test(line)) continue;
     const years = line.match(/\b(19|20)\d{2}\b/g) ?? [];
-    const cleaned = line.replace(RANGE, '').replace(/\b(19|20)\d{2}\b/g, '').replace(/[\s,—–|-]+$/, '').trim();
+    const cleaned = line.replace(/\b(?:cgpa|gpa|percentage|aggregate|marks)\s*[:\-]?\s*[\d./%\s]+/i, '').replace(RANGE, '').replace(/\b(19|20)\d{2}\b/g, '').replace(/[\s,—–|-]+$/, '').trim();
     const parts = cleaned.split(/\s+(?:—|–|-|\||·)\s+|,\s+(?=[A-Z])/).map((p) => p.trim()).filter(Boolean);
     const at = parts.findIndex((p) => SCHOOL.test(p));
     // "University of California, Davis": a short place right after the school is part of its name.
@@ -137,7 +139,9 @@ export function extractEducation(text: string): Education[] {
     const degreeMatch = degreePart?.match(DEGREE);
     const field = degreePart && degreeMatch ? degreePart.slice((degreeMatch.index ?? 0) + degreeMatch[0].length).replace(/^[\s.,]*(in\s+|of\s+)?/i, '').trim() : undefined;
     if (!school && !degreePart) continue;
+    const grade = line.match(/\b(?:cgpa|gpa|percentage|aggregate|marks)\s*[:\-]?\s*(\d{1,3}(?:\.\d{1,2})?\s*(?:\/\s*\d{1,3}|%)?)/i)?.[1]?.replace(/\s+/g, '');
     out.push({
+      grade,
       school,
       degree: degreeMatch?.[0],
       field: field || undefined,
@@ -146,4 +150,42 @@ export function extractEducation(text: string): Education[] {
     });
   }
   return out.slice(0, 5);
+}
+
+const SECTION_END = /^(work|professional|relevant)?\s*(experience|employment( history)?|work history|education|academics?|qualifications|skills|technical skills|projects|personal projects|certifications?|awards|achievements|publications|summary|professional summary|profile|objective|career objective|interests|languages|volunteer(ing)?|activities|references|declaration)$/i;
+
+/** Lines under a heading that matches `heading` (until the next heading). */
+export function sectionLines(text: string, heading: RegExp): string[] {
+  const out: string[] = [];
+  let inside = false;
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\s+/g, ' ').trim();
+    if (!line) continue;
+    const h = line.replace(/[:•|]+$/, '').trim();
+    if (h.length < 40 && SECTION_END.test(h)) { inside = heading.test(h); continue; }
+    if (inside) out.push(line);
+  }
+  return out;
+}
+
+export function extractSummary(text: string): string | undefined {
+  const s = sectionLines(text, /^(professional |career )?(summary|profile|objective)$/i).join(' ').trim();
+  return s.length >= 40 ? s.slice(0, 700) : undefined;
+}
+
+export function extractCertifications(text: string): string[] {
+  return sectionLines(text, /^certifications?$/i).map((l) => l.replace(/^[•▪●◦\-*]\s*/, '').trim()).filter((l) => l.length >= 4 && l.length <= 140).slice(0, 12);
+}
+
+/** Skills written under a "Skills" heading, however grouped ("Languages: JavaScript, Python"). */
+export function extractSkillList(text: string): string[] {
+  const out: string[] = [];
+  for (const line of sectionLines(text, /^(technical )?skills$/i)) {
+    const body = line.replace(/^[•▪●◦\-*]\s*/, '').replace(/^[A-Za-z &/]{2,30}:\s*/, '');
+    for (const part of body.split(/[,;|·•]/)) {
+      const t = part.trim().replace(/\.$/, '');
+      if (t.length >= 2 && t.length <= 30 && t.split(/\s+/).length <= 3 && !/\d{3,}/.test(t)) out.push(t);
+    }
+  }
+  return [...new Set(out)].slice(0, 40);
 }

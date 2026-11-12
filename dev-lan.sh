@@ -33,12 +33,24 @@ PG_PORT=55432
 DEV_REDIS_PORT=56379
 PG_PASSWORD=jobpilot-dev
 
-lan_ip() { ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") print $(i+1)}' | head -1; }
+lan_ip() {
+  local addr=""
+  addr="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}' || true)"
+  if [ -z "$addr" ]; then
+    addr="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  printf '%s' "$addr"
+}
 LAN_IP="$(lan_ip)"
 
 say() { printf '\033[36m[dev]\033[0m %s\n' "$1"; }
 
 running() { [ -f "$RUN/$1.pid" ] && kill -0 "$(cat "$RUN/$1.pid")" 2>/dev/null; }
+http_healthy() {
+  curl -fsS --max-time 3 "$1" 2>/dev/null \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.exit(JSON.parse(s).status==="healthy"?0:1)}catch{process.exit(1)}})' \
+    2>/dev/null
+}
 
 stop_services() {
   for s in ngrok web scheduler worker admin api; do
@@ -62,9 +74,9 @@ urls() {
   if running ngrok && [ -f "$RUN/public-url" ]; then
     echo "  Share    $(cat "$RUN/public-url")      ← send this link (app + sign-in; admin is not on it)"
   fi
-  echo "  App      http://localhost:$WEB_PORT          http://$LAN_IP:$WEB_PORT"
-  echo "  Admin    http://localhost:$WEB_PORT/admin    http://$LAN_IP:$WEB_PORT/admin"
-  echo "  API      http://localhost:$API_PORT/health   http://$LAN_IP:$API_PORT/health"
+  echo "  App      http://localhost:$WEB_PORT${LAN_IP:+          http://$LAN_IP:$WEB_PORT}"
+  echo "  Admin    http://localhost:$WEB_PORT/admin${LAN_IP:+    http://$LAN_IP:$WEB_PORT/admin}"
+  echo "  API      http://localhost:$API_PORT/health${LAN_IP:+   http://$LAN_IP:$API_PORT/health}"
   echo
   echo "  Sign-in codes (no SMTP/Twilio set): ./dev-lan.sh code"
   echo "  Admin login: ADMIN_USERNAME / ADMIN_PASSWORD from backend/.env"
@@ -76,7 +88,28 @@ case "${1:-start}" in
   restart) stop_services; sleep 2 ;;
   share) SHARE=1; stop_services; sleep 2 ;;
   status)
-    for s in api admin worker scheduler web ngrok; do running "$s" && echo "  $s: running" || echo "  $s: stopped"; done
+    for s in api admin worker scheduler web ngrok; do
+      if ! running "$s"; then
+        echo "  $s: stopped"
+        continue
+      fi
+      case "$s" in
+        api) http_healthy "http://127.0.0.1:$API_PORT/health" && echo "  api: healthy" || echo "  api: process running, health check failed" ;;
+        admin) http_healthy "http://127.0.0.1:$ADMIN_PORT/health" && echo "  admin: healthy" || echo "  admin: process running, health check failed" ;;
+        web) curl -sf --max-time 5 "http://127.0.0.1:$WEB_PORT/" >/dev/null 2>&1 && echo "  web: healthy" || echo "  web: process running, health check failed" ;;
+        *) echo "  $s: process running" ;;
+      esac
+    done
+    if docker exec jobpilot-dev-pg pg_isready -U postgres >/dev/null 2>&1; then
+      echo "  postgres: healthy (PostgreSQL 16)"
+    else
+      echo "  postgres: container stopped/unavailable"
+    fi
+    if docker exec jobpilot-dev-redis redis-cli ping 2>/dev/null | grep -qx PONG; then
+      echo "  redis: healthy"
+    else
+      echo "  redis: container stopped/unavailable"
+    fi
     urls; exit 0 ;;
   logs) exec tail -n 100 -f "$LOGS/${2:-api}.log" ;;
   code) grep -ho "code is [0-9]*" "$LOGS/api.log" | tail -1 || echo "no code yet"; exit 0 ;;
@@ -85,6 +118,7 @@ case "${1:-start}" in
 esac
 
 [ -f "$BACKEND/.env" ] || { echo "backend/.env is missing — run ./start.sh once or copy backend/.env.example"; exit 1; }
+docker info >/dev/null 2>&1 || { echo "Docker is unavailable. Start Docker and verify your user can access the Docker socket, then retry."; exit 1; }
 
 # ── Data: Postgres + Redis (own containers + volumes, not the Compose ones) ──
 if ! docker ps --format '{{.Names}}' | grep -qx jobpilot-dev-pg; then
@@ -99,7 +133,26 @@ if ! docker ps --format '{{.Names}}' | grep -qx jobpilot-dev-redis; then
     redis-server --appendonly yes >/dev/null
   say "redis started on :$DEV_REDIS_PORT"
 fi
-until docker exec jobpilot-dev-pg pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
+READY=0
+for _ in $(seq 1 60); do
+  if docker exec jobpilot-dev-pg pg_isready -U postgres >/dev/null 2>&1; then READY=1; break; fi
+  sleep 1
+done
+if [ "$READY" != "1" ]; then
+  echo "PostgreSQL 16 did not become ready on :$PG_PORT; recent container logs:"
+  docker logs --tail 50 jobpilot-dev-pg 2>&1 || true
+  exit 1
+fi
+READY=0
+for _ in $(seq 1 30); do
+  if docker exec jobpilot-dev-redis redis-cli ping 2>/dev/null | grep -qx PONG; then READY=1; break; fi
+  sleep 1
+done
+if [ "$READY" != "1" ]; then
+  echo "Redis did not become ready on :$DEV_REDIS_PORT; recent container logs:"
+  docker logs --tail 50 jobpilot-dev-redis 2>&1 || true
+  exit 1
+fi
 
 # ── Share: a public https link (ngrok) to the web app; the API rides along on /api ──
 PUBLIC_URL=""
@@ -160,18 +213,23 @@ start() {
   say "started $name (log: .dev-data/logs/$name.log)"
 }
 
-# The API runs migrations; start it first and wait until it's healthy.
+# The API runs migrations; start it first and wait until dependencies are healthy.
 start api node --import tsx packages/api-service/server.ts
-until curl -sf "http://127.0.0.1:$API_PORT/health" >/dev/null; do
+READY=0
+for _ in $(seq 1 90); do
+  if http_healthy "http://127.0.0.1:$API_PORT/health"; then READY=1; break; fi
   running api || { echo "API failed to start — see .dev-data/logs/api.log"; tail -20 "$LOGS/api.log"; exit 1; }
   sleep 1
 done
+if [ "$READY" != "1" ]; then echo "API did not become healthy in 90 seconds:"; tail -50 "$LOGS/api.log"; exit 1; fi
 start admin node --import tsx packages/admin-service/server.ts
-# 401 = up (it wants a login); wait so the URLs printed below work right away.
-until [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$ADMIN_PORT/admin/health")" = "401" ]; do
+READY=0
+for _ in $(seq 1 60); do
+  if http_healthy "http://127.0.0.1:$ADMIN_PORT/health"; then READY=1; break; fi
   running admin || { echo "Admin service failed to start — see .dev-data/logs/admin.log"; tail -20 "$LOGS/admin.log"; exit 1; }
   sleep 1
 done
+if [ "$READY" != "1" ]; then echo "Admin service did not become healthy in 60 seconds:"; tail -50 "$LOGS/admin.log"; exit 1; fi
 start worker node --import tsx packages/execution-service/worker.ts
 start scheduler node --import tsx packages/scheduler-service/scheduler.ts
 
@@ -179,6 +237,11 @@ start scheduler node --import tsx packages/scheduler-service/scheduler.ts
 # Shared: the API on this server's /api (one origin through the tunnel); else straight to :$API_PORT.
 WEB_API_BASE="http://{host}:$API_PORT"
 [ -n "$PUBLIC_URL" ] && WEB_API_BASE="/api"
+if running web && ! curl -sf --max-time 5 "http://127.0.0.1:$WEB_PORT/" >/dev/null 2>&1; then
+  say "web PID exists but Vite is not responding; restarting it"
+  kill -- -"$(cat "$RUN/web.pid")" 2>/dev/null || kill "$(cat "$RUN/web.pid")" 2>/dev/null || true
+  rm -f "$RUN/web.pid"
+fi
 if ! running web; then
   (cd "$FRONTEND"; VITE_API_BASE_URL="$WEB_API_BASE" JP_API_TARGET="http://127.0.0.1:$API_PORT" VITE_ADMIN_API_BASE_URL="http://{host}:$ADMIN_PORT" \
     VITE_API_KEY="$API_KEY" VITE_GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}" setsid npx vite dev --host :: --port "$WEB_PORT" --strictPort \

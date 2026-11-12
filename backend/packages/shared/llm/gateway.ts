@@ -1,5 +1,5 @@
 import type OpenAI from 'openai';
-import { getOpenAICompatibleClient, isDummyLLMKey } from './index.js';
+import { getLLMProviders, getProviderFallbackModel, isDummyLLMKey } from './index.js';
 import { getBool, getNumber, getSetting, getString, type SettingKey } from '../config/settings.js';
 import { getPgPool, getRedisClient } from '../db/index.js';
 import { createLogger } from '../logger/index.js';
@@ -21,6 +21,7 @@ export type LLMPurpose =
   | 'recovery'
   | 'resume_parse'
   | 'field_answers'
+  | 'answer_bank'
   | 'copilot';
 
 export interface CompleteOptions {
@@ -40,7 +41,7 @@ export interface CompleteOptions {
 export interface CompleteResult {
   text: string;
   model: string;
-  usage: { prompt: number; completion: number; reasoning: number; cached: number };
+  usage: { prompt: number; completion: number; reasoning: number; cached: number; cacheWrite: number };
   costUsd: number;
 }
 
@@ -53,7 +54,6 @@ export class LLMBlockedError extends Error {
   }
 }
 
-const FALLBACK_MODEL = process.env.LLM_FALLBACK_MODEL ?? 'nvidia/nemotron-3.5-lightning:free';
 const day = () => new Date().toISOString().slice(0, 10);
 const userTokensKey = (userId: string) => `llm:tokens:${day()}:${userId}`;
 const globalUsdKey = () => `llm:usd:${day()}`;
@@ -84,13 +84,13 @@ async function priceFor(model: string, input: number, output: number): Promise<n
 }
 
 async function record(opts: CompleteOptions, model: string, res: Partial<CompleteResult>, latencyMs: number, error?: string) {
-  const u = res.usage ?? { prompt: 0, completion: 0, reasoning: 0, cached: 0 };
+  const u = res.usage ?? { prompt: 0, completion: 0, reasoning: 0, cached: 0, cacheWrite: 0 };
   try {
     await getPgPool().query(
-      `INSERT INTO llm_usage (purpose, model, prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens,
+      `INSERT INTO llm_usage (purpose, model, prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, cache_write_tokens,
                               cost_usd, latency_ms, user_id, job_id, ok, error)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [opts.purpose, model, u.prompt, u.completion, u.reasoning, u.cached, res.costUsd ?? 0, latencyMs,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [opts.purpose, model, u.prompt, u.completion, u.reasoning, u.cached, u.cacheWrite, res.costUsd ?? 0, latencyMs,
         opts.userId ?? null, opts.jobId ?? null, !error, error ?? null],
     );
     if (!error) {
@@ -122,11 +122,25 @@ export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
   await checkBudgets(opts.userId);
   const primary = await getString(`llm.model.${opts.purpose}` as SettingKey);
   const reasoning = opts.allowReasoning && (await getBool('llm.reasoning.enabled'));
-  const client = getOpenAICompatibleClient();
-  const models = primary === FALLBACK_MODEL ? [primary] : [primary, FALLBACK_MODEL];
+  const providers = getLLMProviders();
+  const modelFor = (providerIndex: number) => {
+    const providerName = providers[providerIndex].name;
+    if (providerIndex > 0) return getProviderFallbackModel(providerName);
+    // Runtime settings can outlive provider changes. Avoid sending a model ID
+    // from the other provider's namespace after an operator removes a key.
+    if (providerName === 'openrouter' && ['gemini-3-8-flash', 'claude-haiku-5-5'].includes(primary)) {
+      return getProviderFallbackModel('openrouter');
+    }
+    if (providerName === 'coarena' && primary.startsWith('nvidia/')) {
+      return getProviderFallbackModel('coarena');
+    }
+    return primary;
+  };
 
   let lastErr: unknown;
-  for (const model of models) {
+  for (let providerIndex = 0; providerIndex < providers.length; providerIndex++) {
+    const currentProvider = providers[providerIndex];
+    const model = modelFor(providerIndex);
     for (let attempt = 0; attempt < 2; attempt++) {
       const t0 = Date.now();
       try {
@@ -139,7 +153,7 @@ export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
         if (opts.json) body.response_format = { type: 'json_object' };
         // Off unless asked for: models that think by default spend the whole budget on it and say nothing.
         body.reasoning = { enabled: !!reasoning };
-        const resp = (await client.chat.completions.create(body as never, {
+        const resp = (await currentProvider.client.chat.completions.create(body as never, {
           timeout: opts.timeoutMs ?? 30_000,
         })) as OpenAI.Chat.Completions.ChatCompletion;
         const raw = resp.choices[0]?.message?.content;
@@ -149,14 +163,19 @@ export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
         const u = resp.usage as
           | (OpenAI.Completions.CompletionUsage & {
               completion_tokens_details?: { reasoning_tokens?: number };
-              prompt_tokens_details?: { cached_tokens?: number };
+              prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number; cache_creation_tokens?: number };
+              input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number; cache_creation_tokens?: number };
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
             })
           | undefined;
+        const promptDetails = u?.prompt_tokens_details ?? u?.input_tokens_details;
         const usage = {
           prompt: u?.prompt_tokens ?? 0,
           completion: u?.completion_tokens ?? 0,
           reasoning: u?.completion_tokens_details?.reasoning_tokens ?? 0,
-          cached: u?.prompt_tokens_details?.cached_tokens ?? 0,
+          cached: promptDetails?.cached_tokens ?? u?.cache_read_input_tokens ?? 0,
+          cacheWrite: promptDetails?.cache_write_tokens ?? promptDetails?.cache_creation_tokens ?? u?.cache_creation_input_tokens ?? 0,
         };
         const result: CompleteResult = {
           text,
@@ -169,9 +188,15 @@ export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
       } catch (err) {
         lastErr = err;
         await record(opts, model, {}, Date.now() - t0, (err as Error).message?.slice(0, 500));
-        if ((err as { emptyReply?: boolean }).emptyReply || !isRetryable(err)) break;
+        const status = (err as { status?: number }).status;
+        // Quota/rate limits and provider capacity are provider-wide: move to
+        // the next provider immediately instead of retrying a spent quota.
+        if ((err as { emptyReply?: boolean }).emptyReply || !isRetryable(err) || status === 429 || status === 503) break;
         await sleep(800 * (attempt + 1));
       }
+    }
+    if (providerIndex + 1 < providers.length) {
+      logger.warn('llm-provider:fallback', { from: currentProvider.name, to: providers[providerIndex + 1].name });
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error('LLM call failed');

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Loader2, MapPin, Search, SearchX, X } from "lucide-react";
-import { jp, type JobListingDTO } from "@/lib/api-client";
+import { jp, type JobListingDTO, type JobSearchParams } from "@/lib/api-client";
 import { JobCard } from "./JobsHome";
 
 const WORKPLACE = ["Any", "Remote", "Hybrid", "On-site"] as const;
@@ -51,26 +51,31 @@ function Chips<T extends string>({
 
 /** Every open role: search, filter, and open any card for the full details. */
 export function JobsExplorer({
+  initialSearch,
   savedIds,
   onOpen,
   onApply,
   onToggleSave,
 }: {
+  initialSearch?: JobSearchParams & { country?: string; includeRemote?: boolean; experienceLevel?: "fresher" } | null;
   savedIds: Set<string>;
   onOpen: (job: JobListingDTO) => void;
   onApply: (job: JobListingDTO) => void;
   onToggleSave: (job: JobListingDTO) => void;
 }) {
-  const [text, setText] = useState("");
-  const [where, setWhere] = useState("");
-  const [workplace, setWorkplace] = useState<(typeof WORKPLACE)[number]>("Any");
+  const [text, setText] = useState(initialSearch?.q ?? "");
+  const [where, setWhere] = useState(initialSearch?.location ?? "");
+  const [workplace, setWorkplace] = useState<(typeof WORKPLACE)[number]>(initialSearch?.workplace === "Remote" ? "Remote" : "Any");
   const [type, setType] = useState<(typeof TYPES)[number]>("Any");
+  const [country, setCountry] = useState(initialSearch?.country);
+  const [includeRemote, setIncludeRemote] = useState(initialSearch?.includeRemote);
+  const [experienceLevel, setExperienceLevel] = useState(initialSearch?.experienceLevel);
   const q = useDebounced(text.trim());
   const location = useDebounced(where.trim());
   const [passed, setPassed] = useState<Set<string>>(() => new Set());
 
   const query = useInfiniteQuery({
-    queryKey: ["jobs-search", q, location, workplace, type],
+    queryKey: ["jobs-search", q, location, workplace, type, country, includeRemote, experienceLevel],
     initialPageParam: 1,
     queryFn: ({ pageParam }) =>
       jp.searchJobs({
@@ -78,13 +83,16 @@ export function JobsExplorer({
         location,
         workplace: workplace === "Any" ? undefined : workplace,
         type: type === "Any" ? undefined : type,
+        country,
+        includeRemote,
+        experienceLevel,
         page: pageParam,
       }),
     getNextPageParam: (last) => (last.hasMore ? last.page + 1 : undefined),
     staleTime: 60_000,
   });
   const jobs = (query.data?.pages.flatMap((p) => p.jobs) ?? []).filter((j) => !passed.has(j.id));
-  const filtered = !!(q || location || workplace !== "Any" || type !== "Any");
+  const filtered = !!(q || location || workplace !== "Any" || type !== "Any" || country || includeRemote || experienceLevel);
 
   return (
     <div className="scroll-thin flex-1 overflow-y-auto px-4 pb-10">
@@ -123,6 +131,13 @@ export function JobsExplorer({
             <Chips label="Work" options={WORKPLACE} value={workplace} onChange={setWorkplace} />
             <Chips label="Type" options={TYPES} value={type} onChange={setType} />
           </div>
+          {(country || includeRemote || experienceLevel) && (
+            <div className="flex flex-wrap gap-1.5" aria-label="Applied search filters">
+              {country && <span className="rounded-full bg-primary-soft px-2.5 py-1 text-[11px] font-medium text-primary-soft-foreground">India</span>}
+              {includeRemote && <span className="rounded-full bg-primary-soft px-2.5 py-1 text-[11px] font-medium text-primary-soft-foreground">Remote</span>}
+              {experienceLevel && <span className="rounded-full bg-primary-soft px-2.5 py-1 text-[11px] font-medium text-primary-soft-foreground">Freshers</span>}
+            </div>
+          )}
         </div>
 
         {query.isLoading ? (
@@ -157,6 +172,9 @@ export function JobsExplorer({
                       setWhere("");
                       setWorkplace("Any");
                       setType("Any");
+                      setCountry(undefined);
+                      setIncludeRemote(undefined);
+                      setExperienceLevel(undefined);
                     },
                   }
                 : undefined

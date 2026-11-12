@@ -316,12 +316,13 @@ export async function pollBoard(boardId: string): Promise<{ seen: number; closed
     });
     return { seen: payload.length, closed: closed.rowCount ?? 0, added, focus: focusCount };
   } catch (err) {
-    // Gone (404) twice, or a discovered candidate that never existed → dead.
+    // Gone (404) twice, or a discovered candidate that never existed → dead. A candidate that has failed 5 times
+    // in a row (400/403/5xx — in dev 11k Workday candidates sat at 50+ failures) never proved it exists: dead too.
     // Anything else (timeouts, 5xx, rate limits) backs off: 30 min, 1 h, 2 h … 1 day.
     const notFound = (err as { code?: string }).code === 'BOARD_NOT_FOUND';
     await pool.query(
       `UPDATE job_boards SET last_polled_at = NOW(), last_status = 'error', last_error = $2, failures = failures + 1,
-              status = CASE WHEN $3 AND (status = 'candidate' OR failures >= 1) THEN 'dead' ELSE status END,
+              status = CASE WHEN ($3 AND (status = 'candidate' OR failures >= 1)) OR (status = 'candidate' AND failures >= 4) THEN 'dead' ELSE status END,
               next_poll_at = NOW() + (LEAST(30 * POWER(2, failures), 1440) || ' minutes')::interval
         WHERE id = $1`,
       [boardId, (err as Error).message.slice(0, 300), notFound],

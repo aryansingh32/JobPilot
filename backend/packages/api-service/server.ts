@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import Fastify, { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { randomUUID } from 'crypto';
+import { safeEqual } from '../shared/security/safe-equal.js';
 import type {
   CrawlJob, ExecuteJob, RemapJob,
   JobPriority,
@@ -11,7 +12,7 @@ import { aggregateBrowserStats } from '../shared/control-bus/index.js';
 import { register as promRegister, Gauge } from 'prom-client';
 import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
-import { chatOrchestrator } from './chat-orchestrator.js';
+import { chatOrchestrator, type ChatTurnContext } from './chat-orchestrator.js';
 import { memoryService } from './user-memory.service.js';
 import type { ActionStep, JobRuntimeState, SiteWorkflow } from '../shared/types/index.js';
 import { fileStorageService } from './file-storage.service.js';
@@ -79,6 +80,10 @@ function parseCookie(cookieHeader: string | undefined, name: string): string | n
 
 // ─── Auth Middleware (simple API key) ─────────────────────────
 
+const sessionKey = (req: { headers: Record<string, unknown>; cookies?: Record<string, string | undefined> }) =>
+  String(req.cookies?.jp_session ?? req.headers.authorization ?? '').slice(0, 64);
+const hasSession = (req: Parameters<typeof sessionKey>[0]) => sessionKey(req).length > 0;
+
 async function authMiddleware(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const key = req.headers['x-api-key'];
   const expectedKey = process.env.API_KEY;
@@ -86,7 +91,7 @@ async function authMiddleware(req: FastifyRequest, reply: FastifyReply): Promise
     reply.status(401).send({ error: 'Unauthorized' });
     return;
   }
-  if (!key || key !== expectedKey) {
+  if (!safeEqual(key, expectedKey)) {
     reply.status(401).send({ error: 'Unauthorized' });
   }
 }
@@ -97,10 +102,10 @@ async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',
-      transport: {
-        target: 'pino-pretty',
-        options: { colorize: true, translateTime: 'SYS:standard' },
-      },
+      // Readable in development; plain JSON lines in production so a log shipper can parse them.
+      ...(process.env.NODE_ENV === 'production'
+        ? {}
+        : { transport: { target: 'pino-pretty', options: { colorize: true, translateTime: 'SYS:standard' } } }),
     },
   });
   const allowedOrigins = normalizeAllowedOrigins();
@@ -123,7 +128,10 @@ async function buildApp(): Promise<FastifyInstance> {
   await app.register(import('@fastify/cookie'));
 
   await app.register(import('@fastify/rate-limit'), {
-    max: parseInt(process.env.RATE_LIMIT ?? '100'),
+    // Always counted per address (a forged cookie must not mint a fresh bucket); callers with a session get a higher ceiling because the app polls several screens.
+    // A shared ceiling of 100 had the app's own polling and health checks returning 429 to real users.
+    max: (req) => (hasSession(req) ? parseInt(process.env.RATE_LIMIT_SESSION ?? '600') : parseInt(process.env.RATE_LIMIT ?? '100')),
+    allowList: (req) => req.url === '/health' || req.url.startsWith('/health?'),
     timeWindow: '1 minute',
   });
 
@@ -761,7 +769,7 @@ setInterval(() => {
         }
       });
 
-      socket.on('chat:send', async (data: { sessionId: string, message: string }) => {
+      socket.on('chat:send', async (data: { sessionId: string, message: string; context?: ChatTurnContext }) => {
         logger.info('socket:chat-send', {
           socketId: socket.id,
           userId,
@@ -781,6 +789,8 @@ setInterval(() => {
             io.to(`session:${data.sessionId}`).emit('job:started', job);
           },
           (cards) => socket.emit('chat:ui', { cards }),
+          data.context,
+          (threadId, title) => socket.emit('chat:title', { threadId, title }),
         );
       });
 

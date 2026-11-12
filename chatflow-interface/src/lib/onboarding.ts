@@ -18,6 +18,11 @@ export interface OnboardingData {
   mobile?: string;
   mobileVerified?: string;
   city?: string;
+  /** Forms ask for these; asking once here means no application stops to ask. */
+  address?: string;
+  state?: string;
+  postalCode?: string;
+  currentSalary?: string;
   /** ISO country code (from the résumé or the profile) — decides the work-authorization wording. */
   country?: string;
   experienceLevel?: string;
@@ -59,7 +64,11 @@ export function profileToFlat(d: ProfileDataDTO, status?: string): Flat {
     mobile: p.phone as string | undefined,
     mobileVerified: p.phoneVerified ? "yes" : undefined,
     city: p.city as string | undefined,
+    address: p.address as string | undefined,
+    state: p.state as string | undefined,
+    postalCode: p.postalCode as string | undefined,
     country: p.country as string | undefined,
+    currentSalary: w.currentSalary as string | undefined,
     experienceLevel: w.experienceLevel as string | undefined,
     currentEmployer: w.currentEmployer as string | undefined,
     noticePeriod: w.noticePeriod as string | undefined,
@@ -101,6 +110,10 @@ export function flatToProfile(f: Flat): ProfileDataDTO {
       phone: f.mobile,
       phoneVerified: f.mobileVerified === "yes" || undefined,
       city: f.city,
+      address: f.address,
+      state: f.state,
+      postalCode: f.postalCode,
+      country: f.country,
       nationality: f.nationality,
     },
     work: {
@@ -108,6 +121,7 @@ export function flatToProfile(f: Flat): ProfileDataDTO {
       currentEmployer: f.currentEmployer,
       noticePeriod: f.noticePeriod,
       expectedSalary: f.expectedSalary,
+      currentSalary: f.currentSalary,
     },
     authorization: {
       statement: f.workAuthorization,

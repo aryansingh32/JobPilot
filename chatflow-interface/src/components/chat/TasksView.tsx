@@ -1,20 +1,24 @@
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import {
   ChevronDown,
   CircleAlert,
   CircleCheck,
+  Download,
+  FileText,
   ExternalLink,
   Loader2,
   MessageSquare,
   PenLine,
   XCircle,
 } from "lucide-react";
-import type { ApplicationSummary, PendingDTO } from "@/lib/api-client";
+import { openSummaryPdf, type ApplicationSummary, type PendingDTO } from "@/lib/api-client";
 import { appStatus, appSummary, ts, useApplication, useApplicationActions } from "@/lib/live";
 import { TASK_STATUS_LABEL, type TaskStatus } from "@/lib/task-status";
 import { OutcomeBadge } from "./OutcomeBadge";
 import { ApplyBar, ApplyTracker } from "./ApplyTracker";
 import { NeedsYouHint } from "./NeedsYouHint";
+import { useSequentialQuestions } from "@/lib/sequential-questions";
 
 type Filter = "all" | "needs" | "working" | "done";
 
@@ -223,6 +227,7 @@ const PHASE_LABEL: Record<string, string> = {
   verified: "Checked every answer before sending",
   submit_skipped: "Stopped before submitting (test run)",
   code_autofilled: "Code read from your inbox",
+  submit_attempt: "Pressed Submit",
   submitted: "Submitted",
   completed: "Finished",
   failed: "Stopped with an error",
@@ -269,13 +274,34 @@ function ApplicationDetailPanel({
       {(active || app.status === "failed" || app.status === "submitted") && (
         <ApplyTracker app={data ?? app} events={events} />
       )}
-      {(app.status === "failed" || app.status === "needs_input" || app.status === "awaiting_review") && app.url && (
+      {["submitted", "completed"].includes(app.status) && events.some((e) => e.phase === "summary") && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-muted/40 p-3.5">
+          <FileText className="h-5 w-5 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-semibold text-foreground">The site confirmed it</p>
+            <p className="text-[12px] text-muted-foreground">A PDF of everything that was sent, and where each answer came from, is also in your email.</p>
+          </div>
+          <button
+            onClick={() => openSummaryPdf(app.id).catch((e) => toast.error((e as Error).message))}
+            className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3.5 py-1.5 text-[12px] font-semibold text-primary-foreground"
+          >
+            <Download className="h-3.5 w-3.5" /> Summary PDF
+          </button>
+        </div>
+      )}
+      {(app.status === "failed" || app.status === "cancelled" || app.status === "needs_input" || app.status === "awaiting_review") && app.url && (app.status !== "cancelled" || (data ?? app).submission === "unconfirmed") && (
         <div className="mb-4 rounded-2xl border border-border bg-muted/40 p-3.5">
           <p className="text-[13px] font-semibold text-foreground">
-            {app.status === "failed" ? "Want to finish it yourself?" : "Rather do this step yourself?"}
+            {(data ?? app).submission === "unconfirmed"
+              ? "This may already have been sent"
+              : app.status === "failed"
+                ? "Want to finish it yourself?"
+                : "Rather do this step yourself?"}
           </p>
           <p className="mt-0.5 text-[12px] text-muted-foreground">
-            Open the company's page and apply there, then tell me so it's counted and not retried.
+            {(data ?? app).submission === "unconfirmed"
+              ? "The site never confirmed it. Check your email for a confirmation first; if there isn't one, apply on the company's page and tell me so it's counted."
+              : "Open the company's page and apply there, then tell me so it's counted and not retried."}
           </p>
           <div className="mt-2.5 flex flex-wrap gap-2">
             <a
@@ -307,6 +333,7 @@ function ApplicationDetailPanel({
         <PendingCard
           key={`${data.pending.contextMessage}-${data.pending.captchaUrl?.length ?? 0}`}
           appId={app.id}
+          execJobId={app.exec_job_id ?? app.id}
           pending={data.pending}
         />
       )}
@@ -382,7 +409,7 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 /** The question it's paused on, or the full review before anything is sent. */
-function PendingCard({ appId, pending }: { appId: string; pending: PendingDTO }) {
+function PendingCard({ appId, execJobId, pending }: { appId: string; execJobId: string; pending: PendingDTO }) {
   const { respond, cancel } = useApplicationActions();
   const fields = pending.sections?.flatMap((s) => s.fields) ?? [];
   const [answer, setAnswer] = useState("");
@@ -393,7 +420,10 @@ function PendingCard({ appId, pending }: { appId: string; pending: PendingDTO })
     "w-full rounded-xl border border-border bg-card px-3 py-2 text-[13px] text-foreground outline-none focus:border-primary";
 
   if (pending.captchaUrl) return <CaptchaCard appId={appId} pending={pending} />;
-  if (pending.questions?.length) return <QuestionsCard appId={appId} questions={pending.questions} />;
+  if (pending.questions?.length) return <QuestionsCard appId={appId} scopeId={execJobId} questions={pending.questions} />;
+  if (pending.applicationQuestion) {
+    return <SingleApplicationQuestionCard appId={appId} scopeId={execJobId} pending={pending} />;
+  }
 
   if (pending.type !== "review") {
     return (
@@ -530,6 +560,45 @@ function PendingCard({ appId, pending }: { appId: string; pending: PendingDTO })
   );
 }
 
+function SingleApplicationQuestionCard({ appId, scopeId, pending }: { appId: string; scopeId: string; pending: PendingDTO }) {
+  const { respond } = useApplicationActions();
+  const [sending, setSending] = useState(false);
+  const question = pending.question || pending.contextMessage || "What would you like to answer?";
+  const flow = useSequentialQuestions(scopeId, [{ id: "current", question, options: pending.options }]);
+  const answer = flow.answers.current ?? "";
+  const field = "w-full rounded-xl border border-border bg-card px-3 py-2 text-[13px] text-foreground outline-none focus:border-primary";
+  const submit = () => {
+    setSending(true);
+    respond.mutate({ id: appId, value: answer.trim() }, {
+      onSuccess: () => flow.clear(),
+      onError: () => setSending(false),
+    });
+  };
+  if (sending) return <div className="mb-4 flex items-center gap-2 text-[13px] text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Sending your answer…</div>;
+  return (
+    <div id={`pending-${appId}`} className="needs-answer-card mb-4 scroll-mt-24 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5">
+      <p className="mb-2 text-[12px] font-semibold text-foreground">Application question</p>
+      <label className="block">
+        <span className="mb-1.5 block text-[13px] font-medium text-foreground">{question}</span>
+        {pending.options?.length ? (
+          <select className={field} value={answer} onChange={(e) => flow.setAnswer("current", e.target.value)}>
+            <option value="">Choose an answer…</option>
+            {pending.options.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        ) : (
+          <textarea rows={2} className={field} inputMode={pending.sensitive ? "numeric" : undefined} autoComplete={pending.sensitive ? "off" : undefined} value={answer} onChange={(e) => flow.setAnswer("current", e.target.value)} placeholder="Type your answer" />
+        )}
+      </label>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className="text-[11px] text-muted-foreground">{pending.sensitive ? "Only used for this application." : "Saved details were used where possible."}</span>
+        <button disabled={!answer.trim() || respond.isPending} onClick={submit} className="rounded-full bg-primary px-4 py-2 text-[13px] font-semibold text-primary-foreground disabled:opacity-50">
+          {respond.isPending ? "Sending…" : "Continue"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function timeAgo(t: number): string {
   const s = Math.max(1, Math.round((Date.now() - t) / 1000));
   if (s < 60) return "just now";
@@ -620,40 +689,56 @@ function CaptchaCard({ appId, pending }: { appId: string; pending: PendingDTO })
   );
 }
 
-/** Everything the form still needs, in one go — one answer per question, sent together. */
-function QuestionsCard({ appId, questions }: { appId: string; questions: NonNullable<PendingDTO["questions"]> }) {
+/** Legacy parked forms are presented one question at a time for continuity. */
+function QuestionsCard({ appId, scopeId, questions }: { appId: string; scopeId: string; questions: NonNullable<PendingDTO["questions"]> }) {
   const { respond } = useApplicationActions();
-  const [values, setValues] = useState<Record<string, string>>({});
-  const ready = questions.every((q) => (values[q.id] ?? "").trim());
+  const flow = useSequentialQuestions(scopeId, questions);
+  const [sending, setSending] = useState(false);
+  const question = flow.current;
+  const answer = question ? flow.answers[question.id] ?? "" : "";
+  if (!question) return null;
   const box =
     "w-full rounded-xl border border-border bg-card px-3 py-2 text-[13px] text-foreground outline-none focus:border-primary";
+  const finishOrAdvance = () => {
+    const answers = { ...flow.answers, [question.id]: answer.trim() };
+    if (flow.index < flow.count - 1) {
+      flow.setAnswer(question.id, answer.trim());
+      flow.advance();
+      return;
+    }
+    setSending(true);
+    respond.mutate({ id: appId, value: JSON.stringify(answers) }, {
+      onSuccess: () => flow.clear(),
+      onError: () => setSending(false),
+    });
+  };
+  if (sending) return <div className="mb-4 flex items-center gap-2 text-[13px] text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Sending your answers…</div>;
   return (
-    <div id={`pending-${appId}`} className="mb-4 scroll-mt-24 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5">
-      <p className="text-[13px] font-semibold text-foreground">The application has {questions.length} questions for you</p>
-      <p className="mt-0.5 text-[12px] text-muted-foreground">Answer them all once; I'll remember each for next time.</p>
-      <div className="mt-3 space-y-3">
-        {questions.map((q) => (
-          <label key={q.id} className="block">
-            <span className="mb-1 block text-[12px] font-medium text-ink-2">{q.question}</span>
-            {q.options?.length ? (
-              <select className={box} value={values[q.id] ?? ""} onChange={(e) => setValues({ ...values, [q.id]: e.target.value })}>
-                <option value="">Choose…</option>
-                {q.options.map((o) => (
-                  <option key={o} value={o}>{o}</option>
-                ))}
-              </select>
-            ) : (
-              <input className={box} value={values[q.id] ?? ""} onChange={(e) => setValues({ ...values, [q.id]: e.target.value })} />
-            )}
-          </label>
-        ))}
+    <div id={`pending-${appId}`} className="needs-answer-card mb-4 scroll-mt-24 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-[12px] font-semibold text-foreground">Question {flow.index + 1} of {flow.count}</p>
+        <p className="text-[11px] text-muted-foreground">I filled what I could from saved details.</p>
       </div>
+      <div className="mb-3 h-1 overflow-hidden rounded-full bg-warning/15">
+        <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${((flow.index + 1) / flow.count) * 100}%` }} />
+      </div>
+      <label className="block">
+        <span className="mb-1.5 block text-[13px] font-medium text-foreground">{question.question}</span>
+        {question.options?.length ? (
+          <select className={box} value={answer} onChange={(e) => flow.setAnswer(question.id, e.target.value)}>
+            <option value="">Choose an answer…</option>
+            {question.options.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        ) : (
+          <textarea rows={2} className={box} value={answer} onChange={(e) => flow.setAnswer(question.id, e.target.value)} placeholder="Type your answer" />
+        )}
+      </label>
       <button
-        disabled={!ready || respond.isPending}
-        onClick={() => respond.mutate({ id: appId, value: JSON.stringify(values) })}
+        disabled={!answer.trim() || respond.isPending}
+        onClick={finishOrAdvance}
         className="mt-3 rounded-full bg-primary px-4 py-1.5 text-[13px] font-semibold text-primary-foreground disabled:opacity-50"
       >
-        {respond.isPending ? "Sending…" : "Continue"}
+        {respond.isPending ? "Sending…" : flow.index === flow.count - 1 ? "Send answers" : "Next question"}
       </button>
     </div>
   );

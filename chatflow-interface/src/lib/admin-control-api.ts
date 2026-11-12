@@ -171,6 +171,10 @@ export interface WorkflowRun {
 }
 
 // ── Platform ────────────────────────────────────────────────
+export interface BuiltinRuleDTO { id: string; title: string; description: string; answer: string; overridable: boolean }
+export interface CustomRuleDTO { id: string; enabled: boolean; match: string; exclude?: string; answer: string; note?: string }
+export interface AnswerDefaultsDTO { disabled: string[]; overrides: Record<string, string>; custom: CustomRuleDTO[] }
+
 export interface SettingRow {
   key: string;
   group: string;
@@ -205,9 +209,9 @@ export interface AuditEntry {
 }
 export interface AiUsage {
   days: number;
-  totals: { calls: number; prompt_tokens: number; completion_tokens: number; cost_usd: number; errors: number; avg_latency_ms: number };
-  byPurpose: Array<{ purpose: string; calls: number; tokens: number; cost_usd: number; errors: number }>;
-  byModel: Array<{ model: string; calls: number; tokens: number; cost_usd: number }>;
+  totals: { calls: number; prompt_tokens: number; completion_tokens: number; cached_tokens: number; cache_write_tokens: number; cost_usd: number; errors: number; avg_latency_ms: number };
+  byPurpose: Array<{ purpose: string; calls: number; tokens: number; cached_tokens: number; cache_write_tokens: number; cost_usd: number; errors: number }>;
+  byModel: Array<{ model: string; calls: number; tokens: number; cached_tokens: number; cache_write_tokens: number; cost_usd: number }>;
   byDay: Array<{ day: string; calls: number; tokens: number; cost_usd: number }>;
   topUsers: Array<{ user_id: string; calls: number; tokens: number; cost_usd: number }>;
 }
@@ -326,7 +330,7 @@ export const controlApi = {
     aPost<{ url: string }>("/admin/record/input", { sessionId, input }),
   recordStop: (sessionId: string) => aPost<{ steps: unknown[] }>("/admin/record/stop", { sessionId }),
   recordCompile: (steps: unknown[], jobApply: boolean) =>
-    aPost<{ steps: PlanStep[] }>("/admin/record/compile", { steps, jobApply }),
+    aPost<{ steps: PlanStep[]; warnings?: string[]; confirmation?: { urlPath?: string; text?: string } }>("/admin/record/compile", { steps, jobApply }),
   dryRun: (url: string, steps: PlanStep[]) =>
     aPost<{ success: boolean; steps: Array<{ stepId: string; action: string; status: string; note?: string }>; error?: string }>(
       "/admin/record/dry-run",
@@ -334,6 +338,12 @@ export const controlApi = {
     ),
 
   // Platform
+  answerDefaults: () => aGet<{ builtin: BuiltinRuleDTO[]; config: AnswerDefaultsDTO }>("/admin/answer-defaults"),
+  saveAnswerDefaults: (config: AnswerDefaultsDTO) => aPut<{ config: AnswerDefaultsDTO }>("/admin/answer-defaults", config),
+  testAnswer: (question: string, options: string, type: string) =>
+    aGet<{ result: { answered: boolean; value?: string; source?: string; rule?: string; reason?: string } | null }>(
+      `/admin/answer-defaults/test?question=${encodeURIComponent(question)}&options=${encodeURIComponent(options)}&type=${type}`,
+    ),
   settings: () => aGet<{ settings: SettingRow[] }>("/admin/settings"),
   setSetting: (key: string, value: unknown) => aPut(`/admin/settings/${encodeURIComponent(key)}`, { value }),
   resetSetting: (key: string) => aDel(`/admin/settings/${encodeURIComponent(key)}`),

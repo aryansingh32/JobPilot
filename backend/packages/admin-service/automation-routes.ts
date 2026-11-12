@@ -4,7 +4,7 @@ import { getPgPool, getRedisClient, cacheDelete, CacheKeys } from '../shared/db/
 import { enqueueJob } from '../shared/queue/index.js';
 import { pickWorker, sendCommand } from '../shared/control-bus/index.js';
 import { workflowLoader } from '../shared/workflow-loader.js';
-import { compileRecording } from '../shared/workflows/compile-recording.js';
+import { compileRecordingDetailed } from '../shared/workflows/compile-recording.js';
 import { profileService, type ProfileData } from '../shared/profile/index.js';
 import { ApplyError, startApplication } from '../shared/applications/apply.js';
 import { LimitError } from '../shared/applications/index.js';
@@ -262,7 +262,7 @@ export async function registerAutomationRoutes(app: FastifyInstance): Promise<vo
     const { steps, jobApply } = (req.body ?? {}) as { steps?: unknown[]; jobApply?: boolean };
     const p = await testProfile();
     const book = buildAnswerBook(p.data);
-    return { steps: compileRecording((steps ?? []) as never[], { profileValues: book, jobApply: jobApply === true }) };
+    return compileRecordingDetailed((steps ?? []) as never[], { profileValues: book, jobApply: jobApply === true });
   });
 
   app.get('/admin/record/status', { preHandler: adminAuth }, async () => {

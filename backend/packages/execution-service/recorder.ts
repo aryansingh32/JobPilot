@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import type { CDPSession, Page } from 'playwright';
+import type { BrowserContext, CDPSession, Page } from 'playwright';
 import { getBrowserPool } from './browser-pool.js';
 import { getRedisClient } from '../shared/db/index.js';
 import { RECORD_FRAME_CHANNEL, RECORD_STEP_CHANNEL } from '../shared/control-bus/index.js';
@@ -22,10 +22,14 @@ export interface RawStep {
     text?: string;
     tag?: string;
     label?: string;
-    metadata?: { name?: string; placeholder?: string; autocomplete?: string; type?: string };
+    metadata?: { name?: string; placeholder?: string; autocomplete?: string; type?: string; role?: string };
   };
   value?: string;
   url?: string;
+  /** URL of the iframe the event happened in (absent for the top document). */
+  frameUrl?: string;
+  /** Index of the browser tab the event happened in, when the site opened more than one. */
+  tab?: number;
   /** action 'page': what the page asks (labels / options / buttons / gates), never typed values. */
   snapshot?: {
     title: string;
@@ -54,6 +58,7 @@ interface Session {
   contextId: string;
   page: Page;
   cdp?: CDPSession;
+  context: BrowserContext;
   steps: RawStep[];
   viewport: { width: number; height: number };
   lastActivity: number;
@@ -85,6 +90,7 @@ export class RecorderService {
     const session: Session = {
       contextId: lease.contextId,
       page,
+      context: page.context(),
       steps: [],
       viewport,
       lastActivity: Date.now(),
@@ -95,8 +101,36 @@ export class RecorderService {
     };
     this.sessions.set(sessionId, session);
 
-    await page.exposeFunction('reportAction', (step: RawStep) => this.publishStep(sessionId, step));
-    await page.addInitScript(RECORDER_SCRIPT);
+    // Bound on the context, not the page: portals open results / payment / DigiLocker in new windows and
+    // embed forms in iframes, and the script has to run (and report) in all of them.
+    const context = page.context();
+    session.context = context;
+    await context.exposeBinding('reportAction', ({ frame, page: src }, step: RawStep) => {
+      const s = this.sessions.get(sessionId);
+      if (!s) return;
+      const tab = context.pages().indexOf(src);
+      this.publishStep(sessionId, {
+        ...step,
+        ...(frame !== src.mainFrame() ? { frameUrl: frame.url() } : {}),
+        ...(tab > 0 ? { tab } : {}),
+      });
+    });
+    await context.addInitScript(RECORDER_SCRIPT);
+    this.watchPage(sessionId, page);
+    context.on('page', (popup) => {
+      void this.followPopup(sessionId, popup).catch((err) => console.error('[recorder] popup:', err.message));
+    });
+
+    this.publishStep(sessionId, { action: 'navigate', url, value: url, timestamp: Date.now() });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
+
+    await this.startScreencast(sessionId, session);
+    return { viewport };
+  }
+
+  /** Per-page listeners: URL changes for the live view, JS dialogs and file downloads. */
+  private watchPage(sessionId: string, page: Page) {
     page.on('framenavigated', (frame) => {
       if (frame === page.mainFrame()) {
         getRedisClient()
@@ -104,14 +138,48 @@ export class RecorderService {
           .catch(() => {});
       }
     });
+    // Portals confirm with alert()/confirm(); an unanswered dialog freezes the page and the live view.
+    page.on('dialog', (dialog) => {
+      const tab = page.context().pages().indexOf(page);
+      this.publishStep(sessionId, { action: 'dialog', value: dialog.message().slice(0, 200), url: page.url(), ...(tab > 0 ? { tab } : {}), timestamp: Date.now() });
+      dialog.accept().catch(() => {});
+    });
+    page.on('download', (download) => {
+      this.publishStep(sessionId, { action: 'download', value: download.suggestedFilename(), url: page.url(), timestamp: Date.now() });
+    });
+  }
 
-    this.publishStep(sessionId, { action: 'navigate', url, value: url, timestamp: Date.now() });
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
+  /** A window the site opened becomes the page the admin sees and drives. */
+  private async followPopup(sessionId: string, popup: Page) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    this.watchPage(sessionId, popup);
+    await popup.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {});
+    if (!this.sessions.has(sessionId)) return;
+    await s.cdp?.send('Page.stopScreencast').catch(() => {});
+    await s.cdp?.detach().catch(() => {});
+    s.page = popup;
+    s.viewport = popup.viewportSize() ?? s.viewport;
+    popup.on('close', () => {
+      // Back to the newest window that is still open.
+      const rest = s.context.pages().filter((p) => !p.isClosed());
+      const prev = rest.at(-1);
+      if (!prev || !this.sessions.has(sessionId)) return;
+      void (async () => {
+        await s.cdp?.send('Page.stopScreencast').catch(() => {});
+        await s.cdp?.detach().catch(() => {});
+        s.page = prev;
+        await this.startScreencast(sessionId, s);
+      })().catch(() => {});
+    });
+    await this.startScreencast(sessionId, s);
+  }
 
-    // Live view: frames only arrive when the page changes.
+  /** Live view: frames only arrive when the page changes. */
+  private async startScreencast(sessionId: string, s: Session) {
+    const { page, viewport } = s;
     const cdp = await page.context().newCDPSession(page);
-    session.cdp = cdp;
+    s.cdp = cdp;
     cdp.on('Page.screencastFrame', (frame: { data: string; sessionId: number; metadata: { deviceWidth?: number; deviceHeight?: number } }) => {
       cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
       getRedisClient()
@@ -124,7 +192,6 @@ export class RecorderService {
         .catch(() => {});
     });
     await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: viewport.width, maxHeight: viewport.height });
-    return { viewport };
   }
 
   /** Forward one admin input into the recorded page. */
@@ -234,7 +301,7 @@ export const RECORDER_SCRIPT = `(() => {
     out.push(path.join(' > '));
     return out;
   };
-  const meta = (el) => ({ name: el.name || undefined, placeholder: el.placeholder || undefined, autocomplete: el.autocomplete || undefined, type: el.type || undefined });
+  const meta = (el) => ({ name: el.name || undefined, placeholder: el.placeholder || undefined, autocomplete: el.autocomplete || undefined, type: el.type || undefined, role: (el.getAttribute && el.getAttribute('role')) || undefined });
   // What kind of secret a box holds, from its name, label, placeholder and autocomplete hint.
   const kindOf = (el) => {
     const hay = [el.name, el.id, el.placeholder, el.getAttribute && el.getAttribute('aria-label'), el.autocomplete, labelOf(el)].join(' ').toLowerCase();
@@ -281,7 +348,16 @@ export const RECORDER_SCRIPT = `(() => {
     if (!el) return;
     const t = el.tagName.toLowerCase();
     if (t === 'input' && !['checkbox', 'radio', 'submit', 'button'].includes(el.type)) return;
-    report({ action: 'click', target: { selectors: selectorsOf(el), text: clean(el.innerText || el.value).slice(0, 80), tag: t, label: labelOf(el) } });
+    report({ action: 'click', target: { selectors: selectorsOf(el), text: clean(el.innerText || el.value).slice(0, 80), tag: t, label: labelOf(el), metadata: meta(el) } });
+  }, true);
+  // Enter submits many portal forms (login, search, track-status) without any click to record.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const el = e.target; if (!el || !el.tagName || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON' || el.tagName === 'A') return;
+    if (el.tagName === 'INPUT' && ['submit', 'button', 'checkbox', 'radio'].includes(el.type)) return;
+    const target = { selectors: selectorsOf(el), tag: el.tagName.toLowerCase(), label: labelOf(el), metadata: meta(el) };
+    // After the field's own "change" has been reported, so the value is typed before Enter is pressed.
+    setTimeout(() => report({ action: 'press', value: 'Enter', target }), 80);
   }, true);
   document.addEventListener('change', (e) => {
     const el = e.target; if (!el || !el.tagName) return;

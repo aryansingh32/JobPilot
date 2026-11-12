@@ -8,7 +8,7 @@ import { detectCountry, detectWorkplace, finalize, htmlToText, validDate, type N
 // ============================================================
 
 export type AtsType =
-  | 'greenhouse' | 'lever' | 'ashby' | 'smartrecruiters' | 'workable' | 'recruitee' | 'workday'
+  | 'greenhouse' | 'lever' | 'ashby' | 'smartrecruiters' | 'workable' | 'recruitee' | 'breezy' | 'personio' | 'workday'
   // Systems Indian employers use (verified public endpoints, 2026-10-22)
   | 'keka' | 'zoho' | 'freshteam' | 'oracle' | 'successfactors'
   | 'sarkari'
@@ -408,6 +408,78 @@ async function recruitee(token: string): Promise<{ company?: string; jobs: Norma
         salaryPeriod: j.salary?.period ?? null,
       }),
     ),
+  };
+}
+
+// ─── Breezy HR ───────────────────────────────────────────────
+interface BreezyPosition {
+  id: string;
+  friendly_id?: string;
+  name: string;
+  url: string;
+  published_date?: string;
+  type?: { name?: string };
+  department?: string;
+  salary?: string;
+  location?: { country?: { id?: string }; name?: string; is_remote?: boolean };
+  company?: { name?: string };
+}
+
+async function breezy(token: string): Promise<{ company?: string; jobs: NormalizedJob[] }> {
+  const data = await getJson<BreezyPosition[]>(`https://${encodeURIComponent(token)}.breezy.hr/json`);
+  if (!Array.isArray(data)) throw new Error('Unexpected answer from Breezy');
+  return {
+    company: data[0]?.company?.name,
+    jobs: data.map((j) =>
+      finalize({
+        externalId: j.id,
+        title: j.name.trim(),
+        url: j.url,
+        location: j.location?.name ?? null,
+        country: countryCode(j.location?.country?.id),
+        workplace: j.location?.is_remote ? 'Remote' : detectWorkplace(j.location?.name),
+        employmentType: j.type?.name ?? null,
+        department: j.department ?? null,
+        postedAt: validDate(j.published_date),
+        // The list carries no description; skills come from the title until the posting is opened.
+        description: '',
+        salaryMin: null, salaryMax: null, salaryCurrency: null, salaryPeriod: null,
+      }),
+    ),
+  };
+}
+
+// ─── Personio ────────────────────────────────────────────────
+const xmlTag = (block: string, tag: string) => {
+  const m = block.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+  return m ? decodeEntities(m[1].replace(/^\s*<!\[CDATA\[|\]\]>\s*$/g, '')).trim() : '';
+};
+
+async function personio(token: string): Promise<{ company?: string; jobs: NormalizedJob[] }> {
+  const xml = await getText(`https://${encodeURIComponent(token)}.jobs.personio.de/xml`);
+  if (!/<workzag-jobs/.test(xml)) throw Object.assign(new Error('Board not found'), { code: 'BOARD_NOT_FOUND' });
+  const blocks = xml.match(/<position>[\s\S]*?<\/position>/g) ?? [];
+  return {
+    company: blocks[0] ? xmlTag(blocks[0], 'subcompany') || undefined : undefined,
+    jobs: blocks.map((b) => {
+      const office = xmlTag(b, 'office');
+      const description = htmlToText(
+        (b.match(/<jobDescription>[\s\S]*?<\/jobDescription>/g) ?? []).map((d) => `${xmlTag(d, 'name')}\n${xmlTag(d, 'value')}`).join('\n\n'),
+      );
+      return finalize({
+        externalId: xmlTag(b, 'id'),
+        title: xmlTag(b, 'name'),
+        url: `https://${encodeURIComponent(token)}.jobs.personio.de/job/${xmlTag(b, 'id')}`,
+        location: office || null,
+        workplace: detectWorkplace(office, xmlTag(b, 'name')),
+        employmentType: xmlTag(b, 'schedule') || xmlTag(b, 'employmentType') || null,
+        department: xmlTag(b, 'department') || null,
+        postedAt: validDate(xmlTag(b, 'createdAt')),
+        description,
+        experienceMin: Number(xmlTag(b, 'yearsOfExperience').match(/^(\d+)/)?.[1] ?? NaN) || null,
+        salaryMin: null, salaryMax: null, salaryCurrency: null, salaryPeriod: null,
+      });
+    }).filter((j) => j.externalId && j.title),
   };
 }
 
@@ -913,6 +985,8 @@ export const SOURCES: Record<AtsType, SourceFn> = {
   smartrecruiters,
   workable,
   recruitee,
+  breezy,
+  personio,
   workday,
   keka,
   zoho,
@@ -931,6 +1005,8 @@ export const SOURCE_INFO: Record<AtsType, { label: string; tokenHint: string; ex
   smartrecruiters: { label: 'SmartRecruiters', tokenHint: 'jobs.smartrecruiters.com/<token>', example: 'Ubisoft2' },
   workable: { label: 'Workable', tokenHint: 'apply.workable.com/<token>', example: 'huggingface' },
   recruitee: { label: 'Recruitee', tokenHint: '<token>.recruitee.com', example: 'bunq' },
+  breezy: { label: 'Breezy HR', tokenHint: '<token>.breezy.hr', example: 'breezy' },
+  personio: { label: 'Personio', tokenHint: '<token>.jobs.personio.de', example: 'personio' },
   workday: { label: 'Workday', tokenHint: '<tenant>/wd<N>/<site> from <tenant>.wd<N>.myworkdayjobs.com/<site>', example: 'nvidia/wd5/NVIDIAExternalCareerSite' },
   keka: { label: 'Keka', tokenHint: '<token>.keka.com/careers', example: 'evolve' },
   zoho: { label: 'Zoho Recruit', tokenHint: 'careers host, e.g. <company>.zohorecruit.in', example: 'airpay.zohorecruit.com' },
@@ -956,6 +1032,10 @@ export function detectBoard(url: string): { atsType: AtsType; token: string } | 
     if (u.hostname === 'jobs.ashbyhq.com' && seg[0]) return { atsType: 'ashby', token: seg[0] };
     if (u.hostname === 'jobs.smartrecruiters.com' && seg[0]) return { atsType: 'smartrecruiters', token: seg[0] };
     if (u.hostname === 'apply.workable.com' && seg[0]) return { atsType: 'workable', token: seg[0] };
+    const bz = u.hostname.match(/^([a-z0-9-]+)\.breezy\.hr$/);
+    if (bz && bz[1] !== 'www') return { atsType: 'breezy', token: bz[1] };
+    const pn = u.hostname.match(/^([a-z0-9-]+)\.jobs\.personio\.(?:de|com)$/);
+    if (pn) return { atsType: 'personio', token: pn[1] };
     const rc = u.hostname.match(/^([a-z0-9-]+)\.recruitee\.com$/);
     if (rc) return { atsType: 'recruitee', token: rc[1] };
     const kk = u.hostname.match(/^([a-z0-9-]+)\.keka\.com$/);

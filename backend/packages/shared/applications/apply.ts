@@ -1,3 +1,5 @@
+import { DuplicateApplicationError } from './index.js';
+import { postingKey } from './form-schema.js';
 import { learnAnswer } from '../profile/learned.js';
 import { randomUUID } from 'crypto';
 import { getPgPool, getRedisClient, CacheKeys } from '../db/index.js';
@@ -36,13 +38,16 @@ interface JobTarget {
   atsType: string | null;
   boardToken: string | null;
   externalId: string | null;
+  /** What the posting asks for, so open questions can be answered about this role. */
+  skills?: string[];
+  summary?: string;
 }
 
 async function resolveTarget(input: { jobId?: string; url?: string }): Promise<JobTarget> {
   const pool = getPgPool();
   if (input.jobId) {
     const { rows } = await pool.query(
-      `SELECT j.id, j.url, j.title, j.country, j.external_id, c.name AS company, b.ats_type, b.board_token
+      `SELECT j.id, j.url, j.title, j.country, j.external_id, c.name AS company, b.ats_type, b.board_token, j.skills, LEFT(j.description, 6000) AS description
          FROM jobs j JOIN job_boards b ON b.id = j.board_id LEFT JOIN companies c ON c.id = j.company_id
         WHERE j.id = $1`,
       [input.jobId],
@@ -52,6 +57,8 @@ async function resolveTarget(input: { jobId?: string; url?: string }): Promise<J
     return {
       jobId: j.id, url: j.url, title: j.title, company: j.company, country: j.country,
       atsType: j.ats_type, boardToken: j.board_token, externalId: j.external_id,
+      skills: Array.isArray(j.skills) ? j.skills.slice(0, 20) : [],
+      summary: String(j.description ?? '').replace(/<[^>]+>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ').replace(/\s+/g, ' ').trim().slice(0, 1200),
     };
   }
   const url = input.url?.trim();
@@ -160,10 +167,16 @@ export async function startApplication(
     workflowId?: string;
     skipLimits?: boolean;
     source?: ApplicationSource;
+    /** The "apply to N" campaign this application counts toward. */
+    campaignId?: string;
+    /** Auto Apply: send without a review when nothing in the application was guessed. */
+    autoSubmit?: boolean;
     /** Auto Apply: only systems with their own workflow, never the generic form filler. */
     requireDedicatedWorkflow?: boolean;
     /** Refuse (422) when the profile lacks details nearly every form requires — asked up front instead of mid-run. */
     checkProfile?: boolean;
+    /** The person saw the "may already be sent" / "same role" warning and wants to go ahead. */
+    confirmDuplicate?: boolean;
   },
 ) {
   const target = await resolveTarget(input);
@@ -176,19 +189,38 @@ export async function startApplication(
     if (dup.rows[0] && !input.stopBeforeSubmit) {
       throw new ApplyError('You already have an application for this job', 409);
     }
-  }
-  // A pasted link has no job row: the same posting is recognised by its URL (query and hash don't change the job).
-  if (!target.jobId && !input.stopBeforeSubmit) {
-    const bare = target.url.replace(/[?#].*$/, '').replace(/\/+$/, '');
-    const dup = await getPgPool().query(
-      `SELECT id, status FROM applications
-        WHERE user_id = $1 AND status <> ALL(ARRAY['failed','cancelled'])
-          AND regexp_replace(regexp_replace(url, '[?#].*$', ''), '/+$', '') = $2 LIMIT 1`,
-      [userId, bare],
+    // Sent but never confirmed: it may well have gone through, so a second send needs the person's say-so.
+    const maybe = await getPgPool().query(
+      `SELECT 1 FROM applications WHERE user_id = $1 AND job_id = $2 AND status = ANY(ARRAY['failed','cancelled']) AND created_at > NOW() - INTERVAL '7 days'
+          AND submit_attempted_at IS NOT NULL AND COALESCE(error, '') !~* 'site rejected the form' LIMIT 1`,
+      [userId, target.jobId],
     );
-    if (dup.rows[0]) {
+    if (maybe.rows[0] && !input.stopBeforeSubmit && !input.confirmDuplicate) {
+      throw new ApplyError('A previous attempt may already have gone through — the site never confirmed it. Check your email for a confirmation, then choose "Apply anyway" if there isn\'t one.', 409);
+    }
+  }
+  // The same role at the same company reached through another link (an aggregator and the company's own page).
+  if (target.company && target.title && target.title !== 'Job application' && !input.stopBeforeSubmit && !input.confirmDuplicate) {
+    const same = await getPgPool().query(
+      `SELECT 1 FROM applications WHERE user_id = $1 AND status IN ('submitted','completed') AND created_at > NOW() - INTERVAL '60 days'
+          AND lower(company) = lower($2) AND lower(title) = lower($3) AND ($4::uuid IS NULL OR job_id IS DISTINCT FROM $4::uuid) LIMIT 1`,
+      [userId, target.company, target.title, target.jobId],
+    );
+    if (same.rows[0]) throw new ApplyError(`You already applied for "${target.title}" at ${target.company}. Choose "Apply anyway" if this is a different opening.`, 409);
+  }
+  // A pasted link has no job row: the same posting is recognised by its URL (tracking noise doesn't change the job,
+  // but the parameters that pick it — gh_jid, jobId… — do).
+  if (!target.jobId && !input.stopBeforeSubmit) {
+    const bare = postingKey(target.url);
+    const { rows: mine } = await getPgPool().query(
+      `SELECT id, status, url FROM applications
+        WHERE user_id = $1 AND status <> ALL(ARRAY['failed','cancelled']) AND url IS NOT NULL ORDER BY created_at DESC LIMIT 500`,
+      [userId],
+    );
+    const dup = mine.find((r) => bare && postingKey(r.url as string) === bare);
+    if (dup) {
       throw new ApplyError(
-        dup.rows[0].status === 'submitted' || dup.rows[0].status === 'completed'
+        dup.status === 'submitted' || dup.status === 'completed'
           ? 'You already applied to this job'
           : 'You already have an application for this job in progress',
         409,
@@ -246,6 +278,9 @@ export async function startApplication(
         title: target.title,
         company: target.company ?? '',
         country: target.country ?? '',
+        ...(target.skills?.length ? { skills: target.skills.join(', ') } : {}),
+        ...(target.summary ? { summary: target.summary } : {}),
+        ...(input.autoSubmit && !input.stopBeforeSubmit ? { autoSubmit: '1' } : {}),
       },
     },
     metadata: { planSource: 'structured-workflow', matchedWorkflowId: workflow.id, matchedWorkflowName: workflow.name },
@@ -261,16 +296,25 @@ export async function startApplication(
   }
   job.metadata = { ...job.metadata, taskLocked: true };
 
-  const application = await applicationsService.create({
-    userId,
-    title: target.title,
-    company: target.company,
-    url: target.url,
-    jobId: target.jobId,
-    execJobId: job.id,
-    sessionId,
-    source: input.source ?? (input.stopBeforeSubmit ? 'admin_test' : 'manual'),
-  });
+  let application;
+  try {
+    application = await applicationsService.create({
+      userId,
+      title: target.title,
+      company: target.company,
+      url: target.url,
+      jobId: target.jobId,
+      execJobId: job.id,
+      sessionId,
+      source: input.source ?? (input.stopBeforeSubmit ? 'admin_test' : 'manual'),
+      campaignId: input.campaignId ?? null,
+    });
+  } catch (err) {
+    // The lock covers one link; the database covers every route to the same job (a second worker, an alternate URL).
+    await releaseTaskLock(job).catch(() => {});
+    if (err instanceof DuplicateApplicationError) throw new ApplyError('You already have an application for this job', 409);
+    throw err;
+  }
   if (!input.skipLimits) {
     try {
       await creditsService.reserve(userId, application.id);
@@ -309,7 +353,7 @@ export async function retryTransient(failedId: string): Promise<string | null> {
   const a = rows[0];
   if (!a?.url) return null;
   const blocked = await pool.query(
-    `SELECT 1 FROM application_events WHERE application_id = $1 AND phase = ANY(ARRAY['verified','submitted','retry_of']) LIMIT 1`,
+    `SELECT 1 FROM application_events WHERE application_id = $1 AND phase = ANY(ARRAY['verified','submit_attempt','submitted','retry_of']) LIMIT 1`,
     [failedId],
   );
   if (blocked.rows.length) return null;
@@ -361,6 +405,8 @@ export interface ParkState {
   /** Exactly what pendingInput() showed while the run was live. */
   pending: Record<string, unknown>;
   question?: string;
+  /** Sensitive identity answers are sent to the site but never saved for reuse. */
+  sensitive?: boolean;
   /** One form of several questions (answers come back as JSON keyed by id). */
   questions?: { id: string; question: string }[];
   reviewFields?: { id: string; label: string; value: string }[];
@@ -412,12 +458,12 @@ export async function continueParked(applicationId: string, value: string): Prom
     // Several questions answered together: each is remembered under its own wording.
     try {
       const given = JSON.parse(value) as Record<string, string>;
-      for (const q of state.questions) if (given[q.id]?.trim()) {
+      for (const q of state.questions) if (given[q.id]?.trim() && !state.sensitive) {
         await answerMemory.remember(userId, q.question, given[q.id].trim());
         await learnAnswer(userId, q.question, given[q.id].trim()).catch(() => {});
       }
     } catch { /* not JSON: nothing to remember */ }
-  } else if (state.question && value.trim()) {
+  } else if (state.question && value.trim() && !state.sensitive) {
     // Autofill recalls it on the re-run, like any remembered answer.
     await answerMemory.remember(userId, state.question, value.trim());
     await learnAnswer(userId, state.question, value.trim()).catch(() => {});

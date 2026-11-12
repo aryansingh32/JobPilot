@@ -25,10 +25,10 @@ interface SettingDef {
   secret?: boolean;
 }
 
-// Free on OpenRouter (nemotron-3-nano-30b-a3b lost its free tier in 2026).
-const FREE_MODEL = 'nvidia/nemotron-3.5-lightning:free';
-// Free, slower, better writing and reasoning: what users read, plans and parsing.
-const FREE_QUALITY_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+// Haiku is a strong fit for résumé/job tasks and has the lowest observed
+// inference cost among Coarena's evaluated models. Coarena's API is currently free.
+const FREE_MODEL = 'claude-haiku-5-5';
+const FREE_QUALITY_MODEL = 'claude-haiku-5-5';
 
 export const SETTINGS = {
   // ── AI ─────────────────────────────────────────────
@@ -41,6 +41,8 @@ export const SETTINGS = {
   'llm.model.recovery': { kind: 'string', default: FREE_MODEL, group: 'AI', description: 'Model that suggests recovery steps.' },
   'llm.model.resume_parse': { kind: 'string', default: FREE_QUALITY_MODEL, group: 'AI', description: 'Model that turns resume text into a profile.' },
   'llm.model.field_answers': { kind: 'string', default: FREE_QUALITY_MODEL, group: 'AI', description: 'Model that drafts answers to open form questions.' },
+  'llm.model.answer_bank': { kind: 'string', default: FREE_QUALITY_MODEL, group: 'AI', description: 'Model that polishes the profile\'s ready-made answers (about you, strengths…) once per résumé change.' },
+  'ai.answer_bank': { kind: 'boolean', default: true, group: 'AI', description: 'Let the model polish the ready-made profile answers (one small call per résumé change). Off = answers assembled by rule only.' },
   'llm.model.copilot': { kind: 'string', default: FREE_MODEL, group: 'AI', description: 'Model for the admin observability copilot.' },
   'llm.budget.user_daily_tokens': { kind: 'number', default: 200_000, min: 0, group: 'AI', description: 'Max tokens per user per day (0 = unlimited).' },
   'llm.budget.global_daily_usd': { kind: 'number', default: 25, min: 0, group: 'AI', description: 'Max LLM spend per day across all users (0 = unlimited).' },
@@ -49,6 +51,16 @@ export const SETTINGS = {
     default: { [FREE_MODEL]: { input: 0, output: 0 } },
     group: 'AI',
     description: 'USD per 1M tokens by model: { "model": { "input": 0.1, "output": 0.4 } }.',
+  },
+  // ── Answers ────────────────────────────────────────
+  'apply.respect_review_setting': { kind: 'boolean', default: false, group: 'Answers', description: 'Honour a person\'s saved "review before submit" choice. Off: every application is sent without asking.' },
+  'notify.email_summary': { kind: 'boolean', default: true, group: 'Answers', description: 'Email the person a PDF summary of every application the site confirmed.' },
+  'apply.hold_ai_answers': { kind: 'boolean', default: false, group: 'Answers', description: 'Hold an application for the person\'s review when a model wrote any of its answers (off: every application is sent without asking).' },
+  'answers.defaults': {
+    kind: 'json',
+    default: { disabled: [], overrides: {}, custom: [] },
+    group: 'Answers',
+    description: 'Answers given without asking (edited on the Default answers screen): { disabled: [rule ids], overrides: { id: "answer" }, custom: [{ id, enabled, match, exclude, answer }] }.',
   },
   // ── Applications ───────────────────────────────────
   'apply.daily_limit_per_user': { kind: 'number', default: 50, min: 0, group: 'Applications', description: 'Applications a user can start per day.' },
@@ -90,6 +102,7 @@ export const SETTINGS = {
   'jobs.poll.empty_minutes': { kind: 'number', default: 10080, min: 60, max: 43200, group: 'Jobs', description: 'Poll interval for boards with no open jobs.' },
   'jobs.poll.max_backoff': { kind: 'number', default: 4, min: 1, max: 16, group: 'Jobs', description: 'Boards that keep not changing are polled up to this many times less often.' },
   'jobs.max_age_days': { kind: 'number', default: 45, min: 1, max: 365, group: 'Jobs', description: 'Hide jobs posted longer ago than this.' },
+  'jobs.region_only': { kind: 'boolean', default: true, group: 'Jobs', description: 'Show only jobs in the person\'s region (their country, from their profile or network location) plus remote jobs they can work.' },
   'jobs.match.min_score': { kind: 'number', default: 35, min: 0, max: 100, group: 'Jobs', description: 'Minimum match score shown in Top matches.' },
   'jobs.apply_ready_only': { kind: 'boolean', default: true, group: 'Jobs', description: 'Browse and search only list jobs from systems we have applied through end to end (see the list below).' },
   'jobs.apply_ready_systems': { kind: 'json', default: ['greenhouse', 'ashby'], group: 'Jobs', description: 'Systems with a confirmed clean submit. Add one only after a real application through it succeeded.' },

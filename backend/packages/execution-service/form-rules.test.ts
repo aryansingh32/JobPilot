@@ -104,3 +104,78 @@ describe('answerFromNotes', () => {
     expect(answerFromNotes(about, field('Why do you want to work here?'))).toBeNull();
   });
 });
+
+import { pickOption, isThirdParty } from './form-filler.js';
+describe('third-party fields', () => {
+  it('never take the applicant\'s own contact details', () => {
+    for (const l of ['Emergency contact phone', 'Reference email', 'Manager email', "Supervisor's phone number", 'Spouse name', 'Recruiter name', 'Email of your previous manager', 'Parent/guardian mobile'])
+      expect(ruleFor(f(l)), l).toBeNull();
+    expect(isThirdParty('email address')).toBe(false);
+    expect(ruleFor(f('Email address'))).toBe('email');
+    expect(ruleFor(f('Phone'))).not.toBeNull();
+  });
+});
+
+describe('pickOption safety', () => {
+  it('whole words only: US is not Australia', () => {
+    expect(pickOption(['Australia', 'United States'], 'US')).toBe('United States');
+    expect(pickOption(['Australia', 'Austria'], 'US')).toBeNull();
+  });
+  it('No is not "Not a protected veteran"', () => {
+    expect(pickOption(['I am not a protected veteran', 'No'], 'No')).toBe('No');
+    expect(pickOption(['Not a veteran'], 'No')).toBeNull();
+  });
+  it('a negated option is not a loose match for the positive', () => {
+    expect(pickOption(['Non-US citizen', 'US citizen'], 'US citizen')).toBe('US citizen');
+    expect(pickOption(['Do not require sponsorship'], 'Require sponsorship')).toBeNull();
+  });
+  it('aliases', () => {
+    expect(pickOption(['USA', 'Canada'], 'United States')).toBe('USA');
+    expect(pickOption(['United Kingdom'], 'UK')).toBe('United Kingdom');
+  });
+  it('still prefix-matches', () => {
+    expect(pickOption(['Bachelor of Technology', 'Master of Technology'], 'Bachelor')).toBe('Bachelor of Technology');
+    expect(pickOption(['State University of New York - Albany'], 'State University')).toBeNull();
+  });
+});
+
+describe('workday phone block', () => {
+  it('device type and country code are not the phone number', () => {
+    expect(ruleFor(f('Phone Device Type'))).toBe('phoneDeviceType');
+    expect(ruleFor(f('Country Phone Code'))).toBe('phoneCountryName');
+    expect(ruleFor(f('Phone Number'))).toBe('phone');
+  });
+});
+
+import { parseDateParts, sectionIndex, buildAnswerBook, planAnswers } from './form-filler.js';
+describe('dates, sections, pay bands', () => {
+  it('parses dates day-first', () => {
+    expect(parseDateParts('2026-10-25')).toEqual({ year: '2026', month: '10', day: '25' });
+    expect(parseDateParts('05/03/1999')).toEqual({ day: '05', month: '03', year: '1999' });
+    expect(parseDateParts('03/2021')).toEqual({ month: '03', day: '', year: '2021' });
+    expect(parseDateParts('nonsense')).toBeNull();
+  });
+  it('finds the entry of a repeated section', () => {
+    expect(sectionIndex({ label: 'School', name: 'education[0].school' })).toBe(0);
+    expect(sectionIndex({ label: 'School', name: 'education[1].school' })).toBe(1);
+    expect(sectionIndex({ label: 'Employer #3', name: '' })).toBe(2);
+    expect(sectionIndex({ label: 'Second school attended', name: '' })).toBe(1);
+    expect(sectionIndex({ label: 'School', name: 'school' })).toBe(0);
+  });
+  it('fills the second school from the second entry, not the first', async () => {
+    const profile = { education: [{ school: 'IIT Delhi' }, { school: 'Delhi Public School' }], work: { expectedSalary: '12 LPA' } };
+    const book = buildAnswerBook(profile as never);
+    const mk = (label: string, name: string, extra: Partial<FormField> = {}) => ({ idx: 1, label, name, type: 'text', tag: 'input', options: [], required: true, value: '', ...extra }) as unknown as FormField;
+    const r = await planAnswers([mk('School', 'education[1].school')], book, async () => null);
+    expect(r.answers[0].value).toBe('Delhi Public School');
+    const none = await planAnswers([mk('School', 'education[3].school')], book, async () => null);
+    expect(none.answers).toHaveLength(0);
+    const pay = await planAnswers([mk('Expected salary', 'sal', { type: 'select', tag: 'select', options: ['< 5,00,000', '10,00,000 - 15,00,000', '15,00,000+'] })], book, async () => null);
+    expect(pay.answers[0].value).toBe('10,00,000 - 15,00,000');
+  });
+  it('a signature date is today, not asked', async () => {
+    const book = buildAnswerBook({} as never);
+    const r = await planAnswers([{ idx: 0, label: 'Date', name: 'd', type: 'datesplit', tag: 'input', options: ['M', 'D', 'Y'], required: true, value: '' } as FormField], book, async () => null);
+    expect(r.answers[0].value).toBe(book.todaysDate);
+  });
+});

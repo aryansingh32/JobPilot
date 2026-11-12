@@ -290,8 +290,12 @@ export type ApplicationStatus =
 /** Where an application stands with the employer after it was sent (from their emails). */
 export type ApplicationOutcome = "confirmed" | "assessment" | "interview" | "offer" | "rejected";
 
+/** What really happened to the form: the site confirmed it, it may have been sent but nothing confirmed it, or it never went out. */
+export type SubmissionState = "confirmed" | "unconfirmed" | "not_sent" | "in_progress";
+
 export interface ApplicationSummary {
   id: string;
+  submission?: SubmissionState;
   source?: "manual" | "chat" | "auto" | "admin_test";
   outcome?: ApplicationOutcome | null;
   title: string;
@@ -324,6 +328,8 @@ export interface PendingFieldDTO {
 /** What a paused application is waiting for: a question, or a review before submit. */
 export interface PendingDTO {
   type: string;
+  /** A form question from an application; its draft is shared across chat and the island. */
+  applicationQuestion?: boolean;
   contextMessage?: string;
   question?: string;
   options?: string[];
@@ -408,6 +414,17 @@ export interface JobDetailDTO extends JobListingDTO {
   experienceMin?: number;
   experienceMax?: number;
   country?: string;
+  /** Government notices: does the signed-in person meet the stated age and qualification? */
+  resumeFit?: {
+    verdict: "strong" | "good" | "stretch" | "unlikely";
+    headline: string;
+    required: { have: string[]; missing: string[] };
+    niceToHave: { have: string[]; missing: string[] };
+    listThese: string[];
+    experience: { yours: number | null; asks: string | null; status: "meets" | "below" | "above" | "unknown" };
+    advice: string[];
+  };
+  eligibility?: { status: "eligible" | "check" | "not_eligible"; reasons: string[]; needs: string[] };
 }
 
 export interface JobSearchParams {
@@ -415,6 +432,9 @@ export interface JobSearchParams {
   location?: string;
   workplace?: string;
   type?: string;
+  country?: string;
+  includeRemote?: boolean;
+  experienceLevel?: "fresher" | "any";
   page?: number;
 }
 
@@ -484,11 +504,27 @@ export interface ProfileGapDTO {
   blocking: boolean;
 }
 
+export interface CampaignDTO {
+  id: string;
+  target: number;
+  minScore: number;
+  status: "active" | "completed" | "exhausted" | "stopped";
+  stopReason: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+  progress: { confirmed: number; unconfirmed: number; inProgress: number; failed: number };
+  remaining: number;
+  /** One sentence on where it stands, e.g. "43 of 100 confirmed — target not reached: …". */
+  summary: string;
+}
+
 export interface AutoApplySettingsDTO {
   enabled: boolean;
   dailyCap: number;
   minScore: number;
   excludeCompanies: string[];
+  /** Send by itself when nothing was guessed; otherwise it waits for review. */
+  autoSubmit: boolean;
   lastRunAt: string | null;
 }
 
@@ -550,7 +586,43 @@ export type CheckoutDTO =
       label: string;
     };
 
+/** The PDF record of a submitted application, opened in a new tab (it needs the sign-in, so it can't be a plain link). */
+export async function openSummaryPdf(applicationId: string): Promise<void> {
+  const res = await fetch(`${config.apiBaseUrl}/me/applications/${encodeURIComponent(applicationId)}/summary.pdf`, {
+    headers: { "x-api-key": config.apiKey, ...(await nativeHeaders()) },
+    credentials: "include",
+  });
+  if (!res.ok) throw new ApiError(res.status === 404 ? "The summary isn't ready yet" : `Couldn't open the summary (${res.status})`, res.status);
+  const url = URL.createObjectURL(await res.blob());
+  const win = window.open(url, "_blank", "noopener");
+  // A blocked pop-up: download it instead.
+  if (!win) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "application-summary.pdf";
+    a.click();
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+export interface ResumeAnalysisDTO {
+  analysis: {
+    score: number;
+    label: "Needs work" | "Good" | "Strong";
+    sections: { name: string; score: number; max: number }[];
+    strengths: string[];
+    findings: { id: string; severity: "high" | "medium" | "low"; area: string; title: string; fix: string }[];
+    keywords: { have: string[]; consider: string[] };
+    coverage: { percent: number; answered: number; total: number; missing: { key: string; label: string }[] };
+  };
+  answerBank: { aboutYou?: string; strengths?: string; achievement?: string; careerGoal?: string; source?: "resume" | "ai"; edited?: string[] } | null;
+  missing: { key: string; label: string }[];
+}
+
 export const jp = {
+  resumeAnalysis: () => get<ResumeAnalysisDTO>("/me/resume/analysis"),
+  optimizeResume: () => post<ResumeAnalysisDTO>("/me/resume/optimize", {}),
+  saveAnswer: (key: string, value: string) => put<unknown>("/me/answer-bank", { key, value }),
   me: () => get<MeResponse>("/me"),
 
   profile: () => get<ProfileDTO>("/me/profile"),
@@ -578,6 +650,21 @@ export const jp = {
     return get<{ jobs: JobListingDTO[]; page: number; hasMore: boolean }>(`/jobboard/search?${qs}`);
   },
   job: (id: string) => get<{ job: JobDetailDTO; saved: boolean }>(`/jobboard/jobs/${id}`),
+  /** What applying asks, learned from earlier runs at this posting: how much is ready, what only you can answer. */
+  formPreview: (id: string) =>
+    get<
+      | { known: false }
+      | {
+          known: true;
+          seenBefore: number;
+          total: number;
+          required: number;
+          ready: number;
+          pages: number;
+          complete: boolean;
+          needYou: Array<{ question: string; kind: string; sensitive: boolean }>;
+        }
+    >(`/jobboard/jobs/${id}/form-preview`),
   integrations: () => get<{ gmail: GmailStatusDTO }>("/me/integrations"),
   connectGmail: () => post<{ url: string }>("/me/integrations/gmail/connect", {}),
   disconnectGmail: () => del<{ ok: boolean }>("/me/integrations/gmail"),
@@ -595,7 +682,7 @@ export const jp = {
     post<ApplicationDetail>(`/me/applications/${id}/manual`, { action }),
   cancelApplication: (id: string) => post<ApplicationDetail>(`/me/applications/${id}/cancel`, {}),
   /** Start one from the feed (jobId) or a pasted link (url) — no chat needed. */
-  startApplication: (body: { jobId?: string; url?: string }) =>
+  startApplication: (body: { jobId?: string; url?: string; review?: boolean }) =>
     post<{
       application: ApplicationSummary;
       workflow: { id: string; name: string };
@@ -619,6 +706,9 @@ export const jp = {
     put<{ settings: AutoApplySettingsDTO }>("/me/auto-apply", patch),
   autoApplyPreview: () => get<AutoApplyPreviewDTO>("/me/auto-apply/preview"),
   runAutoApply: () => post<AutoApplyRunDTO>("/me/auto-apply/run", {}),
+  campaign: () => get<{ active: CampaignDTO | null; recent: CampaignDTO[] }>("/me/campaign"),
+  startCampaign: (target: number, minScore?: number) => post<{ campaign: CampaignDTO }>("/me/campaign", { target, minScore }),
+  stopCampaign: (id: string) => post<{ campaign: CampaignDTO }>(`/me/campaign/${id}/stop`, {}),
   autoApplyRuns: () => get<{ runs: AutoApplyRunDTO[] }>("/me/auto-apply/runs"),
 
   creditPacks: (currency: PayCurrency) =>

@@ -18,6 +18,8 @@ const logger = createLogger('cover-letter');
 export interface CoverLetterJob {
   title?: string;
   company?: string;
+  /** Comma-separated skills the posting asks for: the letter leads with the ones the person really has. */
+  skills?: string;
 }
 
 const nameOf = (p: ProfileData) =>
@@ -47,6 +49,11 @@ export function coverLetterFacts(p: ProfileData): string[] {
   if (p.about?.trim()) out.push(`In their own words: ${p.about.trim().slice(0, 4000)}`);
   return out;
 }
+
+const matchedOf = (p: ProfileData, skills?: string) => {
+  const mine = new Set((p.skills ?? []).map((x) => x.toLowerCase()));
+  return (skills ?? '').split(',').map((x) => x.trim()).filter((x) => x && mine.has(x.toLowerCase())).slice(0, 8);
+};
 
 export function templateLetter(p: ProfileData, job: CoverLetterJob): string {
   const name = nameOf(p) || 'Applicant';
@@ -81,11 +88,11 @@ export async function coverLetterText(p: ProfileData, job: CoverLetterJob, ids: 
           {
             role: 'system',
             content:
-              'Write a short, plain cover letter (120–180 words) in the first person. Use ONLY the facts given — never invent employers, numbers, achievements or skills. No placeholders, no brackets, no subject line. Start with "Dear Hiring Team" and end with "Sincerely," and the name.',
+              'Write a short, plain cover letter (120–180 words) in the first person. Use ONLY the facts given — never invent employers, numbers, achievements or skills. Open with why this role fits (name the matching skills or experience from the facts), give one concrete example from the facts, close with availability; no flattery or filler. No placeholders, no brackets, no subject line. Start with "Dear Hiring Team" and end with "Sincerely," and the name.',
           },
           {
             role: 'user',
-            content: `Role: ${job.title || 'the role'}\nCompany: ${job.company || 'the company'}\nName: ${nameOf(p)}\nFacts:\n- ${known.join('\n- ')}`,
+            content: `Role: ${job.title || 'the role'}\nCompany: ${job.company || 'the company'}\nName: ${nameOf(p)}\nFacts:\n- ${[...(matchedOf(p, job.skills).length ? [`Skills the candidate has that this role asks for: ${matchedOf(p, job.skills).join(', ')}`] : []), ...known].join('\n- ')}`,
           },
         ],
       });
