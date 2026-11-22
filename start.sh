@@ -215,7 +215,7 @@ else
   c_info "Starting Docker services without rebuilding: ${COMPOSE_SERVICES[*]}"
 fi
 
-(cd "$BACKEND_DIR" && "${DOCKER_COMPOSE[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d "${BUILD_ARGS[@]}" "${COMPOSE_SERVICES[@]}")
+(cd "$BACKEND_DIR" && "${DOCKER_COMPOSE[@]}" ${COMPOSE_PROFILE_ARGS[@]+"${COMPOSE_PROFILE_ARGS[@]}"} up -d ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} "${COMPOSE_SERVICES[@]}")
 
 ADMIN_PUBLIC_PORT_VALUE=$(env_read "$BACKEND_DIR/.env" "ADMIN_PUBLIC_PORT")
 ADMIN_PUBLIC_PORT_VALUE="${ADMIN_PUBLIC_PORT_VALUE:-3100}"

@@ -156,7 +156,7 @@ export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
         const resp = (await currentProvider.client.chat.completions.create(body as never, {
           timeout: opts.timeoutMs ?? 30_000,
         })) as OpenAI.Chat.Completions.ChatCompletion;
-        const raw = resp.choices[0]?.message?.content;
+        const raw = resp.choices?.[0]?.message?.content;
         const text = typeof raw === 'string' ? raw : '';
         // An empty answer is no answer: the next model gets its turn.
         if (!text.trim()) throw Object.assign(new Error(`Empty reply from ${model}`), { emptyReply: true });

@@ -152,6 +152,24 @@ async function buildApp(): Promise<FastifyInstance> {
       statusCode: reply.statusCode,
       responseTimeMs: reply.elapsedTime,
     });
+
+    // Feeds the admin panel's Network tab (GET /admin/network/stats reads
+    // these same keys — see admin-routes.ts). Best-effort: never let stats
+    // bookkeeping fail a request.
+    try {
+      const redis = await getRedisClient();
+      const multi = redis.multi();
+      multi.incr('stats:requests:total');
+      if (reply.statusCode >= 400) {
+        multi.incr('stats:requests:failed');
+      }
+      await multi.exec();
+      const prevAvg = Number((await redis.get('stats:latency:avg')) ?? 0);
+      const nextAvg = prevAvg > 0 ? prevAvg * 0.9 + reply.elapsedTime * 0.1 : reply.elapsedTime;
+      await redis.set('stats:latency:avg', nextAvg.toFixed(2));
+    } catch {
+      /* stats are best-effort */
+    }
   });
 
   app.setErrorHandler(async (error, req, reply) => {
