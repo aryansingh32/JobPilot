@@ -495,9 +495,9 @@ export function registerMeRoutes(app: FastifyInstance, apiKeyAuth: preHandlerHoo
   app.get('/me/applications/counts', auth, async (req) => applicationsService.counts(uid(req)));
   // Start one: { jobId } from the feed, or { url } for a pasted link. No LLM involved.
   app.post('/me/applications', auth, async (req, reply) => {
-    const body = (req.body ?? {}) as { jobId?: string; url?: string; confirmDuplicate?: boolean; review?: boolean };
+    const body = (req.body ?? {}) as { jobId?: string; url?: string; confirmDuplicate?: boolean; review?: boolean; dryRun?: boolean };
     try {
-      const started = await startApplication(uid(req), { jobId: body.jobId, url: body.url, source: 'manual', checkProfile: true, stopBeforeSubmit: body.review === true ? true : undefined, confirmDuplicate: body.confirmDuplicate === true });
+      const started = await startApplication(uid(req), { jobId: body.jobId, url: body.url, source: 'manual', checkProfile: true, stopBeforeSubmit: body.review === true ? true : undefined, confirmDuplicate: body.confirmDuplicate === true, dryRun: body.dryRun });
       return reply.status(201).send(started);
     } catch (err) {
       if (err instanceof ApplyError || err instanceof LimitError || err instanceof InsufficientCreditsError) {

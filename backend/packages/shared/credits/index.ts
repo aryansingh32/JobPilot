@@ -88,6 +88,16 @@ export const creditsService = {
     if (cost <= 0) return 0;
     return withUserLock(userId, async (client) => {
       await ensureGrant(client, userId);
+      // A retry for the same application must reuse its hold. Without this
+      // row lock/idempotency check, two callers can append duplicate debits
+      // while credits_reserved only remembers the last one.
+      const { rows: applicationRows } = await client.query(
+        `SELECT credits_reserved FROM applications WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+        [applicationId, userId],
+      );
+      if (!applicationRows[0]) throw new Error('Application not found for credit reservation');
+      const existingReservation = Number(applicationRows[0].credits_reserved ?? 0);
+      if (existingReservation > 0) return existingReservation;
       if ((await balanceIn(client, userId)) < cost) throw new InsufficientCreditsError('You are out of credits.');
       await append(client, { userId, delta: -cost, reason: 'reserve', applicationId });
       await client.query('UPDATE applications SET credits_reserved = $2 WHERE id = $1', [applicationId, cost]);

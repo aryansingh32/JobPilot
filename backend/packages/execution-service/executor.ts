@@ -1925,10 +1925,17 @@ export const ACTION_HANDLERS: Record<string, ActionHandler> = {
     // AI-authored content is never user-approved. The admin setting may add
     // stricter holds, but must not weaken this invariant.
     let heldBecause: string | undefined;
-    if (!ctx.stopBeforeSubmit && (!wantsReview || ctx.jobContext?.autoSubmit === '1')) {
+    // Interactive applications always pause for an explicit user review.
+    // Only the separately opted-in Auto Apply path may bypass that pause,
+    // and it still has to pass the strict provenance/declaration policy.
+    if (!ctx.stopBeforeSubmit && ctx.jobContext?.autoSubmit === '1') {
       // Always evaluate the complete answer set. Filtering AI answers here
       // would make an AI-authored answer disappear from the approval check.
-      const verdict = canAutoSubmit(form.answers, form.missing);
+      const verdict = canAutoSubmit(form.answers.map((answer) => ({
+        source: answer.source,
+        key: answer.key,
+        label: answer.field.label || answer.field.name,
+      })), form.missing);
       if (verdict.ok) {
         const sources: Record<string, number> = {};
         for (const a of form.answers) sources[a.source] = (sources[a.source] ?? 0) + 1;

@@ -102,9 +102,11 @@ export function RecorderPanel() {
   const stop = async () => {
     if (!sessionId) return;
     setBusy(true);
-    await act("Recording stopped", async () => {
+    let stopped = false;
+    const ok = await act("Recording stopped", async () => {
       await queue.current;
       const r = await controlApi.recordStop(sessionId);
+      stopped = true;
       const steps = (r.steps as RawStep[]) ?? raw;
       setRaw(steps);
       const c = await controlApi.recordCompile(steps, jobApply);
@@ -126,7 +128,9 @@ export function RecorderPanel() {
         patterns: host.replace(/\./g, "\\."),
       });
     });
-    setSessionId(null);
+    // Keep the live session and controls if the stop command failed so the
+    // operator can retry instead of orphaning a worker browser for 20 minutes.
+    if (stopped || ok) setSessionId(null);
     setBusy(false);
   };
 

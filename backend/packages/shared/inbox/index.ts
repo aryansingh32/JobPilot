@@ -161,7 +161,7 @@ async function deliverToWaiting(userId: string, applicationId: string, code: str
       const { respondToApplication } = await import('../applications/apply.js');
       if (await respondToApplication(userId, applicationId, (code ?? link)!)) {
         await applicationsService.event(applicationId, code ? 'code_autofilled' : 'link_opened', { emailId });
-        logger.info(code ? 'inbox:code-autofilled' : 'inbox:link-autofilled', { applicationId });
+        logger.info(code ? 'inbox:code-autofilled' : 'inbox:link-autofilled');
       }
       return;
     }
@@ -198,7 +198,7 @@ export const inboxService = {
     const owner = await getPgPool().query('SELECT user_id FROM inbox_addresses WHERE lower(address) = $1', [to]);
     const userId: string | undefined = owner.rows[0]?.user_id;
     if (!userId) {
-      logger.warn('inbox:unknown-recipient', { to });
+      logger.warn('inbox:unknown-recipient');
       return null;
     }
     return inboxService.ingestForUser(userId, mail);

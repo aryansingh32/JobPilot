@@ -192,6 +192,25 @@ export class RecorderService {
         .catch(() => {});
     });
     await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: viewport.width, maxHeight: viewport.height });
+    // CDP's screencast event is change-driven and does not guarantee an
+    // initial frame. Send one explicitly so the recorder UI never waits for
+    // the operator to interact before showing the page that just opened.
+    const initialFrame = await cdp.send('Page.captureScreenshot', {
+      format: 'jpeg',
+      quality: 60,
+      captureBeyondViewport: false,
+    }).catch(() => null) as { data?: string } | null;
+    if (initialFrame?.data) {
+      getRedisClient()
+        .then((r) => r.publish(RECORD_FRAME_CHANNEL, JSON.stringify({
+          sessionId,
+          data: initialFrame.data,
+          width: viewport.width,
+          height: viewport.height,
+          url: page.url(),
+        })))
+        .catch(() => {});
+    }
   }
 
   /** Forward one admin input into the recorded page. */
@@ -318,11 +337,11 @@ export const RECORDER_SCRIPT = `(() => {
   let lastSig = '';
   const snapshot = () => {
     try {
-      const fields = Array.from(document.querySelectorAll('input:not([type=hidden]), select, textarea')).filter((el) => el.offsetParent !== null).slice(0, 60).map((el) => {
+      const fields = Array.from(document.querySelectorAll('input:not([type=hidden]), select, textarea')).filter((el) => el.offsetParent !== null).slice(0, 300).map((el) => {
         const next = el.nextElementSibling;
         const hint = next && !/^(INPUT|SELECT|TEXTAREA|LABEL|BUTTON)$/.test(next.tagName) ? clean(next.innerText).slice(0, 120) : '';
         return { label: labelOf(el) || el.name || el.id || '', type: el.tagName === 'SELECT' ? 'select' : el.type || 'text', required: !!el.required || /\\*\\s*$/.test(labelOf(el)),
-          options: el.tagName === 'SELECT' ? Array.from(el.options).slice(0, 12).map((o) => clean(o.text)) : undefined, secret: kindOf(el) || undefined, hint: hint || undefined };
+          options: el.tagName === 'SELECT' ? Array.from(el.options).slice(0, 500).map((o) => clean(o.text)) : undefined, secret: kindOf(el) || undefined, hint: hint || undefined };
       });
       const buttons = Array.from(document.querySelectorAll('button, input[type=submit], input[type=button], a.btn, [role=button]')).filter((b) => b.offsetParent !== null).map((b) => clean(b.innerText || b.value)).filter(Boolean).slice(0, 20);
       const headings = Array.from(document.querySelectorAll('h1, h2, h3')).map((h) => clean(h.innerText)).filter(Boolean).slice(0, 6);
@@ -333,7 +352,7 @@ export const RECORDER_SCRIPT = `(() => {
       if (fields.some((f) => f.secret === 'otp')) gates.push('otp');
       if (fields.some((f) => f.secret === 'captcha') || document.querySelector('img[src*="captcha" i], img[id*="captcha" i]')) gates.push('captcha');
       if (/face authentication|biometric/.test(body)) gates.push('biometric');
-      const sig = location.href + '|' + headings.join('/') + '|' + fields.map((f) => f.label + f.type).join(',');
+      const sig = location.href + '|' + headings.join('/') + '|' + JSON.stringify({ fields, buttons, gates });
       if (sig === lastSig) return; lastSig = sig;
       report({ action: 'page', url: location.href, value: document.title, snapshot: { title: document.title, headings, fields, buttons, gates } });
     } catch (e) {}
@@ -341,7 +360,9 @@ export const RECORDER_SCRIPT = `(() => {
   let snapTimer = null;
   const snapSoon = () => { clearTimeout(snapTimer); snapTimer = setTimeout(snapshot, 1200); };
   window.addEventListener('load', snapSoon);
-  document.addEventListener('DOMContentLoaded', () => { snapSoon(); new MutationObserver(snapSoon).observe(document.documentElement, { childList: true, subtree: true }); });
+  const observePage = () => { snapSoon(); new MutationObserver(snapSoon).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['required', 'aria-required', 'disabled', 'hidden', 'aria-expanded'], characterData: true }); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', observePage, { once: true });
+  else observePage();
   const report = (s) => { try { window.reportAction(Object.assign({ timestamp: Date.now() }, s)); } catch (e) {} };
   document.addEventListener('click', (e) => {
     const el = e.target && e.target.closest ? e.target.closest('a, button, [role="button"], [role="option"], [role="tab"], input[type="checkbox"], input[type="radio"], label, summary, li, div, span') : null;
