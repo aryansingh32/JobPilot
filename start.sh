@@ -2,7 +2,7 @@
 # ============================================================
 # JobPilot — one-command local test environment
 #
-# Brings up Postgres + Redis + the API service + the worker via
+# Brings up Postgres + Redis + the API + admin + worker via
 # Docker Compose (packages/api-service and packages/execution-service,
 # including the Playwright browser they need), then runs the
 # chatflow-interface frontend dev server in the foreground.
@@ -16,7 +16,7 @@
 # Usage:
 #   ./start.sh                 start everything, rebuild images if needed
 #   ./start.sh --no-build      skip the docker image rebuild step
-#   ./start.sh --no-frontend   only bring up Postgres/Redis/API/worker
+#   ./start.sh --no-frontend   only bring up Postgres/Redis/API/admin/worker
 #   ./start.sh --no-scheduler  skip the scheduler service (change detection,
 #                              selector-health-triggered remaps, proxy/session
 #                              cleanup — self-healing runs by default)
@@ -60,6 +60,11 @@ c_info()  { printf '\033[36m[start]\033[0m %s\n' "$1"; }
 c_ok()    { printf '\033[32m[ ok ]\033[0m %s\n' "$1"; }
 c_warn()  { printf '\033[33m[warn]\033[0m %s\n' "$1"; }
 c_err()   { printf '\033[31m[fail]\033[0m %s\n' "$1" >&2; }
+http_healthy() {
+  curl -fsS --max-time 3 "$1" 2>/dev/null \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.exit(JSON.parse(s).status==="healthy"?0:1)}catch{process.exit(1)}})' \
+    2>/dev/null
+}
 
 # ── Prerequisite checks ───────────────────────────────────────
 require_cmd() {
@@ -165,10 +170,11 @@ ADMIN_PASSWORD_VALUE=$(env_read "$BACKEND_DIR/.env" "ADMIN_PASSWORD")
 API_PUBLIC_PORT_VALUE=$(env_read "$BACKEND_DIR/.env" "API_PUBLIC_PORT")
 API_PUBLIC_PORT_VALUE="${API_PUBLIC_PORT_VALUE:-3000}"
 
-if [ -z "$(env_read "$BACKEND_DIR/.env" "OPENROUTER_API_KEY")" ] \
+if [ -z "$(env_read "$BACKEND_DIR/.env" "COARENA_API_KEY")" ] \
+  && [ -z "$(env_read "$BACKEND_DIR/.env" "OPENROUTER_API_KEY")" ] \
   && [ -z "$(env_read "$BACKEND_DIR/.env" "OPENAI_API_KEY")" ] \
   && [ -z "$(env_read "$BACKEND_DIR/.env" "ANTHROPIC_API_KEY")" ]; then
-  c_warn "No OPENROUTER_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY set in backend/.env — chat replies and workflow planning need one. Everything else (auth, admin panel, DB) will still work."
+  c_warn "No COARENA_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY set in backend/.env — chat replies and workflow planning need one. Everything else (auth, admin panel, DB) will still work."
 fi
 if [ -z "$(env_read "$BACKEND_DIR/.env" "GOOGLE_CLIENT_ID")" ]; then
   c_warn "GOOGLE_CLIENT_ID is unset — Google sign-in will be unavailable, but email/mobile OTP login still works (codes print to the API container's logs since no SMTP/Twilio is configured)."
@@ -190,7 +196,7 @@ FRONTEND_UPDATES=$(node -e '
 env_fill "$FRONTEND_DIR/.env" "$FRONTEND_UPDATES" '["VITE_API_KEY","VITE_API_BASE_URL"]'
 
 # ── Bring up Docker services ───────────────────────────────────
-COMPOSE_SERVICES=(postgres redis api worker)
+COMPOSE_SERVICES=(postgres redis api admin worker)
 COMPOSE_PROFILE_ARGS=()
 if [ "$SCHEDULER" = "1" ]; then
   COMPOSE_PROFILE_ARGS+=(--profile scheduler)
@@ -209,12 +215,15 @@ else
   c_info "Starting Docker services without rebuilding: ${COMPOSE_SERVICES[*]}"
 fi
 
-(cd "$BACKEND_DIR" && "${DOCKER_COMPOSE[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d "${BUILD_ARGS[@]}" "${COMPOSE_SERVICES[@]}")
+(cd "$BACKEND_DIR" && "${DOCKER_COMPOSE[@]}" ${COMPOSE_PROFILE_ARGS[@]+"${COMPOSE_PROFILE_ARGS[@]}"} up -d ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} "${COMPOSE_SERVICES[@]}")
 
-c_info "Waiting for the API to become healthy on http://localhost:${API_PUBLIC_PORT_VALUE}/health ..."
+ADMIN_PUBLIC_PORT_VALUE=$(env_read "$BACKEND_DIR/.env" "ADMIN_PUBLIC_PORT")
+ADMIN_PUBLIC_PORT_VALUE="${ADMIN_PUBLIC_PORT_VALUE:-3100}"
+c_info "Waiting for API and admin health endpoints ..."
 READY=0
 for _ in $(seq 1 90); do
-  if curl -sf "http://localhost:${API_PUBLIC_PORT_VALUE}/health" >/dev/null 2>&1; then
+  if http_healthy "http://localhost:${API_PUBLIC_PORT_VALUE}/health" \
+    && http_healthy "http://localhost:${ADMIN_PUBLIC_PORT_VALUE}/health"; then
     READY=1
     break
   fi
@@ -222,11 +231,22 @@ for _ in $(seq 1 90); do
 done
 
 if [ "$READY" != "1" ]; then
-  c_err "API didn't become healthy in time. Recent logs:"
-  (cd "$BACKEND_DIR" && "${DOCKER_COMPOSE[@]}" logs --tail=80 api)
+  c_err "API/admin didn't become healthy in time. Container status and recent logs:"
+  (cd "$BACKEND_DIR" && "${DOCKER_COMPOSE[@]}" ps && "${DOCKER_COMPOSE[@]}" logs --tail=50 postgres redis api admin worker scheduler)
   exit 1
 fi
-c_ok "API is up."
+RUNNING_SERVICES=$(cd "$BACKEND_DIR" && "${DOCKER_COMPOSE[@]}" ps --status running --services)
+MISSING_SERVICES=()
+for service in "${COMPOSE_SERVICES[@]}"; do
+  if ! grep -qx "$service" <<<"$RUNNING_SERVICES"; then MISSING_SERVICES+=("$service"); fi
+done
+if [ "${#MISSING_SERVICES[@]}" -gt 0 ]; then
+  c_err "Services failed to stay running: ${MISSING_SERVICES[*]}. Container status and recent logs:"
+  (cd "$BACKEND_DIR" && "${DOCKER_COMPOSE[@]}" ps && "${DOCKER_COMPOSE[@]}" logs --tail=50 "${MISSING_SERVICES[@]}")
+  exit 1
+fi
+(cd "$BACKEND_DIR" && "${DOCKER_COMPOSE[@]}" ps)
+c_ok "All requested Compose services are running; API and admin health checks pass."
 
 # ── Frontend deps + dev server ─────────────────────────────────
 if [ "$START_FRONTEND" = "1" ]; then
@@ -239,7 +259,8 @@ if [ "$START_FRONTEND" = "1" ]; then
   c_ok "Backend stack is up:"
   echo "    API:            http://localhost:${API_PUBLIC_PORT_VALUE}"
   echo "    API health:     http://localhost:${API_PUBLIC_PORT_VALUE}/health"
-  echo "    Admin login:    (frontend) /admin/login"
+  echo "    Admin health:   http://localhost:${ADMIN_PUBLIC_PORT_VALUE}/health"
+  echo "    Admin login:    http://localhost:5173/admin/login"
   echo "    Admin username: ${ADMIN_USERNAME_VALUE}"
   echo "    Admin password: ${ADMIN_PASSWORD_VALUE}"
   if [ "$OBSERVABILITY" = "1" ]; then
@@ -255,6 +276,7 @@ else
   echo
   c_ok "Backend-only stack is up (--no-frontend passed):"
   echo "    API:            http://localhost:${API_PUBLIC_PORT_VALUE}"
+  echo "    Admin health:   http://localhost:${ADMIN_PUBLIC_PORT_VALUE}/health"
   echo "    Admin username: ${ADMIN_USERNAME_VALUE}"
   echo "    Admin password: ${ADMIN_PASSWORD_VALUE}"
   echo

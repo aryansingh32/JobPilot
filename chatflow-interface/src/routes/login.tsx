@@ -1,17 +1,19 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Mail, Phone, Loader2 } from "lucide-react";
+import { Mail, Phone, Loader2 } from "lucide-react";
+import { Brand } from "@/components/chat/ChatSidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { config } from "@/lib/config";
 import { authClient } from "@/lib/auth-client";
+import { jp } from "@/lib/api-client";
 import { createLogger } from "@/lib/logger";
 
 const logger = createLogger("login-route");
 
 export const Route = createFileRoute("/login")({
-  head: () => ({ meta: [{ title: "Sign in — Agent" }] }),
+  head: () => ({ meta: [{ title: "Sign in — jobpilot" }] }),
   component: LoginPage,
 });
 
@@ -81,12 +83,21 @@ function LoginPage() {
   const [identifier, setIdentifier] = useState("");
   const [code, setCode] = useState("");
 
+  // New accounts go straight into setup — no stop on the home screen first.
+  const goNext = async () => {
+    const me = await jp.me().catch(() => null);
+    navigate({
+      to: me?.profile.onboardingStatus === "pending" ? "/onboarding" : "/",
+      replace: true,
+    });
+  };
+
   const handleGoogleCredential = async (idToken: string) => {
     setBusy(true);
     setError(null);
     try {
       await authClient.signInWithGoogle(idToken);
-      navigate({ to: "/" });
+      await goNext();
     } catch (err) {
       logger.error("login:google-failed", err);
       setError((err as Error).message);
@@ -119,7 +130,7 @@ function LoginPage() {
     try {
       if (mode === "email") await authClient.verifyEmailOtp(identifier.trim(), code.trim());
       else await authClient.verifyMobileOtp(identifier.trim(), code.trim());
-      navigate({ to: "/" });
+      await goNext();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -128,102 +139,113 @@ function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-[100dvh] items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm animate-in space-y-6 fade-in-0 zoom-in-95 duration-300">
-        <div className="flex flex-col items-center gap-2 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/15 text-primary">
-            <Sparkles className="h-6 w-6" />
-          </div>
-          <h1 className="text-xl font-semibold text-foreground">Sign in to Agent</h1>
-          <p className="text-sm text-muted-foreground">
-            Your saved profiles, files, and job history stay private to your account.
+    <div className="flex min-h-[100dvh] items-center justify-center bg-background px-4 py-10">
+      <div className="w-full max-w-sm animate-in space-y-6 fade-in-0 duration-300">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Brand />
+          <h1 className="mt-3 text-[26px] font-bold tracking-tight text-foreground">
+            Sign in to jobpilot
+          </h1>
+          <p className="text-[14px] leading-relaxed text-muted-foreground">
+            Find roles that fit you, apply in one tap, and track every reply. New here? The same
+            code creates your account.
           </p>
         </div>
 
-        {config.googleClientId && (
-          <div className="flex flex-col items-center gap-3">
-            <div ref={googleButtonRef} />
-            <div className="flex w-full items-center gap-3 text-xs text-muted-foreground">
-              <div className="h-px flex-1 bg-border" />
-              or
-              <div className="h-px flex-1 bg-border" />
+        <div className="space-y-5 rounded-[18px] border border-border bg-card p-5 shadow-[0_1px_2px_rgba(13,24,40,0.04)]">
+          {config.googleClientId && (
+            <div className="flex flex-col items-center gap-3">
+              <div ref={googleButtonRef} />
+              <div className="flex w-full items-center gap-3 text-xs text-muted-foreground">
+                <div className="h-px flex-1 bg-border" />
+                or
+                <div className="h-px flex-1 bg-border" />
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        <Tabs
-          value={mode}
-          onValueChange={(v) => {
-            setMode(v as Mode);
-            setStep("enter");
-            setIdentifier("");
-            setCode("");
-            setError(null);
-          }}
-        >
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="email" className="gap-1.5">
-              <Mail className="h-3.5 w-3.5" /> Email
-            </TabsTrigger>
-            <TabsTrigger value="mobile" className="gap-1.5">
-              <Phone className="h-3.5 w-3.5" /> Mobile
-            </TabsTrigger>
-          </TabsList>
+          <Tabs
+            value={mode}
+            onValueChange={(v) => {
+              setMode(v as Mode);
+              setStep("enter");
+              setIdentifier("");
+              setCode("");
+              setError(null);
+            }}
+          >
+            <TabsList className="grid h-10 w-full grid-cols-2 rounded-full bg-muted p-1">
+              <TabsTrigger value="email" className="gap-1.5 rounded-full text-[13px] font-semibold">
+                <Mail className="h-3.5 w-3.5" /> Email
+              </TabsTrigger>
+              <TabsTrigger
+                value="mobile"
+                className="gap-1.5 rounded-full text-[13px] font-semibold"
+              >
+                <Phone className="h-3.5 w-3.5" /> Mobile
+              </TabsTrigger>
+            </TabsList>
 
-          <TabsContent value={mode} className="mt-4 space-y-3">
-            {step === "enter" ? (
-              <>
-                <Input
-                  autoFocus
-                  type={mode === "email" ? "email" : "tel"}
-                  inputMode={mode === "email" ? "email" : "tel"}
-                  placeholder={mode === "email" ? "you@example.com" : "+91 98765 43210"}
-                  value={identifier}
-                  onChange={(e) => setIdentifier(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && requestOtp()}
-                />
-                <Button
-                  className="w-full"
-                  disabled={busy || !identifier.trim()}
-                  onClick={requestOtp}
-                >
-                  {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Send code
-                </Button>
-              </>
-            ) : (
-              <>
-                <p className="text-xs text-muted-foreground">
-                  Enter the 6-digit code sent to{" "}
-                  <span className="text-foreground">{identifier}</span>
-                </p>
-                <Input
-                  autoFocus
-                  inputMode="numeric"
-                  maxLength={6}
-                  placeholder="123456"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-                  onKeyDown={(e) => e.key === "Enter" && verifyOtp()}
-                  className="text-center text-lg tracking-[0.4em]"
-                />
-                <Button className="w-full" disabled={busy || code.length < 6} onClick={verifyOtp}>
-                  {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Verify &amp; sign in
-                </Button>
-                <button
-                  className="w-full text-center text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => setStep("enter")}
-                >
-                  Use a different {mode === "email" ? "email" : "number"}
-                </button>
-              </>
-            )}
-          </TabsContent>
-        </Tabs>
+            <TabsContent value={mode} className="mt-4 space-y-3">
+              {step === "enter" ? (
+                <>
+                  <Input
+                    autoFocus
+                    type={mode === "email" ? "email" : "tel"}
+                    inputMode={mode === "email" ? "email" : "tel"}
+                    placeholder={mode === "email" ? "you@example.com" : "+91 98765 43210"}
+                    value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && requestOtp()}
+                    className="h-11 rounded-xl text-[15px]"
+                  />
+                  <Button
+                    className="h-11 w-full rounded-full text-[14px] font-semibold"
+                    disabled={busy || !identifier.trim()}
+                    onClick={requestOtp}
+                  >
+                    {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+                    Send code
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    Enter the 6-digit code sent to{" "}
+                    <span className="text-foreground">{identifier}</span>
+                  </p>
+                  <Input
+                    autoFocus
+                    inputMode="numeric"
+                    maxLength={6}
+                    placeholder="123456"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+                    onKeyDown={(e) => e.key === "Enter" && verifyOtp()}
+                    className="h-12 rounded-xl text-center text-lg tracking-[0.4em]"
+                  />
+                  <Button
+                    className="h-11 w-full rounded-full text-[14px] font-semibold"
+                    disabled={busy || code.length < 6}
+                    onClick={verifyOtp}
+                  >
+                    {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+                    Verify &amp; sign in
+                  </Button>
+                  <button
+                    className="w-full text-center text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setStep("enter")}
+                  >
+                    Use a different {mode === "email" ? "email" : "number"}
+                  </button>
+                </>
+              )}
+            </TabsContent>
+          </Tabs>
+        </div>
 
         {error && (
-          <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-center text-xs text-destructive">
+          <p className="rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2 text-center text-[13px] text-destructive">
             {error}
           </p>
         )}

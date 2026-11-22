@@ -5,6 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/api-service/package.json packages/api-service/
+COPY packages/admin-service/package.json packages/admin-service/
 COPY packages/execution-service/package.json packages/execution-service/
 COPY packages/crawler-service/package.json packages/crawler-service/
 COPY packages/ai-service/package.json packages/ai-service/

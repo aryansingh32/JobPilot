@@ -1,0 +1,28 @@
+FROM node:20-bookworm
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json* tsconfig.base.json ./
+COPY packages/shared/package.json packages/shared/
+COPY packages/api-service/package.json packages/api-service/
+COPY packages/admin-service/package.json packages/admin-service/
+COPY packages/execution-service/package.json packages/execution-service/
+COPY packages/crawler-service/package.json packages/crawler-service/
+COPY packages/ai-service/package.json packages/ai-service/
+COPY packages/scheduler-service/package.json packages/scheduler-service/
+RUN npm ci
+
+COPY packages/ packages/
+COPY scripts/ scripts/
+
+# Admin API: no browsers, no user routes. Workers are reached over the
+# Redis control bus.
+
+EXPOSE 3100
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD curl -f http://localhost:3100/health || exit 1
+
+CMD ["npm", "run", "dev:admin"]

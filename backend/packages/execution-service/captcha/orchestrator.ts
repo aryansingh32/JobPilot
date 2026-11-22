@@ -36,7 +36,11 @@ export interface BeginChallengeResult {
 export async function beginChallenge(page: Page, ctx: ExecutionContext, step: ActionStep): Promise<BeginChallengeResult> {
   let detection: ChallengeDetection;
   try {
-    detection = await detectChallenge(page, { expectedInput: step.expectedInput });
+    // Questions the run itself asks (form answers, review) are never a captcha,
+    // even on a page that happens to carry a captcha widget.
+    detection = step.metadata?.skipChallengeDetection
+      ? { detected: false, type: 'unknown', eventType: 'generic' }
+      : await detectChallenge(page, { expectedInput: step.expectedInput });
   } catch (err) {
     logger.warn('begin-challenge:detect-failed', { jobId: ctx.jobId, stepId: step.id, error: (err as Error).message });
     detection = { detected: false, type: 'unknown', eventType: 'generic' };

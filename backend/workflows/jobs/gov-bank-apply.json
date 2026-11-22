@@ -1,0 +1,85 @@
+{
+  "category": "jobs",
+  "portalType": "jobs",
+  "entryUrl": "https://jobpilot.local/apply",
+  "requiredInputs": [],
+  "requiredFiles": [
+    "resume"
+  ],
+  "errorRecoveryPlan": [],
+  "isActive": true,
+  "version": 2,
+  "id": "job-apply-gov-bank",
+  "siteId": "gov-bank",
+  "name": "Banking (IBPS / SBI / RBI / NABARD) \u2014 Apply",
+  "trigger": "apply gov bank",
+  "triggerPhrases": [
+    "apply on bank portal"
+  ],
+  "pageUrlPatterns": [
+    "ibps\\.in",
+    "ibpsonline\\.ibps\\.in",
+    "sbi\\.(co|bank)\\.in",
+    "rbi\\.org\\.in",
+    "nabard\\.org",
+    "opportunities\\.rbi\\.org\\.in"
+  ],
+  "instructions": "Bank recruitment portals: register (email and mobile codes), then fill details, upload photo, signature, thumb impression and handwritten declaration. Left thumb impression and handwritten declaration are fitted to the stated size/format when they are on file. Fills from your profile first (no AI for known questions), asks you only for codes (OTP), passwords, captchas and anything new, pauses for your review, then submits. For Aadhaar/DigiLocker verification it asks you for the number, consent and OTP/PIN in chat and types them in (never saved). Payments are always done by you.",
+  "starterActionPlan": [
+    {
+      "id": "open",
+      "order": 1,
+      "action": "navigate",
+      "value": "{{job:applyUrl}}",
+      "timeout": 60000,
+      "retries": 2,
+      "description": "Open the recruitment portal"
+    },
+    {
+      "id": "account",
+      "order": 2,
+      "action": "autofillForm",
+      "timeout": 240000,
+      "retries": 0,
+      "metadata": {
+        "openApplyButton": true,
+        "captchas": "inline",
+        "portal": "bank"
+      },
+      "description": "Register or sign in: fills your details, asks for OTP, password and captcha"
+    },
+    {
+      "id": "application",
+      "order": 3,
+      "action": "govWizard",
+      "timeout": 600000,
+      "retries": 0,
+      "metadata": {
+        "captchas": "inline",
+        "portal": "bank"
+      },
+      "description": "Fill every page of the application (details, education, photo, signature, declaration)"
+    },
+    {
+      "id": "review",
+      "order": 4,
+      "action": "reviewForm",
+      "retries": 0,
+      "description": "Wait for your approval"
+    },
+    {
+      "id": "submit",
+      "order": 5,
+      "action": "submitForm",
+      "timeout": 90000,
+      "retries": 0,
+      "description": "Final submit"
+    }
+  ],
+  "metadata": {
+    "kind": "job-apply",
+    "atsType": "gov-bank",
+    "department": "bank",
+    "source": "file"
+  }
+}

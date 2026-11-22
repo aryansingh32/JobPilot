@@ -1,3 +1,5 @@
+> **Stale (May 2026).** Current status: `docs/competitive/production-status.md`.
+
 # FormKaro Backend — Live Test Report
 
 **Date:** 2026-05-09 00:17 IST  

@@ -11,12 +11,24 @@ import {
   type PauseEvent,
   type FileEvent,
   type JobStartedEvent,
+  type ReceiptEvent,
+  type ChatUiCard,
+  type ChatTurnContext,
 } from "./socket-service";
-import type { ChatMessage, InputCardKind, TimelineStep } from "./chat-types";
+import type {
+  ChatMessage,
+  InputCardKind,
+  ReviewMessage,
+  ReviewSection,
+  TimelineStep,
+} from "./chat-types";
 import { createLogger } from "./logger";
+import { showIsland, type IslandTarget } from "./island";
 import { toast } from "sonner";
+import { clearSequentialQuestionDraft } from "./sequential-questions";
 
 const logger = createLogger("frontend-backend-connector");
+const pendingCardAnswers = new Set<string>();
 
 export interface BotEmitter {
   pushMessage: (m: ChatMessage) => void;
@@ -24,6 +36,7 @@ export interface BotEmitter {
   setLiveFrame: (url: string | null, hot?: boolean) => void;
   setTyping: (typing: boolean) => void;
   setBusy: (busy: boolean) => void;
+  setThreadTitle?: (threadId: string, title: string) => void;
 }
 
 // ─── Pause-type → InputCardKind mapping ──────────────────────
@@ -52,6 +65,8 @@ function mapPauseToCardKind(type: string): InputCardKind | null {
     case "password":
     case "email":
     case "mobile":
+    case "emailLink":
+    case "aadhaar":
       return "text";
     default:
       return null;
@@ -99,16 +114,24 @@ function setTrackedJobId(jobId: string | null): void {
   }
 }
 
+/** Called once the user is known: the chat session id is per user on this device. */
+export function scopeSessionToUser(userId: string): void {
+  sessionScope = userId;
+  currentSessionId = null;
+}
+let sessionScope = "anon";
+const SESSION_KEY = () => `agent-session-id:${sessionScope}`;
+
 export function getSessionId(): string {
   if (!currentSessionId) {
     // Try to restore from localStorage
     if (typeof window !== "undefined") {
-      currentSessionId = window.localStorage.getItem("agent-session-id");
+      currentSessionId = window.localStorage.getItem(SESSION_KEY());
     }
     if (!currentSessionId) {
       currentSessionId = uid() + "-" + uid();
       if (typeof window !== "undefined") {
-        window.localStorage.setItem("agent-session-id", currentSessionId);
+        window.localStorage.setItem(SESSION_KEY(), currentSessionId);
       }
     }
   }
@@ -129,7 +152,7 @@ export function resetSession(): void {
   // Generate a brand-new session ID
   currentSessionId = uid() + "-" + uid();
   if (typeof window !== "undefined") {
-    window.localStorage.setItem("agent-session-id", currentSessionId);
+    window.localStorage.setItem(SESSION_KEY(), currentSessionId);
   }
 
   // Reconnect socket with the new session
@@ -190,6 +213,51 @@ function buildCallbacks(emitter: BotEmitter) {
       });
     },
 
+    onChatUi: ({ cards }: { cards: ChatUiCard[] }) => {
+      for (const c of cards) {
+        const base = { id: uid(), role: "bot" as const, createdAt: Date.now() };
+        if (c.type === "jobs")
+          emitter.pushMessage({
+            ...base,
+            type: "job-cards",
+            title: c.title,
+            jobs: c.jobs,
+            empty: c.empty,
+            hasMore: c.hasMore,
+            broadened: c.broadened,
+            search: c.search,
+          });
+        else if (c.type === "ask")
+          emitter.pushMessage({
+            ...base,
+            type: "ask",
+            kind: c.kind,
+            prompt: c.prompt,
+            options: c.options,
+            length: c.length,
+          });
+        else if (c.type === "open")
+          emitter.pushMessage({
+            ...base,
+            type: "actions",
+            actions: [{ view: c.view, label: c.label }],
+          });
+        else if (c.type === "applications")
+          emitter.pushMessage({ ...base, type: "apps-status", ids: c.items.map((i) => i.id) });
+        else if (c.type === "island")
+          showIsland({
+            tone: c.tone,
+            title: c.title,
+            body: c.body,
+            action: c.view ? { label: c.label || "Open", view: c.view as IslandTarget } : undefined,
+          });
+      }
+    },
+
+    onChatTitle: ({ threadId, title }: { threadId: string; title: string }) => {
+      emitter.setThreadTitle?.(threadId, title);
+    },
+
     onChatPause: (event: PauseEvent) => {
       emitter.setTyping(false);
       emitter.setBusy(true);
@@ -199,7 +267,25 @@ function buildCallbacks(emitter: BotEmitter) {
         toast.info("Invisible Captcha Detected", {
           description: "Agent is handling security checks in the background.",
         });
-        resolveCard(`pause-${event.stepId}`, "auto-solved", event.jobId);
+        resolveCard(`pause-${event.jobId}-${event.stepId}`, "auto-solved", event.jobId);
+        return;
+      }
+
+      if (event.type === "review") {
+        const d = (event.data ?? {}) as Partial<ReviewMessage>;
+        emitter.pushMessage({
+          id: `pause-${event.jobId}-${event.stepId}`,
+          role: "bot" as const,
+          type: "review" as const,
+          createdAt: Date.now(),
+          title: d.title || event.contextMessage || "Review before submit",
+          site: d.site,
+          siteUrl: d.siteUrl,
+          actionLabel: d.actionLabel || "Submit",
+          sections: (d.sections as ReviewSection[]) || [],
+          jobId: event.jobId,
+          stepId: event.stepId,
+        });
         return;
       }
 
@@ -208,7 +294,7 @@ function buildCallbacks(emitter: BotEmitter) {
       if (cardKind) {
         // Push an interactive input card
         emitter.pushMessage({
-          id: `pause-${event.stepId}`,
+          id: `pause-${event.jobId}-${event.stepId}`,
           role: "bot" as const,
           type: "input-card" as const,
           createdAt: Date.now(),
@@ -255,16 +341,42 @@ function buildCallbacks(emitter: BotEmitter) {
       });
     },
 
+    onChatReceipt: (event: ReceiptEvent) => {
+      emitter.setBusy(false);
+      emitter.pushMessage({
+        id: `receipt-${event.jobId}`,
+        role: "bot" as const,
+        type: "receipt" as const,
+        createdAt: Date.now(),
+        status: event.status,
+        title: event.title,
+        site: event.site,
+        siteUrl: event.siteUrl,
+        reference: event.reference,
+        durationMs: event.durationMs,
+        completedAt: event.completedAt ?? Date.now(),
+        sections: event.sections ?? [],
+        files: event.files?.map((f) => ({
+          ...f,
+          downloadUrl: f.fileId ? api.getFileDownloadUrl(f.fileId) : undefined,
+        })),
+        steps: event.steps,
+        nextSteps: event.nextSteps,
+      });
+    },
+
     onJobStarted: (event: JobStartedEvent) => {
       setTrackedJobId(event.jobId);
       emitter.setBusy(true);
+      const statusId = `browser-starting-${event.sessionId}`;
+      const content = "Your tasks are queued safely. Follow live progress in Applications.";
       emitter.pushMessage({
-        id: uid(),
+        id: statusId,
         role: "bot" as const,
         type: "status" as const,
         createdAt: Date.now(),
         variant: "info" as const,
-        content: `⚡ Initializing secure browser & connecting to government portal...`,
+        content,
       });
     },
 
@@ -275,7 +387,7 @@ function buildCallbacks(emitter: BotEmitter) {
         type: "status" as const,
         createdAt: Date.now(),
         variant: "warning" as const,
-        content: `⏳ Your task is queued (${event.position} ahead of you). Estimated wait: ${event.position * 2} minutes.`,
+        content: `Queued — ${event.position} ahead of you, about ${event.position * 2} min.`,
       });
     },
 
@@ -303,20 +415,64 @@ function buildCallbacks(emitter: BotEmitter) {
 // When user resolves an input card (OTP, CAPTCHA, etc.), we need to
 // resume the paused job via the backend.
 
-export async function resolveCard(id: string, value: string, jobId?: string): Promise<void> {
-  // Also fire the local custom event for UI update
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("agent-card-resolve", { detail: { id, value } }));
-  }
-
-  // Resume the paused job on the backend
+export async function resolveCard(id: string, value: string, jobId?: string, displayValue?: string): Promise<void> {
+  if (pendingCardAnswers.has(id)) return;
+  pendingCardAnswers.add(id);
   const targetJobId = jobId || currentJobId;
-  if (targetJobId) {
-    try {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("agent-card-submitting", { detail: { id, submitting: true } }));
+  }
+  try {
+    // Resume first. The chat card only becomes resolved after the server accepts the answer.
+    if (targetJobId) {
       await api.resumeJob(targetJobId, value);
-    } catch (err) {
-      logger.error("job:resume-failed", err, { targetJobId });
     }
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("agent-card-resolve", { detail: { id, value, displayValue } }));
+      if (targetJobId) {
+        window.dispatchEvent(new CustomEvent("application-answer-resolved", {
+          detail: { execJobId: targetJobId, value, source: "chat" },
+        }));
+      }
+    }
+    if (targetJobId) clearSequentialQuestionDraft(targetJobId);
+  } catch (err) {
+    logger.error("job:resume-failed", err, { targetJobId });
+    toast.error("Couldn't send that answer. Please try again.");
+  } finally {
+    pendingCardAnswers.delete(id);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("agent-card-submitting", { detail: { id, submitting: false } }));
+    }
+  }
+}
+
+/**
+ * Resolve a review pause. The approved values are sent verbatim as the resume
+ * payload — the executor must submit exactly these, never re-generate them.
+ */
+export async function resolveReview(
+  msg: ReviewMessage,
+  action: "approved" | "cancelled",
+  values: Record<string, string>,
+): Promise<void> {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("agent-review-resolve", {
+        detail: { id: msg.id, resolved: { action, values, at: Date.now() } },
+      }),
+    );
+  }
+  const targetJobId = msg.jobId || currentJobId;
+  if (!targetJobId) return;
+  try {
+    if (action === "cancelled") {
+      await api.cancelJob(targetJobId);
+    } else {
+      await api.resumeJob(targetJobId, JSON.stringify({ action: "approve", values }));
+    }
+  } catch (err) {
+    logger.error("job:review-resolve-failed", err, { targetJobId, action });
   }
 }
 
@@ -326,6 +482,7 @@ export async function sendChatMessage(
   text: string,
   files: File[],
   emitter: BotEmitter,
+  context?: ChatTurnContext,
 ): Promise<void> {
   initializeBackend(emitter);
 
@@ -362,7 +519,7 @@ export async function sendChatMessage(
   emitter.setTyping(true);
 
   // Send via Socket.IO for real-time response
-  socketService.sendMessage(text);
+  socketService.sendMessage(text, context);
   logger.info("chat:sent", { messagePreview: text.slice(0, 120), fileCount: files.length });
 
   // If the backend's chat orchestrator decides to start a job,

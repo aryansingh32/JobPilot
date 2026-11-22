@@ -1,7 +1,13 @@
 import { CronJob } from 'cron';
 import { randomUUID } from 'crypto';
-import type { RemapJob } from '../shared/types/index.js';
-import { enqueueJob } from '../shared/queue/index.js';
+import type { RemapJob, PollBoardJob } from '../shared/types/index.js';
+import { dueBoards, seedBoardsIfEmpty } from '../shared/jobs/poller.js';
+import { getBool, getNumber } from '../shared/config/settings.js';
+import { enqueueJob, getQueue } from '../shared/queue/index.js';
+import { applicationsService } from '../shared/applications/index.js';
+import { autoApplyService } from '../shared/applications/auto-apply.js';
+import { gmailService } from '../shared/gmail/index.js';
+import { enqueueDiscovery } from '../shared/jobs/discovery.js';
 import { getPgPool, runMigrations } from '../shared/db/index.js';
 import { ProxyManager } from '../execution-service/proxy-manager.js';
 import { SessionManager } from '../execution-service/session-manager.js';
@@ -24,6 +30,37 @@ const changeDetector = new ChangeDetector();
 // ─── Job Definitions ─────────────────────────────────────────
 
 const jobs: Array<{ name: string; cron: string; handler: () => Promise<void> }> = [
+  {
+    // Jobs feed: every minute, queue the boards that are due (each board
+    // carries its own next poll time) plus a share of new candidates.
+    name: 'job-boards-poll',
+    cron: '* * * * *',
+    handler: async () => {
+      if (!(await getBool('jobs.poll.enabled'))) return;
+      const batch = await getNumber('jobs.poll.batch_size');
+      const candidates = await getNumber('jobs.poll.candidates_per_tick');
+      // Backpressure: while workers still have ~2 ticks of polls waiting, don't claim
+      // more — claimed boards whose lease ran out in the queue would be polled twice.
+      const waiting = await getQueue('jobs-poll').getWaitingCount();
+      if (waiting > (batch + candidates) * 2) {
+        console.log(`[Scheduler] ${waiting} polls still waiting — skipping this tick`);
+        return;
+      }
+      const ids = await dueBoards(batch, candidates);
+      for (const boardId of ids) {
+        const job: PollBoardJob = {
+          id: `poll-${boardId}-${Date.now()}`,
+          type: 'jobs-poll',
+          priority: 'low',
+          createdAt: new Date(),
+          userId: 'scheduler',
+          payload: { boardId },
+        };
+        await enqueueJob(job).catch(() => {});
+      }
+      if (ids.length) console.log(`[Scheduler] Queued ${ids.length} job board polls`);
+    },
+  },
 
   {
     name: 'change-detection',
@@ -85,6 +122,49 @@ const jobs: Array<{ name: string; cron: string; handler: () => Promise<void> }> 
       }
 
       console.log(`[Scheduler] Enqueued ${sites.length} full remaps`);
+    },
+  },
+
+  {
+    // Weekly: new company boards from the latest crawl + verified seeds.
+    name: 'board-discovery',
+    cron: '0 3 * * 0',
+    handler: async () => {
+      if (!(await getBool('jobs.discovery.enabled'))) return;
+      await enqueueDiscovery({ source: 'seed' });
+      await enqueueDiscovery({ source: 'commoncrawl' });
+      console.log('[Scheduler] Board discovery queued');
+    },
+  },
+
+  {
+    // Auto Apply: users whose interval elapsed get their best new matches applied to.
+    name: 'auto-apply',
+    cron: '*/10 * * * *',
+    handler: async () => {
+      const users = await autoApplyService.runDue();
+      if (users) console.log(`[Scheduler] Auto Apply ran for ${users} users`);
+    },
+  },
+
+  {
+    // Connected Gmail accounts: codes, verification links and employer replies
+    // (every minute for users with an application waiting, else gmail.sync_minutes).
+    name: 'gmail-sync',
+    cron: '* * * * *',
+    handler: async () => {
+      const kept = await gmailService.syncDue();
+      if (kept) console.log(`[Scheduler] Gmail: ${kept} job emails`);
+    },
+  },
+
+  {
+    // Applications whose run died (worker restart/crash) → failed, retryable.
+    name: 'reconcile-applications',
+    cron: '*/5 * * * *',
+    handler: async () => {
+      const closed = await applicationsService.reconcileOrphans();
+      if (closed) console.log(`[Scheduler] Closed ${closed} interrupted applications`);
     },
   },
 
@@ -194,6 +274,7 @@ async function safeRun(name: string, handler: () => Promise<void>): Promise<void
 
 async function main() {
   await runMigrations();
+  await seedBoardsIfEmpty().catch((err) => console.error('[Scheduler] Board seed failed:', err));
   console.log('\n⏰ Scheduler Service starting...\n');
 
   const cronJobs = jobs.map(({ name, cron, handler }) => {

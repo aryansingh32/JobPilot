@@ -102,6 +102,74 @@ spec:
   type: ClusterIP
 
 ---
+# ── Admin Deployment (separate admin API; no browsers) ────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-service
+  namespace: automation-platform
+  labels:
+    app: admin-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-service
+  template:
+    metadata:
+      labels:
+        app: admin-service
+    spec:
+      containers:
+        - name: admin
+          image: automation-platform/admin:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3100
+          env:
+            - name: ADMIN_PORT
+              value: "3100"
+          envFrom:
+            - configMapRef:
+                name: platform-config
+            - secretRef:
+                name: platform-secrets
+          resources:
+            requests:
+              memory: "192Mi"
+              cpu: "100m"
+            limits:
+              memory: "384Mi"
+              cpu: "300m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3100
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3100
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+# ── Admin Service (expose only via an internal/allowlisted ingress) ──
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-service
+  namespace: automation-platform
+spec:
+  selector:
+    app: admin-service
+  ports:
+    - port: 80
+      targetPort: 3100
+  type: ClusterIP
+
+---
 # ── Worker Deployment ─────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment

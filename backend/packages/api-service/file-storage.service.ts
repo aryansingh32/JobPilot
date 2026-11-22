@@ -1,4 +1,4 @@
-import { mkdir, readFile, unlink, writeFile } from 'fs/promises';
+import { deleteObject, getObject, putObject } from '../shared/storage/index.js';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { getPgPool } from '../shared/db/index.js';
@@ -7,9 +7,6 @@ import type { UserFile } from '../shared/types/index.js';
 type FileCategory = UserFile['category'];
 
 const VALID_CATEGORIES: readonly FileCategory[] = ['resume', 'signature', 'photo', 'document', 'receipt', 'other'];
-
-const STORAGE_ROOT = process.env.USER_FILE_STORAGE_ROOT
-  ?? path.resolve(process.cwd(), 'mnt/user-data/outputs/automation-platform/uploads');
 
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -46,12 +43,13 @@ export class FileStorageService {
     const safeOriginal = sanitizeFileName(input.originalName || 'file.bin');
     const extension = path.extname(safeOriginal);
     const storedName = `${fileId}${extension}`;
-    const userDir = path.join(STORAGE_ROOT, sanitizeFileName(input.userId), category);
-    const fullPath = path.join(userDir, storedName);
     const buffer = Buffer.from(input.base64Data, 'base64');
-
-    await mkdir(userDir, { recursive: true });
-    await writeFile(fullPath, buffer);
+    // Object storage (local disk or S3/R2) — reachable from every host.
+    const fullPath = await putObject(
+      `${sanitizeFileName(input.userId)}/${category}/${storedName}`,
+      buffer,
+      input.mimeType || 'application/octet-stream',
+    );
 
     const pool = getPgPool();
     const { rows } = await pool.query(
@@ -156,7 +154,7 @@ export class FileStorageService {
   async getFileContent(fileId: string, userId?: string): Promise<{ file: UserFile; buffer: Buffer } | null> {
     const file = await this.getFile(fileId, userId);
     if (!file) return null;
-    const buffer = await readFile(file.storagePath);
+    const buffer = await getObject(file.storagePath);
     return { file, buffer };
   }
 
@@ -164,7 +162,7 @@ export class FileStorageService {
     const file = await this.getFile(fileId, userId);
     if (!file) return false;
 
-    await unlink(file.storagePath).catch(() => {});
+    await deleteObject(file.storagePath).catch(() => {});
     const pool = getPgPool();
     await pool.query(`DELETE FROM user_files WHERE id = $1`, [fileId]);
     return true;

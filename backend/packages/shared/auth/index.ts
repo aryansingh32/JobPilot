@@ -33,6 +33,8 @@ export interface SessionClaims {
   sub: string; // users.id
   email?: string;
   mobileNumber?: string;
+  /** Issued-at (seconds) — tokens older than users.sessions_valid_after are rejected. */
+  iat?: number;
 }
 
 export async function signSession(claims: SessionClaims): Promise<string> {
@@ -52,6 +54,7 @@ export async function verifySession(token: string): Promise<SessionClaims | null
       sub: payload.sub,
       email: typeof payload.email === 'string' ? payload.email : undefined,
       mobileNumber: typeof payload.mobileNumber === 'string' ? payload.mobileNumber : undefined,
+      iat: typeof payload.iat === 'number' ? payload.iat : undefined,
     };
   } catch (err) {
     logger.warn('session:verify-failed', { error: (err as Error).message });
@@ -147,14 +150,18 @@ interface StoredOtp {
 /** Returns the generated code, or null if a resend was requested too soon. */
 export async function generateAndStoreOtp(channel: OtpChannel, identifier: string): Promise<string | null> {
   const redis = await getRedisClient();
+  const otp = otpKey(channel, identifier);
   const cooldownKey = otpCooldownKey(channel, identifier);
-  if (await redis.get(cooldownKey)) {
-    return null;
-  }
   const code = randomInt(100000, 999999).toString();
   const record: StoredOtp = { code, attempts: 0 };
-  await redis.setEx(otpKey(channel, identifier), OTP_TTL_SECONDS, JSON.stringify(record));
-  await redis.setEx(cooldownKey, OTP_RESEND_COOLDOWN_SECONDS, '1');
+  const created = await redis.eval(
+    `if redis.call('exists', KEYS[2]) == 1 then return 0 end
+     redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2])
+     redis.call('set', KEYS[2], '1', 'EX', ARGV[3])
+     return 1`,
+    { keys: [otp, cooldownKey], arguments: [JSON.stringify(record), String(OTP_TTL_SECONDS), String(OTP_RESEND_COOLDOWN_SECONDS)] },
+  );
+  if (Number(created) !== 1) return null;
   return code;
 }
 
@@ -179,19 +186,20 @@ export async function verifyPassword(password: string, stored: string): Promise<
 export async function verifyOtp(channel: OtpChannel, identifier: string, submitted: string): Promise<boolean> {
   const redis = await getRedisClient();
   const key = otpKey(channel, identifier);
-  const raw = await redis.get(key);
-  if (!raw) return false;
-
-  const record = JSON.parse(raw) as StoredOtp;
-  if (record.attempts >= OTP_MAX_ATTEMPTS) {
-    await redis.del(key);
-    return false;
-  }
-  if (record.code !== submitted.trim()) {
-    record.attempts += 1;
-    await redis.setEx(key, OTP_TTL_SECONDS, JSON.stringify(record));
-    return false;
-  }
-  await redis.del(key);
-  return true;
+  const verified = await redis.eval(
+    `local raw = redis.call('get', KEYS[1])
+     if not raw then return 0 end
+     local ok, record = pcall(cjson.decode, raw)
+     if not ok or type(record) ~= 'table' then redis.call('del', KEYS[1]); return 0 end
+     if tonumber(record.attempts or 0) >= tonumber(ARGV[2]) then redis.call('del', KEYS[1]); return 0 end
+     if tostring(record.code or '') ~= ARGV[1] then
+       record.attempts = tonumber(record.attempts or 0) + 1
+       redis.call('set', KEYS[1], cjson.encode(record), 'EX', ARGV[3])
+       return 0
+     end
+     redis.call('del', KEYS[1])
+     return 1`,
+    { keys: [key], arguments: [submitted.trim(), String(OTP_MAX_ATTEMPTS), String(OTP_TTL_SECONDS)] },
+  );
+  return Number(verified) === 1;
 }

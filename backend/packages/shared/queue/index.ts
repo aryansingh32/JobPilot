@@ -21,11 +21,18 @@ function getRedisConnection() {
 
 // ─── Queue Registry ──────────────────────────────────────────
 
-const QUEUE_NAMES: JobType[] = ['crawl', 'execute', 'remap', 'ai-plan'];
+const QUEUE_NAMES: JobType[] = ['crawl', 'execute', 'remap', 'ai-plan', 'parse', 'jobs-poll', 'jobs-discover'];
 
 const queues: Map<string, Queue> = new Map();
 
-function getQueue(name: string): Queue {
+// Execute jobs drive a real browser and can have side effects outside our
+// system (a submitted form, a sent message). An automatic retry after a
+// failure that happened *after* the submit click would submit twice, so they
+// run exactly once; retries are explicit (admin "retry" / user re-run).
+// Crawl / remap / planning are read-only and safe to retry.
+const QUEUE_ATTEMPTS: Partial<Record<string, number>> = { execute: 1, 'jobs-discover': 1 };
+
+export function getQueue(name: string): Queue {
   let q = queues.get(name);
   if (!q) {
     q = new Queue(name, {
@@ -33,7 +40,7 @@ function getQueue(name: string): Queue {
       defaultJobOptions: {
         removeOnComplete: { count: 1000 },
         removeOnFail:     { count: 500 },
-        attempts:         3,
+        attempts:         QUEUE_ATTEMPTS[name] ?? 3,
         backoff: {
           type: 'exponential',
           delay: 2000,
@@ -56,13 +63,89 @@ const PRIORITY_MAP: Record<JobPriority, number> = {
 
 // ─── Enqueue Job ─────────────────────────────────────────────
 
-export async function enqueueJob(job: import('../types/index.js').CrawlJob | import('../types/index.js').ExecuteJob | import('../types/index.js').RemapJob | import('../types/index.js').AIPlanJob | import('../types/index.js').BaseJob): Promise<string> {
+type AnyJob = import('../types/index.js').CrawlJob | import('../types/index.js').ExecuteJob | import('../types/index.js').RemapJob | import('../types/index.js').AIPlanJob | import('../types/index.js').BaseJob;
+
+// ─── Per-account task lock ───────────────────────────────────
+// One in-flight browser task per account per kind of task. A double click, a
+// chat resend or a scheduler overlap must not open a second run (and a second
+// captcha / submission) for the same thing. Apply runs are keyed by the
+// posting, so different jobs still run side by side.
+
+const TASK_LOCK_TTL_S = 30 * 60;
+
+export class DuplicateTaskError extends Error {
+  constructor(public readonly existingJobId: string) {
+    super('This task is already running for your account');
+    this.name = 'DuplicateTaskError';
+  }
+}
+
+function taskLockKey(job: AnyJob): string | null {
+  if (job.type !== 'execute') return null;
+  const p = (job as import('../types/index.js').ExecuteJob).payload;
+  if (!p || p.dryRun) return null;
+  const scope = p.context?.applyUrl ? `apply:${p.context.applyUrl}` : `task:${p.workflowKey ?? p.siteId}`;
+  return `exec:inflight:${job.userId}:${scope}`;
+}
+
+/** Take the task lock for a job; throws DuplicateTaskError if a live run holds it. */
+export async function acquireTaskLock(job: AnyJob): Promise<void> {
+  const key = taskLockKey(job);
+  if (!key) return;
+  const queue = getQueue('execute');
+  const redis = await queue.client;
+  for (let tries = 0; tries < 2; tries++) {
+    if (await redis.set(key, job.id, 'EX', TASK_LOCK_TTL_S, 'NX')) return;
+    const holder = await redis.get(key);
+    if (!holder || holder === job.id) continue;
+    const state = await queue.getJob(holder).then((j) => j?.getState()).catch(() => undefined);
+    if (state && ['active', 'waiting', 'delayed', 'prioritized', 'waiting-children'].includes(state)) {
+      throw new DuplicateTaskError(holder);
+    }
+    // Remove only the value we inspected. A plain DEL here can erase a lock
+    // acquired between GET and DEL by another producer.
+    const removed = await redis.eval(
+      "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+      1,
+      key,
+      holder,
+    );
+    if (Number(removed) === 0) continue;
+  }
+  throw new DuplicateTaskError((await redis.get(key)) ?? job.id);
+}
+
+/** Release only if this job still owns the lock. Safe to call twice. */
+export async function releaseTaskLock(job: AnyJob): Promise<void> {
+  const key = taskLockKey(job);
+  if (!key) return;
+  const redis = await getQueue('execute').client;
+  await redis.eval(
+    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+    1,
+    key,
+    job.id,
+  );
+}
+
+// ─── Enqueue Job ─────────────────────────────────────────────
+
+export async function enqueueJob(job: AnyJob): Promise<string> {
   const queue = getQueue(job.type);
 
-  const bullJob = await queue.add(job.type, job, {
-    jobId:    job.id,
-    priority: PRIORITY_MAP[job.priority] ?? 5,
-  });
+  const alreadyLocked = (job.metadata as Record<string, unknown> | undefined)?.taskLocked === true;
+  if (!alreadyLocked) await acquireTaskLock(job);
+
+  let bullJob;
+  try {
+    bullJob = await queue.add(job.type, job, {
+      jobId:    job.id,
+      priority: PRIORITY_MAP[job.priority] ?? 5,
+    });
+  } catch (err) {
+    await releaseTaskLock(job).catch(() => {});
+    throw err;
+  }
 
   logger.info('job:enqueued', { queue: job.type, jobId: job.id, priority: job.priority });
   return bullJob.id ?? job.id;

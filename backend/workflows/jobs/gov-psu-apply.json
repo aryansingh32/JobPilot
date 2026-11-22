@@ -1,0 +1,86 @@
+{
+  "category": "jobs",
+  "portalType": "jobs",
+  "entryUrl": "https://jobpilot.local/apply",
+  "requiredInputs": [],
+  "requiredFiles": [
+    "resume"
+  ],
+  "errorRecoveryPlan": [],
+  "isActive": true,
+  "version": 2,
+  "id": "job-apply-gov-psu",
+  "siteId": "gov-psu",
+  "name": "PSU / Defence / Police (ONGC, NTPC, BHEL, DRDO, Army, Police\u2026) \u2014 Apply",
+  "trigger": "apply gov psu",
+  "triggerPhrases": [
+    "apply on psu portal"
+  ],
+  "pageUrlPatterns": [
+    "ongc",
+    "ntpc",
+    "bhel",
+    "drdo",
+    "joinindianarmy",
+    "joinindiannavy",
+    "recruitment\\.[a-z]+\\.gov\\.in"
+  ],
+  "instructions": "Public-sector and uniformed-service portals: register, fill the form, upload documents, pay (by you), submit. Physical-standard fields (height, chest) are asked once and remembered. Fills from your profile first (no AI for known questions), asks you only for codes (OTP), passwords, captchas and anything new, pauses for your review, then submits. For Aadhaar/DigiLocker verification it asks you for the number, consent and OTP/PIN in chat and types them in (never saved). Payments are always done by you.",
+  "starterActionPlan": [
+    {
+      "id": "open",
+      "order": 1,
+      "action": "navigate",
+      "value": "{{job:applyUrl}}",
+      "timeout": 60000,
+      "retries": 2,
+      "description": "Open the recruitment portal"
+    },
+    {
+      "id": "account",
+      "order": 2,
+      "action": "autofillForm",
+      "timeout": 240000,
+      "retries": 0,
+      "metadata": {
+        "openApplyButton": true,
+        "captchas": "inline",
+        "portal": "psu"
+      },
+      "description": "Register or sign in: fills your details, asks for OTP, password and captcha"
+    },
+    {
+      "id": "application",
+      "order": 3,
+      "action": "govWizard",
+      "timeout": 600000,
+      "retries": 0,
+      "metadata": {
+        "captchas": "inline",
+        "portal": "psu"
+      },
+      "description": "Fill every page of the application (details, education, photo, signature, declaration)"
+    },
+    {
+      "id": "review",
+      "order": 4,
+      "action": "reviewForm",
+      "retries": 0,
+      "description": "Wait for your approval"
+    },
+    {
+      "id": "submit",
+      "order": 5,
+      "action": "submitForm",
+      "timeout": 90000,
+      "retries": 0,
+      "description": "Final submit"
+    }
+  ],
+  "metadata": {
+    "kind": "job-apply",
+    "atsType": "gov-psu",
+    "department": "psu",
+    "source": "file"
+  }
+}

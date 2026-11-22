@@ -1,0 +1,28 @@
+{
+  "name": "Job applications",
+  "category": "jobs",
+  "portalType": "jobs",
+  "description": "Apply workflows per applicant system. The apply engine picks one by URL pattern, then by system, then the generic form filler.",
+  "workflows": [
+    "job-apply-greenhouse",
+    "job-apply-lever",
+    "job-apply-ashby",
+    "job-apply-smartrecruiters",
+    "job-apply-workable",
+    "job-apply-recruitee",
+    "job-apply-workday",
+    "job-apply-keka",
+    "job-apply-zoho",
+    "job-apply-freshteam",
+    "job-apply-oracle",
+    "job-apply-successfactors",
+    "job-apply-generic",
+    "job-apply-gov-ssc",
+    "job-apply-gov-upsc",
+    "job-apply-gov-bank",
+    "job-apply-gov-railway",
+    "job-apply-gov-psc",
+    "job-apply-gov-gov",
+    "job-apply-gov-psu"
+  ]
+}

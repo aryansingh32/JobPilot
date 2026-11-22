@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { io, type Socket } from "socket.io-client";
 import { Activity, Radio, Trash2 } from "lucide-react";
 import { adminApi } from "@/lib/admin-api";
-import { config, apiOriginForSockets } from "@/lib/config";
+import { config, adminOriginForSockets } from "@/lib/config";
 import { useAdminObservabilityStore, type ObsFeedItem } from "@/stores/adminObservabilityStore";
 
 /** R3F Canvas requires WebGL — never render during SSR. */
@@ -83,7 +83,7 @@ export function ObservabilityCommandCenter() {
   }, []);
 
   useEffect(() => {
-    const origin = apiOriginForSockets();
+    const origin = adminOriginForSockets();
     const socket: Socket = io(`${origin}/admin`, {
       path: config.socketPath,
       withCredentials: true, // sends the httpOnly jp_admin_session cookie

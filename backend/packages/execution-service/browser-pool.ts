@@ -52,6 +52,10 @@ const DEFAULT_CONFIG: BrowserPoolConfig = {
   browserMaxAgeMs: 30 * 60 * 1000,        // 30 minutes
 };
 
+/** Trackers, session replay, ad pixels and web fonts/video: never needed to read or fill a form. */
+const TRIM_REQUESTS =
+  /^https?:\/\/([^/]*\.)?(googletagmanager|google-analytics|googleadservices|doubleclick|hotjar|clarity|fullstory|mixpanel|segment|amplitude|heap|optimizely|newrelic|nr-data|facebook|linkedin|snapchat|tiktok|bat\.bing)\.(com|net|ms|io)\/|\.(woff2?|ttf|otf|mp4|webm)(\?|$)/i;
+
 const STEALTH_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
@@ -114,6 +118,8 @@ export class BrowserPool extends EventEmitter {
   private browsers: Map<string, PooledBrowser> = new Map();
   private contexts: Map<string, ContextLease> = new Map();
   private contextLastUsed: Map<string, number> = new Map();
+  // Contexts a job is actively driving (including waiting on a human) — never idle-reclaimed.
+  private activeContexts: Set<string> = new Set();
   private healthCheckInterval?: NodeJS.Timeout;
   private reclaimInterval?: NodeJS.Timeout;
 
@@ -186,7 +192,12 @@ export class BrowserPool extends EventEmitter {
     return lease;
   }
 
+  markActive(contextId: string): void {
+    this.activeContexts.add(contextId);
+  }
+
   async releaseContext(contextId: string, saveSession = true): Promise<void> {
+    this.activeContexts.delete(contextId);
     const lease = this.contexts.get(contextId);
     if (!lease) return;
 
@@ -330,6 +341,10 @@ export class BrowserPool extends EventEmitter {
       'sec-ch-ua-platform': fingerprint.platform === 'Win32' ? '"Windows"' : '"macOS"',
     });
 
+    // Application pages carry a lot of weight that never matters to filling them: analytics, session replay,
+    // ad pixels, web fonts and video. Not loading them cuts page-ready time; images and captcha hosts stay.
+    await context.route(TRIM_REQUESTS, (route) => route.abort().catch(() => {})).catch(() => {});
+
     // Restore session cookies
     if (session?.cookies?.length) {
       await context.addCookies(session.cookies as any);
@@ -462,6 +477,7 @@ export class BrowserPool extends EventEmitter {
     this.reclaimInterval = setInterval(async () => {
       const now = Date.now();
       for (const [contextId, lastUsed] of this.contextLastUsed) {
+        if (this.activeContexts.has(contextId)) continue;
         if (now - lastUsed > this.config.contextIdleTimeoutMs) {
           const lease = this.contexts.get(contextId);
           if (lease) {
@@ -488,6 +504,7 @@ export class BrowserPool extends EventEmitter {
     
     // 1. Reclaim idle contexts
     for (const [contextId, lastUsed] of this.contextLastUsed) {
+      if (this.activeContexts.has(contextId)) continue;
       const lease = this.contexts.get(contextId);
       if (lease) {
         console.log(`[BrowserPool] Reclaiming context ${contextId}`);

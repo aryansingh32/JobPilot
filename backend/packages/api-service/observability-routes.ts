@@ -1,19 +1,12 @@
 // ============================================================
-// OBSERVABILITY ADMIN + CLIENT INGEST ROUTES
+// CLIENT TELEMETRY INGEST ROUTES (admin views live in admin-service)
 // ============================================================
 
 import { createHash } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createLogger } from '../shared/logger/index.js';
-import { adminAuth } from './admin-auth.js';
-import {
-  ingestClientEvents,
-  listRecentSessions,
-  getSessionTimeline,
-  listErrorReports,
-  getObservabilitySummary,
-  copilotAnswer,
-} from './observability.service.js';
+import { safeEqual } from '../shared/security/safe-equal.js';
+import { ingestClientEvents } from './observability.service.js';
 
 const logger = createLogger('observability-routes');
 
@@ -24,7 +17,7 @@ async function apiAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> 
     await reply.status(401).send({ error: 'Unauthorized' });
     return;
   }
-  if (!key || key !== expected) {
+  if (!safeEqual(key, expected)) {
     await reply.status(401).send({ error: 'Unauthorized' });
   }
 }
@@ -32,70 +25,6 @@ async function apiAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> 
 function hashIp(ip: string | undefined): string | null {
   if (!ip) return null;
   return createHash('sha256').update(ip).digest('hex').slice(0, 16);
-}
-
-export async function registerObservabilityAdminRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/admin/observability/summary', { preHandler: adminAuth }, async (_req, reply) => {
-    try {
-      const summary = await getObservabilitySummary();
-      return reply.send(summary);
-    } catch (e) {
-      logger.error('observability:summary-failed', e);
-      return reply.status(500).send({ error: 'summary failed' });
-    }
-  });
-
-  app.get('/admin/observability/sessions', { preHandler: adminAuth }, async (req, reply) => {
-    const { limit = '50' } = req.query as { limit?: string };
-    try {
-      const sessions = await listRecentSessions(parseInt(limit, 10) || 50);
-      return reply.send({ sessions });
-    } catch {
-      return reply.status(500).send({ error: 'failed' });
-    }
-  });
-
-  app.get(
-    '/admin/observability/sessions/:sessionId/timeline',
-    { preHandler: adminAuth },
-    async (req, reply) => {
-      const { sessionId } = req.params as { sessionId: string };
-      const { limit = '500' } = req.query as { limit?: string };
-      try {
-        const timeline = await getSessionTimeline(sessionId, parseInt(limit, 10) || 500);
-        return reply.send({ sessionId, events: timeline });
-      } catch {
-        return reply.status(500).send({ error: 'failed' });
-      }
-    }
-  );
-
-  app.get('/admin/observability/errors', { preHandler: adminAuth }, async (req, reply) => {
-    const { limit = '100' } = req.query as { limit?: string };
-    try {
-      const errors = await listErrorReports(parseInt(limit, 10) || 100);
-      return reply.send({ errors });
-    } catch {
-      return reply.status(500).send({ error: 'failed' });
-    }
-  });
-
-  app.post('/admin/observability/copilot', { preHandler: adminAuth }, async (req, reply) => {
-    const body = req.body as { question?: string; errorReportId?: string; context?: Record<string, unknown> };
-    if (!body?.question?.trim()) return reply.status(400).send({ error: 'question required' });
-    try {
-      const result = await copilotAnswer({
-        question: body.question.trim(),
-        errorReportId: body.errorReportId,
-        extraContext: body.context,
-      });
-      return reply.send(result);
-    } catch (e) {
-      return reply.status(500).send({ error: String(e) });
-    }
-  });
-
-  logger.info('observability-admin-routes:registered');
 }
 
 /** Client telemetry (same API key as rest of app). */

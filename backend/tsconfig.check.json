@@ -1,0 +1,16 @@
+{
+  // Type-checks every package's source in one program. The root tsconfig only
+  // lists project references (it checks nothing without a build), so this is
+  // what `npm run typecheck` uses.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false
+  },
+  // tools/ (workflow CLI) has pre-existing type errors in playwright-converter.ts — fix, then add "tools/**/*.ts".
+  "include": ["packages/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "**/dist/**", "**/*.d.ts"]
+}

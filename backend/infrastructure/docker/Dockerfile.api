@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/api-service/package.json packages/api-service/
+COPY packages/admin-service/package.json packages/admin-service/
 COPY packages/execution-service/package.json packages/execution-service/
 COPY packages/crawler-service/package.json packages/crawler-service/
 COPY packages/ai-service/package.json packages/ai-service/
@@ -17,12 +18,8 @@ COPY packages/ packages/
 COPY scripts/ scripts/
 COPY workflows/ workflows/
 
-# The API process hosts the admin workflow recorder and dry-run routes
-# (admin-routes.ts imports execution-service/recorder.ts and
-# dry-run-service.ts directly), both of which launch a real Playwright
-# browser via the same browser pool the worker uses — so the api image
-# needs the browser binary too, not just the worker image.
-RUN npx playwright install --with-deps chromium
+# No browser binary: the API never launches browsers. Recording and dry-runs
+# run on workers (admin-service sends them over the control bus).
 
 EXPOSE 3000
 

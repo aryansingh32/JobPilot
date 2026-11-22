@@ -1,15 +1,23 @@
 import 'dotenv/config';
-import { createWorker } from '../shared/queue/index.js';
+import { createWorker, releaseTaskLock } from '../shared/queue/index.js';
 import { ExecutionEngine } from './executor.js';
 import { getBrowserPool } from './browser-pool.js';
 import { SiteCrawler, IncrementalRemapper } from '../crawler-service/crawler.js';
 import { getAIPlanner, buildSyntheticSnapshot } from '../ai-service/planner.js';
 import { runMigrations, getPgPool, CacheKeys, getRedisClient } from '../shared/db/index.js';
 import { workflowLoader } from '../shared/workflow-loader.js';
+import { newWorkerId, registerCommandHandlers, startHeartbeat } from '../shared/control-bus/index.js';
+import { recorderService, type RecordInput } from './recorder.js';
+import { applicationsService } from '../shared/applications/index.js';
+import { createLogger } from '../shared/logger/index.js';
+import { runResumeParse } from '../shared/profile/resume-parser.js';
+import { pollBoard } from '../shared/jobs/poller.js';
+import { runDiscovery } from '../shared/jobs/discovery.js';
+import { dryRunService } from './dry-run-service.js';
 import { collectDefaultMetrics, Counter, Histogram, Gauge } from 'prom-client';
 import type {
   CrawlJob, ExecuteJob, RemapJob,
-  AIPlanJob, JobRuntimeState,
+  AIPlanJob, JobRuntimeState, ExecutionResult, ActionStep, ParseResumeJob, PollBoardJob, DiscoverBoardsJob,
 } from '../shared/types/index.js';
 
 // ============================================================
@@ -42,6 +50,17 @@ const activeBrowsers = new Gauge({
   name: 'worker_active_browsers',
   help: 'Active browser contexts in pool',
 });
+const logger = createLogger('execution-worker');
+
+// BrowserPool contexts are keyed by sessionId and shared across jobs. Keep
+// jobs for one session exclusive across worker processes; otherwise one job's
+// cleanup can close the page another job is actively driving.
+const SESSION_LOCK_TTL_MS = 90_000;
+const SESSION_LOCK_REFRESH_MS = 20_000;
+const SESSION_LOCK_RELEASE_LUA = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+const SESSION_LOCK_REFRESH_LUA = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ─── Worker Handlers ─────────────────────────────────────────
 
@@ -205,16 +224,153 @@ const crawlWorker = createWorker<CrawlJob>('crawl', async (job) => {
   }
 });
 
+/**
+ * Publish the end-of-run receipt the chat UI renders as proof of what was done:
+ * which steps ran (with timings), what data came back, and how long it took.
+ */
+/** The application's own (page-derived) title, for job applications. */
+async function applicationTitle(execJobId: string): Promise<string | null> {
+  const { rows } = await getPgPool()
+    .query('SELECT title, company FROM applications WHERE exec_job_id = $1', [execJobId])
+    .catch(() => ({ rows: [] as Array<{ title: string; company: string | null }> }));
+  return rows[0] ? `${rows[0].title}${rows[0].company ? ` · ${rows[0].company}` : ''}` : null;
+}
+
+const RECEIPT_LABEL: Record<string, string> = {
+  fieldsFilled: 'Answers filled',
+  fieldsMissing: 'Left blank',
+  confirmation: 'Site confirmation',
+  reference: 'Reference',
+  submitted: 'Submitted',
+};
+
+async function publishReceipt(job: ExecuteJob, result: ExecutionResult): Promise<void> {
+  if (!job.payload.sessionId) return;
+  const plan = job.payload.actionPlan ?? [];
+  let elapsed = 0;
+  const steps = result.steps
+    .filter((s) => s.success)
+    .map((s) => {
+      elapsed += s.duration;
+      const planned = plan.find((p) => p.id === s.stepId);
+      return { label: planned?.description || s.stepId, atMs: elapsed };
+    });
+  const items = Object.entries(result.extractedData ?? {})
+    .filter(([, v]) => v !== null && v !== undefined && typeof v !== 'object')
+    .slice(0, 20)
+    .map(([k, v]) => ({ label: RECEIPT_LABEL[k] ?? k, value: String(v) }));
+
+  const reference = typeof result.extractedData?.reference === 'string' ? result.extractedData.reference : null;
+  // Stopped by the user: say so, and no "failed" receipt (the chat already shows Cancelled).
+  if (/was cancelled by the user/.test(result.error ?? '')) {
+    await applicationsService.updateByExecJob(job.id, { status: 'cancelled', detail: 'Cancelled — nothing was sent' }).catch(() => {});
+    return;
+  }
+  await applicationsService
+    .updateByExecJob(job.id, {
+      // A confirmed job application is "submitted"; other workflows just finish.
+      status: !result.success ? 'failed' : result.extractedData?.confirmation ? 'submitted' : 'completed',
+      detail: !result.success ? 'Stopped before finishing' : result.extractedData?.submitted === 'skipped (test run)' ? 'Test run — stopped before submit' : 'Done',
+      reference,
+      error: result.success ? null : result.error ?? null,
+    })
+    .catch(() => {});
+
+  const redis = await getRedisClient();
+  await redis.publish('chat:receipt', JSON.stringify({
+    sessionId: job.payload.sessionId,
+    jobId: job.id,
+    status: result.success ? 'completed' : 'failed',
+    title: (await applicationTitle(job.id)) ?? job.payload.task,
+    site: (job.metadata?.matchedWorkflowName as string | undefined) ?? job.payload.siteId,
+    durationMs: result.duration,
+    completedAt: Date.now(),
+    sections: items.length ? [{ title: 'Result', items }] : [],
+    steps,
+  }));
+}
+
 // Execution Worker
 const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
   const end = jobDuration.startTimer({ type: 'execute' });
   let warningTimer: NodeJS.Timeout | undefined;
   let killTimer: NodeJS.Timeout | undefined;
+  let sessionLockHeartbeat: NodeJS.Timeout | undefined;
+  let sessionLockKey: string | undefined;
+  let sessionLockToken: string | undefined;
+  let sessionLockAcquired = false;
 
   try {
-    await updateRuntime(job, { status: 'running' });
-
     const redis = await getRedisClient();
+    if (!job.payload.dryRun) {
+      sessionLockKey = `browser:session-lock:${job.payload.sessionId}`;
+      sessionLockToken = `${job.id}:${newWorkerId('execute')}`;
+      let waitingLogged = false;
+      while ((await redis.set(sessionLockKey, sessionLockToken, { NX: true, PX: SESSION_LOCK_TTL_MS })) !== 'OK') {
+        if (await redis.get(CacheKeys.jobCancel(job.id))) {
+          await applicationsService.updateByExecJob(job.id, {
+            status: 'cancelled',
+            detail: 'Cancelled while waiting for this browser session',
+          }).catch(() => {});
+          await updateRuntime(job, { status: 'failed', error: 'Cancelled while waiting for this browser session' }).catch(() => {});
+          jobCounter.inc({ type: 'execute', status: 'cancelled' });
+          return {
+            jobId: job.id,
+            success: false,
+            steps: [],
+            duration: 0,
+            screenshots: [],
+            sessionId: job.payload.sessionId,
+            error: 'Cancelled while waiting for this browser session',
+          };
+        }
+        if (!waitingLogged) {
+          logger.info('execute:waiting-for-session-browser', { jobId: job.id, sessionId: job.payload.sessionId });
+          waitingLogged = true;
+        }
+        await sleep(350);
+      }
+      sessionLockAcquired = true;
+      if (await redis.get(CacheKeys.jobCancel(job.id))) {
+        await applicationsService.updateByExecJob(job.id, {
+          status: 'cancelled',
+          detail: 'Cancelled while waiting for this browser session',
+        }).catch(() => {});
+        await updateRuntime(job, { status: 'failed', error: 'Cancelled while waiting for this browser session' }).catch(() => {});
+        jobCounter.inc({ type: 'execute', status: 'cancelled' });
+        return {
+          jobId: job.id,
+          success: false,
+          steps: [],
+          duration: 0,
+          screenshots: [],
+          sessionId: job.payload.sessionId,
+          error: 'Cancelled while waiting for this browser session',
+        };
+      }
+      let refreshing = false;
+      sessionLockHeartbeat = setInterval(() => {
+        if (refreshing || !sessionLockKey || !sessionLockToken) return;
+        refreshing = true;
+        void redis.eval(SESSION_LOCK_REFRESH_LUA, {
+          keys: [sessionLockKey],
+          arguments: [sessionLockToken, String(SESSION_LOCK_TTL_MS)],
+        }).then((result) => {
+          if (Number(result) !== 1) {
+            logger.error('execute:session-lock-lost', { jobId: job.id, sessionId: job.payload.sessionId });
+            return redis.setEx(`job-cancel:${job.id}`, 86400, '1').then(() => redis.publish(`job:cancel:${job.id}`, 'cancel'));
+          }
+        }).catch((err) => {
+          logger.warn('execute:session-lock-refresh-failed', { jobId: job.id, error: (err as Error).message });
+          return redis.setEx(CacheKeys.jobCancel(job.id), 86400, '1')
+            .then(() => redis.publish(`job:cancel:${job.id}`, 'cancel'))
+            .catch(() => {});
+        }).finally(() => { refreshing = false; });
+      }, SESSION_LOCK_REFRESH_MS);
+    }
+
+    await updateRuntime(job, { status: 'running' });
+    await applicationsService.updateByExecJob(job.id, { status: 'running', detail: 'Started' }).catch(() => {});
 
     // 10-minute warning
     warningTimer = setTimeout(async () => {
@@ -291,6 +447,14 @@ const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
 
     const result = await executionEngine.execute(job);
 
+    // Parked while waiting for the user: not finished, not failed — the
+    // continuation run reports the outcome.
+    if (result.parked) {
+      jobCounter.inc({ type: 'execute', status: 'parked' });
+      await updateRuntime(job, { status: 'paused' }).catch(() => {});
+      return result;
+    }
+
     // Record AI flow outcome — feeds the learning flywheel (zero-shot
     // history + cached-flow -> draft-workflow promotion).
     await aiPlanner.recordOutcome(job.payload.siteId, job.payload.task, result.success, {
@@ -299,6 +463,10 @@ const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
 
     jobCounter.inc({ type: 'execute', status: result.success ? 'success' : 'failure' });
 
+    await publishReceipt(job, result).catch((receiptError) => {
+      console.error('[Worker] Failed to publish run receipt:', receiptError);
+    });
+
     // Update browser gauge
     activeBrowsers.set(getBrowserPool().getStats().activeContexts);
 
@@ -306,6 +474,7 @@ const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
   } catch (err) {
     jobCounter.inc({ type: 'execute', status: 'failure' });
     const error = getErrorMessage(err);
+    await applicationsService.updateByExecJob(job.id, { status: 'failed', error }).catch(() => {});
     await updateRuntime(job, { status: 'failed', error }).catch((runtimeError) => {
       console.error('[Worker] Failed to update runtime after execute error:', runtimeError);
     });
@@ -317,12 +486,22 @@ const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
     if (warningTimer) clearTimeout(warningTimer);
     if (killTimer) clearTimeout(killTimer);
     end();
-    if (!job.payload.dryRun) {
+    await releaseTaskLock(job).catch(() => {});
+    if (sessionLockHeartbeat) clearInterval(sessionLockHeartbeat);
+    if (!job.payload.dryRun && sessionLockAcquired) {
       await getBrowserPool().releaseContextBySessionId(job.payload.sessionId, false).catch(() => {});
       activeBrowsers.set(getBrowserPool().getStats().activeContexts);
     }
+    if (sessionLockAcquired && sessionLockKey && sessionLockToken) {
+      await getRedisClient().then((redis) => redis.eval(SESSION_LOCK_RELEASE_LUA, {
+        keys: [sessionLockKey!],
+        arguments: [sessionLockToken!],
+      })).catch((err) => logger.warn('execute:session-lock-release-failed', { jobId: job.id, error: (err as Error).message }));
+    }
   }
-}, { concurrency: 5 });
+  // A run that loses its worker must never be replayed (it may have already
+  // submitted) — it fails instead and the scheduler closes the application.
+}, { concurrency: 5, maxStalledCount: 0 });
 
 // Remap Worker
 const remapWorker = createWorker<RemapJob>('remap', async (job) => {
@@ -388,6 +567,20 @@ const aiPlanWorker = createWorker<AIPlanJob>('ai-plan', async (job) => {
   }
 });
 
+// Resume → profile draft (text extraction + one cheap AI call)
+const parseWorker = createWorker<ParseResumeJob>('parse', async (job) => {
+  await runResumeParse(job.payload.parseId);
+}, { concurrency: 2 });
+
+// Jobs feed: fetch one company board and upsert its jobs (no AI)
+// Board discovery: one at a time (Common Crawl reads are long and polite).
+const discoverWorker = createWorker<DiscoverBoardsJob>('jobs-discover', async (job) => runDiscovery(job.payload), { concurrency: 1 });
+
+const pollWorker = createWorker<PollBoardJob>('jobs-poll', async (job) => {
+  return pollBoard(job.payload.boardId);
+// Polls wait on the network, not the CPU: many at once is cheap.
+}, { concurrency: Number(process.env.JOBS_POLL_CONCURRENCY ?? 24) });
+
 // ─── Main ────────────────────────────────────────────────────
 
 async function main() {
@@ -399,7 +592,59 @@ async function main() {
   const pool = getBrowserPool();
   await pool.init();
 
+  // ── Control plane: report health + accept admin commands ──
+  const workerId = newWorkerId('execute');
+  const workers = [crawlWorker, executeWorker, remapWorker, aiPlanWorker, parseWorker, pollWorker, discoverWorker];
+  let draining = false;
+  let activeJobs = 0;
+  for (const w of workers) {
+    w.on('active', () => { activeJobs += 1; });
+    w.on('completed', () => { activeJobs = Math.max(0, activeJobs - 1); });
+    w.on('failed', () => { activeJobs = Math.max(0, activeJobs - 1); });
+  }
+  const stopHeartbeat = startHeartbeat(workerId, 'execute', () => ({
+    browsers: pool.getStats(),
+    activeJobs,
+    draining,
+  }));
+  const stopCommands = await registerCommandHandlers(workerId, {
+    'browser.stats': async () => pool.getStats(),
+    'browser.recycle': async () => {
+      await pool.reclaimIdleBrowsers();
+      return pool.getStats();
+    },
+    // Stop taking new jobs (running ones finish) — for maintenance/deploys.
+    'worker.drain': async () => {
+      draining = true;
+      await Promise.all(workers.map((w) => w.pause(true)));
+      return { draining };
+    },
+    'worker.resume': async () => {
+      draining = false;
+      workers.forEach((w) => w.resume());
+      return { draining };
+    },
+    'record.start': async (payload) => {
+      const { sessionId, url } = payload as { sessionId: string; url: string };
+      const { viewport } = await recorderService.startRecording(sessionId, url);
+      return { sessionId, workerId, viewport };
+    },
+    'record.input': async (payload) => {
+      const { sessionId, input } = payload as { sessionId: string; input: RecordInput };
+      return recorderService.input(sessionId, input);
+    },
+    'record.stop': async (payload) => {
+      const { sessionId } = payload as { sessionId: string };
+      return { steps: await recorderService.stopRecording(sessionId) };
+    },
+    'workflow.dry-run': async (payload) => {
+      const { url, steps } = payload as { url: string; steps: ActionStep[] };
+      return dryRunService.runDryRun(url, steps);
+    },
+  });
+
   console.log('\n⚙️  Worker Service ready');
+  console.log(`  • Worker id:           ${workerId}`);
   console.log(`  • Crawl concurrency:   3`);
   console.log(`  • Execute concurrency: 5`);
   console.log(`  • Remap concurrency:   2`);
@@ -414,6 +659,9 @@ async function main() {
       executeWorker.close(),
       remapWorker.close(),
       aiPlanWorker.close(),
+      parseWorker.close(),
+      pollWorker.close(),
+      discoverWorker.close(),
     ]);
 
     // Timeout after 30 seconds
@@ -423,6 +671,8 @@ async function main() {
 
     console.log(`[Worker] Draining finished or timed out. Shutting down browser pool...`);
     await pool.shutdown().catch(() => {});
+    await stopCommands().catch(() => {});
+    await stopHeartbeat().catch(() => {});
 
     console.log(`[Worker] Closing database connections...`);
     const { getPgPool, getRedisClient } = await import('../shared/db/index.js');

@@ -39,78 +39,144 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-bubble-user: var(--bubble-user);
   --color-bubble-user-foreground: var(--bubble-user-foreground);
+  --color-ink-2: var(--ink-2);
+  --color-faint: var(--faint);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-foreground: var(--primary-soft-foreground);
+  --color-primary-border: var(--primary-border);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-soft-foreground: var(--warning-soft-foreground);
+  --font-sans:
+    "Century Gothic", "Plus Jakarta Sans", "Helvetica Neue", Helvetica, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 :root {
   --radius: 0.875rem;
-  /* Light theme — warm-neutral, zero chroma, single blue accent (default) */
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.17 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.17 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.17 0 0);
-  --primary: oklch(0.5 0.1 258);
-  --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.95 0 0);
-  --secondary-foreground: oklch(0.17 0 0);
-  --muted: oklch(0.96 0 0);
-  --muted-foreground: oklch(0.47 0 0);
-  --accent: oklch(0.95 0 0);
-  --accent-foreground: oklch(0.17 0 0);
-  --destructive: oklch(0.58 0.22 25);
-  --destructive-foreground: oklch(0.98 0 0);
-  --success: oklch(0.5 0.1 258);
-  --success-foreground: oklch(0.98 0 0);
-  --warning: oklch(0.7 0.17 75);
-  --warning-foreground: oklch(0.2 0.04 75);
-  --border: oklch(0.9 0 0);
-  --input: oklch(0.9 0 0);
-  --ring: oklch(0.5 0.1 258);
-  --sidebar: oklch(0.97 0 0);
-  --sidebar-foreground: oklch(0.17 0 0);
-  --sidebar-accent: oklch(0.93 0 0);
-  --sidebar-border: oklch(0.89 0 0);
-  --bubble-user: oklch(0.94 0 0);
-  --bubble-user-foreground: oklch(0.17 0 0);
+  /* Light theme (default) — near-white canvas, navy ink, single forest-green accent.
+     Hierarchy: ink (titles) > ink-2 (body) > muted (secondary) > faint (labels/meta). */
+  --background: #f9fafb;
+  --foreground: #0d1828;
+  --ink-2: #334153;
+  --faint: #97a1af;
+  --card: #ffffff;
+  --card-foreground: #0d1828;
+  --popover: #ffffff;
+  --popover-foreground: #0d1828;
+  --primary: #15362b;
+  --primary-foreground: #ffffff;
+  --primary-soft: #e7f0ea;
+  --primary-soft-foreground: #15362b;
+  --primary-border: #cfe0d6;
+  --secondary: #f3f4f6;
+  --secondary-foreground: #0d1828;
+  --muted: #f3f4f6;
+  --muted-foreground: #677282;
+  --accent: #f3f4f6;
+  --accent-foreground: #0d1828;
+  --destructive: #b42318;
+  --destructive-foreground: #ffffff;
+  --success: #15532c;
+  --success-foreground: #ffffff;
+  --warning: #b54708;
+  --warning-foreground: #ffffff;
+  --warning-soft: #fdf3e2;
+  --warning-soft-foreground: #8a4b08;
+  --border: #e5e7eb;
+  --input: #e5e7eb;
+  --ring: #15362b;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #0d1828;
+  --sidebar-accent: #f3f4f6;
+  --sidebar-border: #eef0f2;
+  --bubble-user: #eef0f2;
+  --bubble-user-foreground: #0d1828;
+  /* Dynamic island: forest-green glass in light mode, warm charcoal + brand orange in dark. */
+  --island-bg: #15362b;
+  --island-fg: #ffffff;
+  --island-ask: #f6c453;
+  --island-info: #8fd8c8;
+  --island-success: #7ae8a4;
+  --island-warn: #f6c453;
+  --island-error: #ff8a7a;
+  --island-ring: #2f7a5f;
 }
 
 .dark {
-  /* Dark theme — true black, zero chroma, single blue accent */
-  --background: oklch(0.09 0 0);
-  --foreground: oklch(0.98 0 0);
-  --card: oklch(0.14 0 0);
-  --card-foreground: oklch(0.98 0 0);
-  --popover: oklch(0.14 0 0);
-  --popover-foreground: oklch(0.98 0 0);
-  --primary: oklch(0.56 0.09 258);
-  --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.18 0 0);
-  --secondary-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.18 0 0);
-  --muted-foreground: oklch(0.65 0 0);
-  --accent: oklch(0.2 0 0);
-  --accent-foreground: oklch(0.98 0 0);
-  --destructive: oklch(0.62 0.22 25);
-  --destructive-foreground: oklch(0.98 0 0);
-  --success: oklch(0.56 0.09 258);
-  --success-foreground: oklch(0.98 0 0);
-  --warning: oklch(0.78 0.16 75);
-  --warning-foreground: oklch(0.2 0.04 75);
-  --border: oklch(0.2 0 0);
-  --input: oklch(0.2 0 0);
-  --ring: oklch(0.56 0.09 258);
-  --sidebar: oklch(0.12 0 0);
-  --sidebar-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.18 0 0);
-  --sidebar-border: oklch(0.2 0 0);
-  --bubble-user: oklch(0.22 0 0);
-  --bubble-user-foreground: oklch(0.98 0 0);
+  /* Dark theme — brand palette: #0A0A0A canvas, #1A1A1A surfaces, white text,
+     #FF6308 orange accent, #D5D9E2 dividers (at low alpha), #F9F8F6 warm cream body text. */
+  --background: #0a0a0a;
+  --foreground: #ffffff;
+  --ink-2: #f9f8f6;
+  --faint: #7d7f84;
+  --card: #141414;
+  --card-foreground: #ffffff;
+  --popover: #1a1a1a;
+  --popover-foreground: #ffffff;
+  --primary: #ff6308;
+  --primary-foreground: #ffffff;
+  --primary-soft: rgb(255 99 8 / 0.14);
+  --primary-soft-foreground: #ff8a45;
+  --primary-border: rgb(255 99 8 / 0.35);
+  --secondary: #1a1a1a;
+  --secondary-foreground: #ffffff;
+  --muted: #1a1a1a;
+  --muted-foreground: #a3a6ad;
+  --accent: #1a1a1a;
+  --accent-foreground: #ffffff;
+  --destructive: #ff5c5c;
+  --destructive-foreground: #0a0a0a;
+  --success: #4ade80;
+  --success-foreground: #0a0a0a;
+  --warning: #fbbf24;
+  --warning-foreground: #0a0a0a;
+  --warning-soft: rgb(251 191 36 / 0.12);
+  --warning-soft-foreground: #fcd34d;
+  --border: rgb(213 217 226 / 0.12);
+  --input: rgb(213 217 226 / 0.16);
+  --ring: #ff6308;
+  --sidebar: #0a0a0a;
+  --sidebar-foreground: #ffffff;
+  --sidebar-accent: #1a1a1a;
+  --sidebar-border: rgb(213 217 226 / 0.1);
+  --bubble-user: #1a1a1a;
+  --bubble-user-foreground: #f9f8f6;
+  --island-bg: #141414;
+  --island-fg: #ffffff;
+  --island-ask: #ff6308;
+  --island-info: #7cc4ff;
+  --island-success: #4ade80;
+  --island-warn: #fbbf24;
+  --island-error: #ff5c5c;
+  --island-ring: #ff6308;
+}
+
+/* Chat column width — grows with the screen so desktop doesn't feel like a
+   narrow strip floating in empty space, but stays readable. */
+:root {
+  --chat-w: 48rem;
+}
+@media (min-width: 1280px) {
+  :root {
+    --chat-w: 54rem;
+  }
+}
+@media (min-width: 1600px) {
+  :root {
+    --chat-w: 58rem;
+  }
 }
 
 @layer base {
   * {
     border-color: var(--color-border);
+  }
+  /* Never allow sideways page drift on phones. */
+  /* clip (not hidden) so body doesn't become its own scroll container */
+  html,
+  body {
+    overflow-x: clip;
+    overscroll-behavior-x: none;
   }
   html,
   body,
@@ -123,23 +189,17 @@
     transition:
       background-color 0.15s ease,
       color 0.15s ease;
-    font-family:
-      "Inter",
-      ui-sans-serif,
-      system-ui,
-      -apple-system,
-      "Segoe UI",
-      Roboto,
-      "Helvetica Neue",
-      Arial,
-      sans-serif;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
     -webkit-font-smoothing: antialiased;
   }
 }
 
 /* Markdown prose styles */
 .md p {
-  margin: 0.4rem 0;
+  margin: 0.55rem 0;
   line-height: 1.65;
 }
 .md p:first-child {
@@ -150,8 +210,8 @@
 }
 .md ul,
 .md ol {
-  margin: 0.5rem 0;
-  padding-left: 1.25rem;
+  margin: 0.65rem 0;
+  padding-left: 1.4rem;
 }
 .md ul {
   list-style: disc;
@@ -160,7 +220,12 @@
   list-style: decimal;
 }
 .md li {
-  margin: 0.15rem 0;
+  margin: 0.28rem 0;
+  padding-left: 0.15rem;
+  line-height: 1.62;
+}
+.md li::marker {
+  color: color-mix(in oklab, var(--color-primary) 72%, transparent);
 }
 .md code {
   background: var(--color-muted);
@@ -176,6 +241,7 @@
   overflow-x: auto;
   margin: 0.6rem 0;
   border: 1px solid var(--color-border);
+  white-space: pre;
 }
 .md pre code {
   background: transparent;
@@ -184,12 +250,27 @@
 .md a {
   color: var(--color-primary);
   text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.md blockquote {
+  margin: 0.75rem 0;
+  border-left: 2px solid var(--color-primary);
+  padding: 0.15rem 0 0.15rem 0.9rem;
+  color: var(--color-muted-foreground);
+}
+.md hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
 }
 .md h1,
 .md h2,
 .md h3 {
   font-weight: 600;
-  margin: 0.8rem 0 0.4rem;
+  line-height: 1.35;
+  margin: 1rem 0 0.4rem;
 }
 .md h1 {
   font-size: 1.25rem;
@@ -202,6 +283,12 @@
 }
 .md strong {
   font-weight: 600;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
 }
 
 /* Pulse dot for live status */
@@ -222,6 +309,21 @@
   border-radius: 9999px;
   background: var(--color-primary);
   animation: pulse-ring 1.6s infinite;
+}
+
+@keyframes needs-answer-border {
+  0%, 100% {
+    border-color: color-mix(in oklab, var(--color-primary) 22%, var(--color-border));
+    box-shadow: 0 1px 2px rgba(13, 24, 40, 0.04), 0 0 0 0 color-mix(in oklab, var(--color-primary) 0%, transparent);
+  }
+  50% {
+    border-color: color-mix(in oklab, var(--color-primary) 48%, var(--color-border));
+    box-shadow: 0 1px 2px rgba(13, 24, 40, 0.04), 0 0 0 3px color-mix(in oklab, var(--color-primary) 7%, transparent);
+  }
+}
+
+.needs-answer-card {
+  animation: needs-answer-border 3.2s ease-in-out infinite;
 }
 
 /* Typing dots */
@@ -276,4 +378,106 @@
 }
 .scroll-thin::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Section eyebrow label — 11px, semibold, wide-tracked caps in the faint tone */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+/* iOS zooms (and the page appears to slide sideways) when a focused field is
+   under 16px. Keep every text control at 16px on touch-size screens. */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* Swipeable rows (suggestion chips) — scroll without a visible bar */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Home "workbench" canvas — faint dot grid that fades toward the edges */
+.canvas-dots {
+  background-image: radial-gradient(
+    color-mix(in oklab, var(--color-foreground) 9%, transparent) 1px,
+    transparent 1.2px
+  );
+  background-size: 22px 22px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 30%, transparent 85%);
+}
+
+/* Job cards: a soft wash of the job's own hue (--h) mixed into the card colour,
+   so it reads correctly in light and dark. */
+.job-tint {
+  --h: 160;
+  /* One smooth wash with many eased stops (and a hue-matched transparent end, so no grey fringe):
+     the small steps between stops are what keep 8-bit screens from showing banding lines. */
+  background-color: var(--card);
+  background-image: linear-gradient(
+    150deg,
+    hsl(var(--h) 85% 58% / 0.2) 0%,
+    hsl(var(--h) 85% 58% / 0.17) 12%,
+    hsl(var(--h) 85% 58% / 0.135) 24%,
+    hsl(var(--h) 85% 58% / 0.1) 36%,
+    hsl(var(--h) 85% 58% / 0.07) 48%,
+    hsl(var(--h) 85% 58% / 0.045) 60%,
+    hsl(var(--h) 85% 58% / 0.027) 72%,
+    hsl(var(--h) 85% 58% / 0.013) 85%,
+    hsl(var(--h) 85% 58% / 0.004) 95%,
+    hsl(var(--h) 85% 58% / 0) 100%
+  );
+  border-color: color-mix(in oklab, hsl(var(--h) 70% 50%) 26%, var(--border));
+}
+.dark .job-tint {
+  background-image: linear-gradient(
+    150deg,
+    hsl(var(--h) 80% 55% / 0.22) 0%,
+    hsl(var(--h) 80% 55% / 0.186) 12%,
+    hsl(var(--h) 80% 55% / 0.15) 24%,
+    hsl(var(--h) 80% 55% / 0.11) 36%,
+    hsl(var(--h) 80% 55% / 0.077) 48%,
+    hsl(var(--h) 80% 55% / 0.05) 60%,
+    hsl(var(--h) 80% 55% / 0.03) 72%,
+    hsl(var(--h) 80% 55% / 0.014) 85%,
+    hsl(var(--h) 80% 55% / 0.004) 95%,
+    hsl(var(--h) 80% 55% / 0) 100%
+  );
+}
+.job-tint:hover {
+  border-color: color-mix(in oklab, hsl(var(--h) 70% 50%) 55%, var(--border));
+  box-shadow: 0 10px 26px color-mix(in oklab, hsl(var(--h) 80% 45%) 18%, transparent);
+}
+.job-logo {
+  background: linear-gradient(135deg, hsl(var(--h) 72% 52%), hsl(calc(var(--h) + 38) 70% 44%));
+  color: #fff;
+  box-shadow: 0 4px 10px color-mix(in oklab, hsl(var(--h) 80% 40%) 35%, transparent);
+}
+.job-chip {
+  background: color-mix(in oklab, hsl(var(--h) 80% 55%) 16%, transparent);
+  color: color-mix(in oklab, hsl(var(--h) 75% 32%) 80%, var(--foreground));
+}
+.dark .job-chip {
+  color: color-mix(in oklab, hsl(var(--h) 90% 78%) 85%, var(--foreground));
+}
+
+
+/* Dynamic island motion */
+@keyframes island-spin { to { transform: rotate(360deg); } }
+@keyframes island-shimmer { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
+@keyframes island-breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes island-pop { 0% { transform: scale(0.4) rotate(-20deg); opacity: 0; } 60% { transform: scale(1.18) rotate(4deg); opacity: 1; } 100% { transform: scale(1) rotate(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .island-motion,
+  .needs-answer-card { animation: none !important; }
 }

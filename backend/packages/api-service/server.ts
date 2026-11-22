@@ -1,33 +1,32 @@
 import 'dotenv/config';
 import Fastify, { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { randomUUID } from 'crypto';
+import { safeEqual } from '../shared/security/safe-equal.js';
 import type {
   CrawlJob, ExecuteJob, RemapJob,
   JobPriority,
 } from '../shared/types/index.js';
-import { enqueueJob, getAllQueueStats, getJobPosition } from '../shared/queue/index.js';
+import { DuplicateTaskError, enqueueJob, getAllQueueStats, getJobPosition, getQueue } from '../shared/queue/index.js';
 import { getPgPool, getRedisClient, runMigrations, CacheKeys } from '../shared/db/index.js';
-import { getBrowserPool } from '../execution-service/browser-pool.js';
-import { ProxyManager } from '../execution-service/proxy-manager.js';
-import { getAIPlanner, buildSyntheticSnapshot } from '../ai-service/planner.js';
+import { aggregateBrowserStats } from '../shared/control-bus/index.js';
 import { register as promRegister, Gauge } from 'prom-client';
 import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
-import { chatOrchestrator } from './chat-orchestrator.js';
-import { ADMIN_OBSERVABILITY_CHANNEL } from './observability.service.js';
-import { RECORD_STEP_CHANNEL } from '../execution-service/recorder.js';
+import { chatOrchestrator, type ChatTurnContext } from './chat-orchestrator.js';
 import { memoryService } from './user-memory.service.js';
-import { siteWorkflowService } from './site-workflow.service.js';
 import type { ActionStep, JobRuntimeState, SiteWorkflow } from '../shared/types/index.js';
 import { fileStorageService } from './file-storage.service.js';
 import { workflowLoader } from '../shared/workflow-loader.js';
 import { createLogger } from '../shared/logger/index.js';
-import { registerAdminRoutes } from './admin-routes.js';
-import { registerObservabilityAdminRoutes, registerClientTelemetryRoutes } from './observability-routes.js';
+import { registerClientTelemetryRoutes } from './observability-routes.js';
+import { registerPaymentRoutes } from './payment-routes.js';
+import { registerMeRoutes, assertOwnsExecJob } from './me-routes.js';
+import { applicationsService } from '../shared/applications/index.js';
 import { persistErrorReport } from './observability.service.js';
 import { initNodeTelemetry } from './telemetry.js';
-import { registerAuthRoutes, requireUser, SESSION_COOKIE, ADMIN_SESSION_COOKIE } from './auth-routes.js';
-import { verifySession, verifyAdminSession } from '../shared/auth/index.js';
+import { resumeExecJob } from '../shared/applications/apply.js';
+import { registerAuthRoutes, requireUser, SESSION_COOKIE, userFromSessionToken, bearerToken } from './auth-routes.js';
+import { verifySession } from '../shared/auth/index.js';
 
 // ============================================================
 // API SERVICE — Fastify gateway
@@ -53,8 +52,13 @@ function normalizeAllowedOrigins(): string[] {
     'http://127.0.0.1:5173',
     'http://127.0.0.1:8080',
   ];
+  // The Android/iOS app (Capacitor) serves its bundled UI from these origins.
+  const native = (process.env.NATIVE_APP_ORIGINS ?? 'https://localhost,capacitor://localhost')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 
-  return [...new Set([...configured, ...defaults])];
+  return [...new Set([...configured, ...defaults, ...native])];
 }
 
 function isAllowedOrigin(origin: string | undefined, allowedOrigins: string[]): boolean {
@@ -76,6 +80,10 @@ function parseCookie(cookieHeader: string | undefined, name: string): string | n
 
 // ─── Auth Middleware (simple API key) ─────────────────────────
 
+const sessionKey = (req: { headers: Record<string, unknown>; cookies?: Record<string, string | undefined> }) =>
+  String(req.cookies?.jp_session ?? req.headers.authorization ?? '').slice(0, 64);
+const hasSession = (req: Parameters<typeof sessionKey>[0]) => sessionKey(req).length > 0;
+
 async function authMiddleware(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const key = req.headers['x-api-key'];
   const expectedKey = process.env.API_KEY;
@@ -83,7 +91,7 @@ async function authMiddleware(req: FastifyRequest, reply: FastifyReply): Promise
     reply.status(401).send({ error: 'Unauthorized' });
     return;
   }
-  if (!key || key !== expectedKey) {
+  if (!safeEqual(key, expectedKey)) {
     reply.status(401).send({ error: 'Unauthorized' });
   }
 }
@@ -94,10 +102,10 @@ async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',
-      transport: {
-        target: 'pino-pretty',
-        options: { colorize: true, translateTime: 'SYS:standard' },
-      },
+      // Readable in development; plain JSON lines in production so a log shipper can parse them.
+      ...(process.env.NODE_ENV === 'production'
+        ? {}
+        : { transport: { target: 'pino-pretty', options: { colorize: true, translateTime: 'SYS:standard' } } }),
     },
   });
   const allowedOrigins = normalizeAllowedOrigins();
@@ -112,7 +120,7 @@ async function buildApp(): Promise<FastifyInstance> {
       callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'x-api-key', 'x-admin-key', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'x-api-key', 'x-admin-key', 'Authorization', 'x-jp-client'],
     exposedHeaders: ['Content-Type', 'Content-Disposition'],
     credentials: true, // session cookies (jp_session / jp_admin_session) are cross-origin
   });
@@ -120,7 +128,10 @@ async function buildApp(): Promise<FastifyInstance> {
   await app.register(import('@fastify/cookie'));
 
   await app.register(import('@fastify/rate-limit'), {
-    max: parseInt(process.env.RATE_LIMIT ?? '100'),
+    // Always counted per address (a forged cookie must not mint a fresh bucket); callers with a session get a higher ceiling because the app polls several screens.
+    // A shared ceiling of 100 had the app's own polling and health checks returning 429 to real users.
+    max: (req) => (hasSession(req) ? parseInt(process.env.RATE_LIMIT_SESSION ?? '600') : parseInt(process.env.RATE_LIMIT ?? '100')),
+    allowList: (req) => req.url === '/health' || req.url.startsWith('/health?'),
     timeWindow: '1 minute',
   });
 
@@ -141,6 +152,24 @@ async function buildApp(): Promise<FastifyInstance> {
       statusCode: reply.statusCode,
       responseTimeMs: reply.elapsedTime,
     });
+
+    // Feeds the admin panel's Network tab (GET /admin/network/stats reads
+    // these same keys — see admin-routes.ts). Best-effort: never let stats
+    // bookkeeping fail a request.
+    try {
+      const redis = await getRedisClient();
+      const multi = redis.multi();
+      multi.incr('stats:requests:total');
+      if (reply.statusCode >= 400) {
+        multi.incr('stats:requests:failed');
+      }
+      await multi.exec();
+      const prevAvg = Number((await redis.get('stats:latency:avg')) ?? 0);
+      const nextAvg = prevAvg > 0 ? prevAvg * 0.9 + reply.elapsedTime * 0.1 : reply.elapsedTime;
+      await redis.set('stats:latency:avg', nextAvg.toFixed(2));
+    } catch {
+      /* stats are best-effort */
+    }
   });
 
   app.setErrorHandler(async (error, req, reply) => {
@@ -193,7 +222,8 @@ async function buildApp(): Promise<FastifyInstance> {
     const redis = await getRedisClient().catch(() => null);
     const redisOk = redis ? await redis.ping().then(() => true).catch(() => false) : false;
 
-    const browserStats = getBrowserPool().getStats();
+    // Browsers run on workers; these are their heartbeat totals.
+    const browserStats = await aggregateBrowserStats().catch(() => null);
 
     return {
       status: dbOk && redisOk ? 'healthy' : 'degraded',
@@ -213,68 +243,11 @@ async function buildApp(): Promise<FastifyInstance> {
 
   // ── Sites ────────────────────────────────────────────────────
 
-  app.post('/sites', { preHandler: authMiddleware }, async (req, reply) => {
-    const { domain, config } = req.body as { domain: string; config?: Record<string, unknown> };
-    if (!domain) return reply.status(400).send({ error: 'domain required' });
 
-    const pool = getPgPool();
-    const { rows } = await pool.query(`
-      INSERT INTO sites (domain, config)
-      VALUES ($1, $2)
-      ON CONFLICT (domain) DO UPDATE SET config = EXCLUDED.config
-      RETURNING id, domain, created_at
-    `, [domain, JSON.stringify(config ?? {})]);
 
-    return { site: rows[0] };
-  });
-
-  app.get('/sites', { preHandler: authMiddleware }, async () => {
-    const pool = getPgPool();
-    const { rows } = await pool.query(`
-      SELECT id, domain, page_count, status, created_at, updated_at
-      FROM sites ORDER BY created_at DESC LIMIT 50
-    `);
-    return { sites: rows };
-  });
-
-  app.get('/sites/:siteId', { preHandler: authMiddleware }, async (req, reply) => {
-    const { siteId } = req.params as { siteId: string };
-    const pool = getPgPool();
-    const { rows } = await pool.query(`SELECT * FROM sites WHERE id = $1`, [siteId]);
-    if (!rows.length) return reply.status(404).send({ error: 'Site not found' });
-    return { site: rows[0] };
-  });
 
   // ── Crawl ─────────────────────────────────────────────────────
 
-  app.post('/crawl', { preHandler: authMiddleware }, async (req, reply) => {
-    const {
-      siteId, url,
-      maxDepth = 3,
-      maxPages = 200,
-      strategy = 'hybrid',
-      priority = 'normal',
-    } = req.body as {
-      siteId: string; url: string;
-      maxDepth?: number; maxPages?: number;
-      strategy?: CrawlJob['payload']['strategy'];
-      priority?: JobPriority;
-    };
-
-    if (!siteId || !url) return reply.status(400).send({ error: 'siteId and url required' });
-
-    const job: CrawlJob = {
-      id:       randomUUID(),
-      type:     'crawl',
-      priority,
-      createdAt: new Date(),
-      userId:   (req as any).userId ?? 'system',
-      payload: { url, maxDepth, maxPages, strategy, followExternalLinks: false, respectRobots: true },
-    };
-
-    const jobId = await enqueueJob(job);
-    reply.status(202).send({ jobId, status: 'queued', message: 'Crawl job enqueued' });
-  });
 
   // ── Execute Task ──────────────────────────────────────────────
 
@@ -305,7 +278,13 @@ async function buildApp(): Promise<FastifyInstance> {
       payload:  { siteId, task, sessionId, useCache, dryRun },
     };
 
-    const jobId = await enqueueJob(job);
+    let jobId: string;
+    try {
+      jobId = await enqueueJob(job);
+    } catch (err) {
+      if (err instanceof DuplicateTaskError) return reply.status(409).send({ error: err.message, jobId: err.existingJobId });
+      throw err;
+    }
     const redis = await getRedisClient();
     const runtimeState: JobRuntimeState = {
       jobId,
@@ -323,31 +302,12 @@ async function buildApp(): Promise<FastifyInstance> {
 
   // ── Remap ─────────────────────────────────────────────────────
 
-  app.post('/remap', { preHandler: authMiddleware }, async (req, reply) => {
-    const { siteId, urls, reason = 'scheduled' } = req.body as {
-      siteId: string; urls?: string[];
-      reason?: RemapJob['payload']['reason'];
-    };
-
-    if (!siteId) return reply.status(400).send({ error: 'siteId required' });
-
-    const job: RemapJob = {
-      id:       randomUUID(),
-      type:     'remap',
-      priority: 'low',
-      createdAt: new Date(),
-      userId:   'system',
-      payload:  { siteId, affectedUrls: urls, reason },
-    };
-
-    const jobId = await enqueueJob(job);
-    reply.status(202).send({ jobId, status: 'queued', mode: urls?.length ? 'incremental' : 'full' });
-  });
 
   // ── Jobs ─────────────────────────────────────────────────────
 
-  app.get('/jobs/:jobId', { preHandler: authMiddleware }, async (req, reply) => {
+  app.get('/jobs/:jobId', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { jobId } = req.params as { jobId: string };
+    if (!(await assertOwnsExecJob(req, reply, jobId))) return;
     const pool = getPgPool();
     const { rows } = await pool.query(
       `SELECT * FROM job_logs WHERE job_id = $1 ORDER BY started_at DESC LIMIT 1`,
@@ -357,31 +317,30 @@ async function buildApp(): Promise<FastifyInstance> {
     return { job: rows[0] };
   });
 
-  app.get('/jobs/:jobId/runtime', { preHandler: authMiddleware }, async (req, reply) => {
+  app.get('/jobs/:jobId/runtime', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { jobId } = req.params as { jobId: string };
+    if (!(await assertOwnsExecJob(req, reply, jobId))) return;
     const redis = await getRedisClient();
     const runtime = await redis.get(CacheKeys.jobRuntime(jobId));
     if (!runtime) return reply.status(404).send({ error: 'Runtime state not found' });
     return { runtime: JSON.parse(runtime) };
   });
 
-  app.get('/queues', { preHandler: authMiddleware }, async () => {
-    const stats = await getAllQueueStats();
-    return { queues: stats };
-  });
 
-  app.post('/jobs/:jobId/resume', { preHandler: authMiddleware }, async (req, reply) => {
+  app.post('/jobs/:jobId/resume', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { jobId } = req.params as { jobId: string };
+    if (!(await assertOwnsExecJob(req, reply, jobId))) return;
     const { input } = req.body as { input: string };
     if (!input) return reply.status(400).send({ error: 'input required' });
 
-    const redis = await getRedisClient();
-    await redis.publish(`job:resume:${jobId}`, input);
-    return { jobId, resumed: true };
+    // Parked applications continue in a new run; live ones get the value directly.
+    const resumed = await resumeExecJob(jobId, input);
+    return { jobId, resumed };
   });
 
-  app.post('/jobs/:jobId/cancel', { preHandler: authMiddleware }, async (req) => {
+  app.post('/jobs/:jobId/cancel', { preHandler: [authMiddleware, requireUser] }, async (req, reply) => {
     const { jobId } = req.params as { jobId: string };
+    if (!(await assertOwnsExecJob(req, reply, jobId))) return;
     const redis = await getRedisClient();
     await redis.setEx(CacheKeys.jobCancel(jobId), 86400, '1');
     await redis.publish(`job:cancel:${jobId}`, 'cancel');
@@ -404,61 +363,12 @@ async function buildApp(): Promise<FastifyInstance> {
 
   // ── Proxies ───────────────────────────────────────────────────
 
-  const proxyManager = new ProxyManager();
 
-  app.post('/proxies/import', { preHandler: authMiddleware }, async (req, reply) => {
-    const { proxies } = req.body as {
-      proxies: Array<{ host: string; port: number; username?: string; password?: string; protocol?: string; tags?: string[] }>;
-    };
-    if (!proxies?.length) return reply.status(400).send({ error: 'proxies array required' });
-    const count = await proxyManager.importProxies(proxies);
-    return { imported: count };
-  });
 
-  app.get('/proxies/stats', { preHandler: authMiddleware }, async () => {
-    const stats = await proxyManager.getStats();
-    return { stats };
-  });
 
   // ── Graph / Map ───────────────────────────────────────────────
 
-  app.get('/sites/:siteId/graph', { preHandler: authMiddleware }, async (req, reply) => {
-    const { siteId } = req.params as { siteId: string };
-    const pool = getPgPool();
 
-    const [{ rows: nodes }, { rows: edges }] = await Promise.all([
-      pool.query(
-        `SELECT id, url, title, load_time_ms, reliability_score, last_verified
-         FROM pages WHERE site_id = $1 LIMIT 1000`,
-        [siteId]
-      ),
-      pool.query(
-        `SELECT from_page_id, to_page_id, link_text, navigation_type
-         FROM page_edges WHERE site_id = $1 LIMIT 5000`,
-        [siteId]
-      ),
-    ]);
-
-    return { siteId, nodes: nodes.length, edges: edges.length, graph: { nodes, edges } };
-  });
-
-  app.get('/sites/:siteId/elements', { preHandler: authMiddleware }, async (req, reply) => {
-    const { siteId } = req.params as { siteId: string };
-    const { type, interactable } = req.query as { type?: string; interactable?: string };
-
-    const pool = getPgPool();
-    const { rows } = await pool.query(`
-      SELECT e.id, e.type, e.label, e.visible, e.interactable, p.url
-      FROM elements e
-      JOIN pages p ON e.page_id = p.id
-      WHERE p.site_id = $1
-        AND ($2::text IS NULL OR e.type = $2)
-        AND ($3::boolean IS NULL OR e.interactable = $3)
-      LIMIT 500
-    `, [siteId, type ?? null, interactable ? interactable === 'true' : null]);
-
-    return { elements: rows };
-  });
 
   // ── User Memory ──────────────────────────────────────────────
 
@@ -599,185 +509,24 @@ async function buildApp(): Promise<FastifyInstance> {
 
   // ── Site Workflow Mapping ────────────────────────────────────
 
-  app.get('/site-workflows/:siteId', { preHandler: authMiddleware }, async (req) => {
-    const { siteId } = req.params as { siteId: string };
-    return { workflows: await siteWorkflowService.listForSite(siteId) };
-  });
 
-  app.get('/workflows', { preHandler: authMiddleware }, async (req) => {
-    const { siteId } = req.query as { siteId?: string };
-    return {
-      workflows: siteId
-        ? await siteWorkflowService.listForSite(siteId)
-        : await siteWorkflowService.listAll(),
-    };
-  });
 
-  app.get('/workflow/:workflowId', { preHandler: authMiddleware }, async (req, reply) => {
-    const { workflowId } = req.params as { workflowId: string };
-    const workflow = await siteWorkflowService.getWorkflow(workflowId);
-    if (!workflow) return reply.status(404).send({ error: 'Workflow not found' });
-    return { workflow };
-  });
 
-  app.get('/workflows/:workflowId', { preHandler: authMiddleware }, async (req, reply) => {
-    const { workflowId } = req.params as { workflowId: string };
-    const workflow = await siteWorkflowService.getWorkflow(workflowId);
-    if (!workflow) return reply.status(404).send({ error: 'Workflow not found' });
-    return { workflow };
-  });
 
-  app.post('/site-workflows', { preHandler: authMiddleware }, async (req, reply) => {
-    const body = req.body as {
-      workflowKey?: string;
-      siteId: string;
-      category?: string;
-      name: string;
-      trigger: string;
-      triggerPhrases?: string[];
-      portalType?: SiteWorkflow['portalType'];
-      siteSection?: string;
-      entryUrl?: string;
-      pageUrl?: string;
-      pageUrlPattern?: string;
-      pageUrlPatterns?: string[];
-      requiredInputs?: string[];
-      requiredFiles?: Array<'resume' | 'signature' | 'photo' | 'document' | 'receipt' | 'other'>;
-      instructions: string;
-      defaultProfileName?: string;
-      starterActionPlan?: ActionStep[];
-      errorRecoveryPlan?: ActionStep[];
-      version?: number;
-      isActive?: boolean;
-      completionArtifact?: string;
-      metadata?: Record<string, unknown>;
-    };
 
-    if (!body.siteId || !body.name || !body.trigger || !body.instructions) {
-      return reply.status(400).send({ error: 'siteId, name, trigger, and instructions are required' });
-    }
 
-    const workflow = await siteWorkflowService.saveWorkflow(body);
-    return { workflow };
-  });
 
-  app.put('/workflow/:workflowId', { preHandler: authMiddleware }, async (req, reply) => {
-    const { workflowId } = req.params as { workflowId: string };
-    const existing = await siteWorkflowService.getWorkflow(workflowId);
-    if (!existing) return reply.status(404).send({ error: 'Workflow not found' });
-
-    const body = req.body as {
-      siteId?: string;
-      workflowKey?: string;
-      category?: string;
-      name?: string;
-      trigger?: string;
-      triggerPhrases?: string[];
-      portalType?: SiteWorkflow['portalType'];
-      siteSection?: string;
-      entryUrl?: string;
-      pageUrl?: string;
-      pageUrlPattern?: string;
-      pageUrlPatterns?: string[];
-      requiredInputs?: string[];
-      requiredFiles?: Array<'resume' | 'signature' | 'photo' | 'document' | 'receipt' | 'other'>;
-      instructions?: string;
-      defaultProfileName?: string;
-      starterActionPlan?: ActionStep[];
-      errorRecoveryPlan?: ActionStep[];
-      version?: number;
-      isActive?: boolean;
-      completionArtifact?: string;
-      metadata?: Record<string, unknown>;
-    };
-
-    const workflow = await siteWorkflowService.saveWorkflow({
-      siteId: body.siteId ?? existing.siteId,
-      workflowKey: body.workflowKey ?? existing.workflowKey,
-      category: body.category ?? existing.category,
-      name: body.name ?? existing.name,
-      trigger: body.trigger ?? existing.trigger,
-      triggerPhrases: body.triggerPhrases ?? existing.triggerPhrases,
-      portalType: body.portalType ?? existing.portalType,
-      siteSection: body.siteSection ?? existing.siteSection,
-      entryUrl: body.entryUrl ?? existing.entryUrl,
-      pageUrl: body.pageUrl ?? existing.pageUrl,
-      pageUrlPattern: body.pageUrlPattern ?? existing.pageUrlPattern,
-      pageUrlPatterns: body.pageUrlPatterns ?? existing.pageUrlPatterns,
-      requiredInputs: body.requiredInputs ?? existing.requiredInputs,
-      requiredFiles: body.requiredFiles ?? existing.requiredFiles,
-      instructions: body.instructions ?? existing.instructions,
-      defaultProfileName: body.defaultProfileName ?? existing.defaultProfileName,
-      starterActionPlan: body.starterActionPlan ?? existing.starterActionPlan,
-      errorRecoveryPlan: body.errorRecoveryPlan ?? existing.errorRecoveryPlan,
-      version: body.version ?? existing.version,
-      isActive: body.isActive ?? existing.isActive,
-      completionArtifact: body.completionArtifact ?? existing.completionArtifact,
-      metadata: body.metadata ?? existing.metadata,
-    });
-
-    return { workflow };
-  });
-
-  app.delete('/workflow/:workflowId', { preHandler: authMiddleware }, async (req, reply) => {
-    const { workflowId } = req.params as { workflowId: string };
-    const deleted = await siteWorkflowService.deleteWorkflow(workflowId);
-    if (!deleted) return reply.status(404).send({ error: 'Workflow not found' });
-    return { deleted: true, workflowId };
-  });
-
-  app.post('/test/plan', { preHandler: authMiddleware }, async (req, reply) => {
-    const body = req.body as {
-      siteId?: string;
-      task?: string;
-      pageUrl?: string;
-      useCache?: boolean;
-    };
-
-    if (!body.siteId || !body.task) {
-      return reply.status(400).send({ error: 'siteId and task are required' });
-    }
-
-    const workflowContext = await siteWorkflowService.listForSite(body.siteId);
-    const fallbackUrl = body.pageUrl
-      ?? workflowContext[0]?.pageUrl
-      ?? workflowContext[0]?.entryUrl
-      ?? workflowContext[0]?.pageUrlPattern
-      ?? undefined;
-
-    const decision = await getAIPlanner().planTask(
-      body.task,
-      body.siteId,
-      buildSyntheticSnapshot(fallbackUrl),
-      [],
-      body.useCache ?? true
-    );
-
-    return {
-      source: decision.source ?? 'ai-generated',
-      matchedWorkflowId: decision.matchedWorkflowId ?? null,
-      matchedWorkflowName: decision.matchedWorkflowName ?? null,
-      confidence: decision.confidence,
-      estimatedDuration: decision.estimatedDuration,
-      actionPlanLength: decision.actionPlan.length,
-      pauseSteps: decision.actionPlan
-        .filter((step) => step.action === 'pauseForUserInput')
-        .map((step) => ({
-          id: step.id,
-          expectedInput: step.expectedInput ?? null,
-          description: step.description,
-        })),
-      actionPlan: decision.actionPlan,
-    };
-  });
 
   // ── Auth Routes (Google / email OTP / mobile OTP / admin login) ──
   registerAuthRoutes(app);
 
-  // ── Admin Panel Routes ─────────────────────────────────────
-  await registerAdminRoutes(app);
-  await registerObservabilityAdminRoutes(app);
+  // Admin routes live in admin-service (separate app/port). Only client
+  // telemetry ingest stays here.
   await registerClientTelemetryRoutes(app);
+
+  // Tsenta-style user API: profile, resume, jobs feed, applications, inbox.
+  registerMeRoutes(app, authMiddleware);
+  registerPaymentRoutes(app, authMiddleware);
 
   return app;
 }
@@ -792,9 +541,6 @@ async function main() {
     if (process.env.WORKFLOW_AUTOLOAD !== 'false') {
       await workflowLoader.loadAllWorkflows();
     }
-
-    const pool = getBrowserPool();
-    await pool.init();
 
     const app = await buildApp();
 
@@ -815,27 +561,31 @@ async function main() {
           callback(new Error(`Origin ${origin} is not allowed by Socket.IO CORS`), false);
         },
         methods: ['GET', 'POST'],
-        allowedHeaders: ['x-api-key', 'x-admin-key'],
+        allowedHeaders: ['x-api-key', 'x-admin-key', 'Authorization'],
         credentials: true, // required for the jp_session cookie to be sent cross-origin
       }
     });
 
     // Chat is the primary product surface, so it must never trust a
     // client-supplied userId — every connection is tied to the verified
-    // session cookie instead, and `join`/`chat:send` use that resolved id.
+    // session cookie (or the app's bearer token, sent as `auth.token`)
+    // instead, and `join`/`chat:send` use that resolved id.
     io.use(async (socket, next) => {
-      const cookieHeader = socket.handshake.headers.cookie;
-      const token = parseCookie(cookieHeader, SESSION_COOKIE);
+      const authToken = (socket.handshake.auth as { token?: unknown } | undefined)?.token;
+      const token =
+        (typeof authToken === 'string' && authToken) ||
+        bearerToken(socket.handshake.headers.authorization) ||
+        parseCookie(socket.handshake.headers.cookie, SESSION_COOKIE);
       if (!token) {
         next(new Error('Unauthorized — please sign in'));
         return;
       }
-      const claims = await verifySession(token);
-      if (!claims) {
+      const userId = await userFromSessionToken(token);
+      if (!userId) {
         next(new Error('Unauthorized — please sign in'));
         return;
       }
-      (socket.data as { userId: string }).userId = claims.sub;
+      (socket.data as { userId: string }).userId = userId;
       next();
     });
 
@@ -846,65 +596,6 @@ async function main() {
     subClient.on('error', (err) => logger.warn('redis:socketio-adapter-sub-error', { error: (err as Error).message }));
     await subClient.connect();
     io.adapter(createAdapter(pubClient, subClient));
-
-    const adminNs = io.of('/admin');
-    adminNs.use(async (socket, next) => {
-      // Prefer the admin session cookie (what the browser now uses — no key
-      // ever touches client JS); fall back to the legacy x-admin-key header
-      // for scripted/CI callers.
-      const cookieToken = parseCookie(socket.handshake.headers.cookie, ADMIN_SESSION_COOKIE);
-      if (cookieToken) {
-        const claims = await verifyAdminSession(cookieToken);
-        if (!claims) {
-          next(new Error('Unauthorized'));
-          return;
-        }
-        next();
-        return;
-      }
-
-      const auth = socket.handshake.auth as { adminKey?: string } | undefined;
-      const headerKey = socket.handshake.headers['x-admin-key'];
-      const key = (typeof headerKey === 'string' ? headerKey : undefined) ?? auth?.adminKey;
-
-      if (!key) {
-        next(new Error('Unauthorized'));
-        return;
-      }
-
-      try {
-        const pool = getPgPool();
-        const { rows } = await pool.query('SELECT id FROM admins WHERE api_key = $1', [key]);
-        if (!rows.length) {
-          next(new Error('Unauthorized'));
-          return;
-        }
-        next();
-      } catch (err) {
-        next(new Error('Internal Server Error'));
-      }
-    });
-    adminNs.on('connection', (socket) => {
-      logger.info('admin-socket:connected', { socketId: socket.id });
-      socket.emit('ready', { channel: 'observability' });
-    });
-    const adminObsSub = pubClient.duplicate();
-    adminObsSub.on('error', (err) => logger.warn('redis:admin-obs-sub-error', { error: (err as Error).message }));
-    await adminObsSub.connect();
-    await adminObsSub.subscribe(ADMIN_OBSERVABILITY_CHANNEL, (msg) => {
-      try {
-        adminNs.emit('feed', JSON.parse(msg));
-      } catch {
-        adminNs.emit('feed', { raw: msg });
-      }
-    });
-    await adminObsSub.subscribe(RECORD_STEP_CHANNEL, (msg) => {
-      try {
-        adminNs.emit('workflow:record-step', JSON.parse(msg));
-      } catch {
-        /* ignore malformed recorder payloads */
-      }
-    });
 
     // Listen for events from ExecutionService (Pause for input)
     const systemSub = pubClient.duplicate();
@@ -933,6 +624,13 @@ async function main() {
             updatedAt: new Date().toISOString(),
           })
         );
+
+        await applicationsService
+          .updateByExecJob(jobId, {
+            status: type === 'review' ? 'awaiting_review' : 'needs_input',
+            detail: contextMessage ?? null,
+          })
+          .catch((err) => logger.warn('application:pause-update-failed', { jobId, error: (err as Error).message }));
 
         io.to(`session:${runtime.sessionId}`).emit('chat:pause', {
           jobId,
@@ -983,6 +681,16 @@ async function main() {
       }
     });
 
+    // Run receipts — "proof it's done" card shown when a job finishes.
+    await systemSub.subscribe('chat:receipt', async (message) => {
+      try {
+        const { sessionId, ...receipt } = JSON.parse(message);
+        if (sessionId) io.to(`session:${sessionId}`).emit('chat:receipt', receipt);
+      } catch (e) {
+        logger.error('socket:chat-receipt-handler-failed', e);
+      }
+    });
+
     await systemSub.subscribe('chat:message', async (message) => {
       try {
         const payload = JSON.parse(message);
@@ -1019,7 +727,15 @@ setInterval(() => {
       
       const userId = (socket.data as { userId: string }).userId;
 
-      socket.on('join', (data: { sessionId: string, activeJobId?: string }) => {
+      socket.on('join', async (data: { sessionId: string, activeJobId?: string }) => {
+        // A job room carries live frames and progress: only its owner may subscribe.
+        if (data.activeJobId) {
+          const owner = (await getQueue('execute').getJob(data.activeJobId).catch(() => null))?.data?.userId;
+          if (owner && owner !== userId) {
+            logger.warn('socket:join-denied', { socketId: socket.id, userId, activeJobId: data.activeJobId });
+            data = { ...data, activeJobId: undefined };
+          }
+        }
         logger.info('socket:join', {
           socketId: socket.id,
           userId,
@@ -1071,12 +787,13 @@ setInterval(() => {
         }
       });
 
-      socket.on('chat:send', async (data: { sessionId: string, message: string }) => {
+      socket.on('chat:send', async (data: { sessionId: string, message: string; context?: ChatTurnContext }) => {
         logger.info('socket:chat-send', {
           socketId: socket.id,
           userId,
           sessionId: data.sessionId,
-          messagePreview: data.message.slice(0, 120),
+          // Replies to code / ID / password questions are single tokens: never logged.
+          messagePreview: /\s/.test(data.message.trim()) || data.message.length > 40 ? data.message.slice(0, 120) : '[short reply]',
         });
         await chatOrchestrator.handleMessage(
           userId,
@@ -1088,7 +805,10 @@ setInterval(() => {
             const tracked = socketJobMap.get(socket.id);
             if (tracked) tracked.jobIds.add(job.jobId);
             io.to(`session:${data.sessionId}`).emit('job:started', job);
-          }
+          },
+          (cards) => socket.emit('chat:ui', { cards }),
+          data.context,
+          (threadId, title) => socket.emit('chat:title', { threadId, title }),
         );
       });
 
@@ -1114,7 +834,7 @@ setInterval(() => {
       logger.warn('service:shutdown', { signal });
       io.close();
       await app.close();
-      await pool.shutdown();
+      await getPgPool().end().catch(() => {});
       process.exit(0);
     };
 

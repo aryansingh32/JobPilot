@@ -21,6 +21,13 @@ import {
   Sparkles,
   Menu,
   ShieldAlert,
+  Send,
+  Rss,
+  Mail,
+  CircleDot,
+  IdCard,
+  SlidersHorizontal,
+  ClipboardCheck,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
@@ -30,34 +37,64 @@ interface NavItem {
   icon: ReactNode;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { id: "observability", label: "Observability", icon: <Orbit className="h-4 w-4" /> },
-  { id: "sessions", label: "Session Intel", icon: <Fingerprint className="h-4 w-4" /> },
-  { id: "copilot", label: "AI Copilot", icon: <Sparkles className="h-4 w-4" /> },
-  { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" /> },
-  { id: "jobs", label: "Jobs & Tasks", icon: <Zap className="h-4 w-4" /> },
-  { id: "users", label: "Users", icon: <Users className="h-4 w-4" /> },
-  { id: "workflows", label: "Workflows", icon: <Workflow className="h-4 w-4" /> },
-  { id: "sites", label: "Sites", icon: <Globe className="h-4 w-4" /> },
-  { id: "captcha", label: "Captcha Solver", icon: <Puzzle className="h-4 w-4" /> },
-  { id: "browsers", label: "Browser Pool", icon: <Server className="h-4 w-4" /> },
-  { id: "reliability", label: "Reliability", icon: <ShieldAlert className="h-4 w-4" /> },
-  { id: "logs", label: "Logs", icon: <ScrollText className="h-4 w-4" /> },
-  { id: "errors", label: "Errors", icon: <AlertTriangle className="h-4 w-4" /> },
-  { id: "network", label: "Network", icon: <Activity className="h-4 w-4" /> },
-  { id: "metrics", label: "Metrics", icon: <Database className="h-4 w-4" /> },
-  { id: "security", label: "Security", icon: <ShieldCheck className="h-4 w-4" /> },
+const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
+  {
+    label: "Product",
+    items: [
+      { id: "dashboard", label: "Overview", icon: <LayoutDashboard className="h-4 w-4" /> },
+      { id: "applications", label: "Applications", icon: <Send className="h-4 w-4" /> },
+      { id: "users", label: "Users", icon: <Users className="h-4 w-4" /> },
+      { id: "sources", label: "Job sources", icon: <Rss className="h-4 w-4" /> },
+      { id: "inbox", label: "Inbox & résumés", icon: <Mail className="h-4 w-4" /> },
+    ],
+  },
+  {
+    label: "Automation",
+    items: [
+      { id: "workflows", label: "Workflows", icon: <Workflow className="h-4 w-4" /> },
+      { id: "recorder", label: "Recorder", icon: <CircleDot className="h-4 w-4" /> },
+      { id: "test-profile", label: "Test profile", icon: <IdCard className="h-4 w-4" /> },
+      { id: "jobs", label: "Run queue", icon: <Zap className="h-4 w-4" /> },
+      { id: "captcha", label: "Captcha", icon: <Puzzle className="h-4 w-4" /> },
+      { id: "browsers", label: "Browsers & workers", icon: <Server className="h-4 w-4" /> },
+      { id: "sites", label: "Sites", icon: <Globe className="h-4 w-4" /> },
+    ],
+  },
+  {
+    label: "Platform",
+    items: [
+      { id: "settings", label: "Settings", icon: <SlidersHorizontal className="h-4 w-4" /> },
+      { id: "answers", label: "Default answers", icon: <ClipboardCheck className="h-4 w-4" /> },
+      { id: "ai", label: "AI usage", icon: <Sparkles className="h-4 w-4" /> },
+      { id: "team", label: "Team & audit", icon: <ShieldCheck className="h-4 w-4" /> },
+      { id: "security", label: "Security", icon: <ShieldAlert className="h-4 w-4" /> },
+    ],
+  },
+  {
+    label: "Observability",
+    items: [
+      { id: "observability", label: "Command center", icon: <Orbit className="h-4 w-4" /> },
+      { id: "sessions", label: "Session intel", icon: <Fingerprint className="h-4 w-4" /> },
+      { id: "copilot", label: "Debug copilot", icon: <Sparkles className="h-4 w-4" /> },
+      { id: "reliability", label: "Reliability", icon: <Activity className="h-4 w-4" /> },
+      { id: "logs", label: "Logs", icon: <ScrollText className="h-4 w-4" /> },
+      { id: "errors", label: "Errors", icon: <AlertTriangle className="h-4 w-4" /> },
+      { id: "network", label: "Network", icon: <Activity className="h-4 w-4" /> },
+      { id: "metrics", label: "Metrics", icon: <Database className="h-4 w-4" /> },
+    ],
+  },
 ];
+const NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
 
 function Brand({ collapsed }: { collapsed?: boolean }) {
   return (
     <div className="flex items-center gap-2.5 border-b border-border/40 px-4 py-4">
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground text-xs font-bold">
-        CF
+        JP
       </div>
       {!collapsed && (
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-foreground tracking-tight">ChatFlow</div>
+          <div className="text-sm font-semibold text-foreground tracking-tight">JobPilot</div>
           <div className="text-[10px] text-muted-foreground">Admin Panel</div>
         </div>
       )}
@@ -76,23 +113,33 @@ function NavList({
 }) {
   return (
     <nav className="flex-1 overflow-y-auto py-2 scroll-thin">
-      {NAV_ITEMS.map((item) => (
-        <button
-          key={item.id}
-          onClick={() => onTabChange(item.id)}
-          className={`group flex w-full items-center gap-2.5 px-4 py-2 text-sm transition-all duration-150 ${
-            activeTab === item.id
-              ? "bg-primary/15 text-primary border-l-2 border-primary"
-              : "text-muted-foreground hover:bg-accent/60 hover:text-foreground border-l-2 border-transparent"
-          }`}
-        >
-          <span
-            className={`shrink-0 ${activeTab === item.id ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
-          >
-            {item.icon}
-          </span>
-          {!collapsed && <span className="truncate">{item.label}</span>}
-        </button>
+      {NAV_GROUPS.map((group) => (
+        <div key={group.label} className="mb-2">
+          {!collapsed && (
+            <div className="px-4 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+              {group.label}
+            </div>
+          )}
+          {group.items.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => onTabChange(item.id)}
+              title={collapsed ? item.label : undefined}
+              className={`group flex w-full items-center gap-2.5 px-4 py-1.5 text-sm transition-all duration-150 ${
+                activeTab === item.id
+                  ? "bg-primary/15 text-primary border-l-2 border-primary"
+                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground border-l-2 border-transparent"
+              }`}
+            >
+              <span
+                className={`shrink-0 ${activeTab === item.id ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
+              >
+                {item.icon}
+              </span>
+              {!collapsed && <span className="truncate">{item.label}</span>}
+            </button>
+          ))}
+        </div>
       ))}
     </nav>
   );
@@ -165,7 +212,7 @@ export function AdminLayout({
               to="/"
               className="ml-1 hidden shrink-0 rounded-md border border-border/50 px-2 py-1 text-[11px] text-muted-foreground transition hover:bg-accent/50 sm:ml-2 sm:inline-block"
             >
-              ← Back to Chat
+              ← Back to app
             </Link>
           </div>
           <div className="flex items-center gap-3">

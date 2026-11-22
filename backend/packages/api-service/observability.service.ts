@@ -284,8 +284,8 @@ export async function copilotAnswer(params: {
       })
     : undefined;
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
+  const { isDummyLLMKey } = await import('../shared/llm/index.js');
+  if (isDummyLLMKey()) {
     const base =
       errorRow != null
         ? `**Error:** ${errorRow.message}\n**Route:** ${errorRow.route ?? 'n/a'} **HTTP:** ${errorRow.http_status ?? 'n/a'}\n**Fingerprint:** ${errorRow.fingerprint}\n\n`
@@ -297,14 +297,12 @@ export async function copilotAnswer(params: {
       answer:
         base +
         heur +
-        `**Q:** ${params.question}\n\n*(Set OPENAI_API_KEY for full LLM-powered correlation across logs and traces.)*`,
+        `**Q:** ${params.question}\n\n*(Configure an AI provider key for full LLM-powered correlation across logs and traces.)*`,
       structured,
     };
   }
 
   try {
-    const { default: OpenAI } = await import('openai');
-    const client = new OpenAI({ apiKey });
     const sys = `You are an expert SRE assistant for ChatFlow (Fastify API, Postgres, Redis, BullMQ-style queues, Playwright workers).
 Answer concisely in Markdown. Prefer: root cause hypothesis, affected components, concrete grep/search steps (trace_id, request_id), and mitigation.
 If data is missing, say what to collect next.`;
@@ -316,17 +314,16 @@ If data is missing, say what to collect next.`;
       heuristics: structured,
     };
 
-    const completion = await client.chat.completions.create({
-      model: process.env.OBSERVABILITY_COPILOT_MODEL ?? 'gpt-4o-mini',
+    const { complete } = await import('../shared/llm/gateway.js');
+    const completion = await complete({
+      purpose: 'copilot',
+      maxTokens: 1200,
       messages: [
         { role: 'system', content: sys },
         { role: 'user', content: JSON.stringify(userPayload) },
       ],
-      temperature: 0.2,
-      max_tokens: 1200,
     });
-    const text = completion.choices[0]?.message?.content ?? 'No response.';
-    return { answer: text, model: completion.model, structured };
+    return { answer: completion.text || 'No response.', model: completion.model, structured };
   } catch (e) {
     logger.error('observability:copilot-llm-failed', e);
     return {

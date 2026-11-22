@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { createClient, type RedisClientType } from 'redis';
 import { createLogger } from '../logger/index.js';
+import { MIGRATIONS } from './migrations.js';
 
 // ============================================================
 // DATABASE & CACHE LAYER
@@ -634,14 +635,45 @@ export async function seedAdmins(): Promise<void> {
   }
 }
 
+// Arbitrary constant: every service takes this advisory lock while migrating,
+// so concurrent boots (api + workers) never race on DDL.
+const MIGRATION_LOCK_ID = 7274011;
+
 export async function runMigrations(): Promise<void> {
   const pool = getPgPool();
+  const client = await pool.connect();
   try {
-    await pool.query(SCHEMA_SQL);
-    logger.info('migrations:complete');
+    await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
+    // Baseline (idempotent) — what existed before versioned migrations.
+    await client.query(SCHEMA_SQL);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        id          TEXT PRIMARY KEY,
+        applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    const { rows } = await client.query<{ id: string }>('SELECT id FROM schema_migrations');
+    const applied = new Set(rows.map((r) => r.id));
+    for (const m of MIGRATIONS) {
+      if (applied.has(m.id)) continue;
+      await client.query('BEGIN');
+      try {
+        await client.query(m.up);
+        await client.query('INSERT INTO schema_migrations (id) VALUES ($1)', [m.id]);
+        await client.query('COMMIT');
+        logger.info('migrations:applied', { id: m.id });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw new Error(`Migration ${m.id} failed: ${(err as Error).message}`);
+      }
+    }
+    logger.info('migrations:complete', { versioned: MIGRATIONS.length });
     await seedAdmins();
   } catch (err) {
     logger.error('migrations:failed', err);
     throw err;
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID]).catch(() => {});
+    client.release();
   }
 }

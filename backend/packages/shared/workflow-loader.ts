@@ -111,18 +111,32 @@ export class WorkflowLoader {
   async loadAllWorkflows(): Promise<{ loaded: number; skipped: number; files: string[] }> {
     console.log(`[WorkflowLoader] Starting workflow sync from ${this.workflowsDir}`);
     const files = await this.getAllWorkflowFiles();
-    const pool = getPgPool();
     let loaded = 0;
     let skipped = 0;
 
     for (const file of files) {
       try {
         const raw = await fs.readFile(file, 'utf8');
-        const workflow = normalizeWorkflow(JSON.parse(raw) as WorkflowDefinition);
-        const siteUuid = await this.ensureSite(workflow);
+        const workflow = await this.upsertDefinition(JSON.parse(raw));
 
-        await pool.query(
-          `INSERT INTO site_workflows (
+        loaded++;
+        console.log(`[WorkflowLoader] Loaded ${workflow.id} from ${path.relative(process.cwd(), file)}`);
+      } catch (error) {
+        skipped++;
+        console.error(`[WorkflowLoader] Failed to load ${file}:`, error);
+      }
+    }
+
+    console.log(`[WorkflowLoader] Sync complete. loaded=${loaded} skipped=${skipped}`);
+    return { loaded, skipped, files };
+  }
+
+  /** Validate + insert/update one workflow definition (file format). Returns it normalized. */
+  async upsertDefinition(def: unknown, opts: { force?: boolean } = {}): Promise<NormalizedWorkflow & { dbId?: string }> {
+    const workflow = normalizeWorkflow(def as WorkflowDefinition);
+    const siteUuid = await this.ensureSite(workflow);
+    const { rows } = await getPgPool().query(
+      `INSERT INTO site_workflows (
              workflow_key,
              site_id,
              category,
@@ -177,7 +191,11 @@ export class WorkflowLoader {
              completion_artifact = EXCLUDED.completion_artifact,
              metadata = EXCLUDED.metadata,
              status = EXCLUDED.status,
-             updated_at = NOW()`,
+             updated_at = NOW()
+           -- A workflow edited in the admin panel is owned by the DB from then on;
+           -- the file no longer overwrites it on every boot.
+           WHERE $24 OR COALESCE(site_workflows.metadata->>'editedInAdmin', 'false') <> 'true'
+           RETURNING id`,
           [
             workflow.id,
             siteUuid,
@@ -202,19 +220,10 @@ export class WorkflowLoader {
             workflow.completionArtifact ?? null,
             JSON.stringify(workflow.metadata ?? {}),
             workflow.isActive ? 'published' : 'draft',
+            opts.force === true,
           ]
         );
-
-        loaded++;
-        console.log(`[WorkflowLoader] Loaded ${workflow.id} from ${path.relative(process.cwd(), file)}`);
-      } catch (error) {
-        skipped++;
-        console.error(`[WorkflowLoader] Failed to load ${file}:`, error);
-      }
-    }
-
-    console.log(`[WorkflowLoader] Sync complete. loaded=${loaded} skipped=${skipped}`);
-    return { loaded, skipped, files };
+    return { ...workflow, dbId: rows[0]?.id };
   }
 
   private async getAllWorkflowFiles(): Promise<string[]> {
