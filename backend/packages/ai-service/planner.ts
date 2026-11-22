@@ -1,10 +1,11 @@
+import { validateAIPlan } from './plan-validation.js';
 import { createHash } from 'crypto';
 import { randomUUID } from 'crypto';
 import type {
   ActionStep, AIDecision, CachedFlow, DOMSnapshot,
   ExtractedElement, SimplifiedDOM, SiteWorkflow,
 } from '../shared/types/index.js';
-import { getPgPool, cacheGet, cacheSet, CacheKeys } from '../shared/db/index.js';
+import { getPgPool, cacheGet, cacheSet, cacheDelete, CacheKeys } from '../shared/db/index.js';
 import { complete } from '../shared/llm/gateway.js';
 
 // ============================================================
@@ -40,7 +41,7 @@ async function getCachedFlow(siteId: string, task: string): Promise<CachedFlow |
 
   // Redis fast path
   const cached = await cacheGet<CachedFlow>(cacheKey);
-  if (cached) {
+  if (cached && cached.successCount > cached.failureCount) {
     console.log(`[AI] ✅ Cache hit for task "${task.slice(0, 40)}"`);
     return cached;
   }
@@ -79,15 +80,16 @@ async function saveFlow(siteId: string, task: string, actionPlan: ActionStep[]):
 
   await pool.query(`
     INSERT INTO cached_flows (site_id, task_hash, task, action_plan, success_count)
-    VALUES ($1, $2, $3, $4, 1)
+    VALUES ($1, $2, $3, $4, 0)
     ON CONFLICT (site_id, task_hash) DO UPDATE SET
       action_plan   = EXCLUDED.action_plan,
-      success_count = cached_flows.success_count + 1,
+      success_count = 0,
+      failure_count = 0,
       last_used     = NOW()
   `, [siteId, taskHash, task, JSON.stringify(actionPlan)]);
 
   const cacheKey = CacheKeys.flowCache(siteId, taskHash);
-  await cacheSet(cacheKey, { siteId, taskHash, task, actionPlan }, 1800);
+  await cacheDelete(cacheKey);
 }
 
 async function markFlowFailure(siteId: string, task: string): Promise<void> {
@@ -200,7 +202,7 @@ async function getSiteWorkflowContext(siteId: string): Promise<string> {
        metadata
      FROM site_workflows
      WHERE site_id = $1
-       AND is_active = true
+       AND is_active = true AND status = 'published'
      ORDER BY updated_at DESC, name ASC
      LIMIT 10`,
     [siteId]
@@ -275,7 +277,7 @@ function scoreWorkflowMatch(workflow: SiteWorkflow, task: string, pageUrl?: stri
     }
   }
 
-  if (workflow.starterActionPlan?.length) score += 5;
+  if (score > 0 && workflow.starterActionPlan?.length) score += 5;
   return score;
 }
 
@@ -310,7 +312,7 @@ async function getStructuredWorkflows(siteId: string): Promise<SiteWorkflow[]> {
        updated_at as "updatedAt"
      FROM site_workflows
      WHERE site_id = $1
-       AND is_active = true
+       AND is_active = true AND status = 'published'
      ORDER BY updated_at DESC, name ASC`,
     [siteId]
   );
@@ -368,9 +370,9 @@ Given a website's interactive elements and a user task, generate a precise JSON 
 RULES:
 1. Return ONLY valid JSON — no markdown, no explanation
 2. Each step must have a unique id (use short random strings like "s1", "s2")
-3. action must be one of: navigate, click, fill, select, check, uncheck, upload, download, waitForSelector, waitForNavigation, waitForTimeout, scroll, mouseMove, humanType, screenshot, extractData, pauseForUserInput, runSubWorkflow, conditional, customJS, refresh, payment
+3. action must be one of: navigate, click, fill, select, check, uncheck, upload, download, waitForSelector, waitForNavigation, waitForTimeout, scroll, mouseMove, humanType, screenshot, extractData, pauseForUserInput, runSubWorkflow, conditional, refresh, payment
 4. timeout is in milliseconds (default 10000)
-5. retries should be 2 for critical steps, 1 for others
+5. retries must be 0: do not replay side effects after an uncertain outcome
 6. For fill actions, value is the text to type
 7. For navigate, value is the full URL
 8. target.value is a selector or lookup value, and target.type should be one of css, text, role, testid, xpath, or url
@@ -469,9 +471,9 @@ export class AIPlanner {
       const clean = raw.replace(/```json\n?|\n?```/g, '').trim();
       const data = JSON.parse(clean);
       parsed = {
-        confidence:        data.confidence ?? 0.7,
+        confidence:        typeof data.confidence === 'number' && Number.isFinite(data.confidence) ? Math.max(0, Math.min(1, data.confidence)) : 0,
         reasoning:         data.reasoning ?? '',
-        actionPlan:        data.actionPlan ?? [],
+        actionPlan:        validateAIPlan(data.actionPlan),
         estimatedDuration: data.estimatedDuration ?? 5000,
         warnings:          data.warnings ?? [],
         fallbackPlan:      data.fallbackPlan,
@@ -525,7 +527,7 @@ Return a JSON object: { "recoverable": true/false, "steps": [ActionStep, ...] }`
     try {
       const clean = raw.replace(/```json\n?|\n?```/g, '').trim();
       const data = JSON.parse(clean);
-      return data.recoverable ? data.steps : null;
+      return data.recoverable ? validateAIPlan(data.steps) : null;
     } catch {
       return null;
     }
@@ -582,8 +584,11 @@ Return ONLY a CSS selector string, no explanation. If impossible, return null.`,
     }
     if (!success) {
       await markFlowFailure(siteId, task);
+      await cacheDelete(CacheKeys.flowCache(siteId, hashTask(task)));
       return;
     }
+    await getPgPool().query('UPDATE cached_flows SET success_count = success_count + 1, last_used = NOW() WHERE site_id = $1 AND task_hash = $2', [siteId, hashTask(task)]);
+    await cacheDelete(CacheKeys.flowCache(siteId, hashTask(task)));
     await promoteCachedFlowIfEligible(siteId, task);
   }
 }

@@ -1,3 +1,4 @@
+import { resolveCandidates } from './locator-candidates.js';
 import { loadAnswerDefaults } from '../shared/answers/defaults.js';
 import { saveSubmissionSummary } from './submission-summary.js';
 import { canAutoSubmit } from '../shared/applications/review-policy.js';
@@ -335,13 +336,10 @@ function buildLocator(step: ActionStep, candidate: string, ctx: ExecutionContext
 export async function resolveLocator(step: ActionStep, ctx: ExecutionContext): Promise<Locator> {
   if (step.target?.value) {
     const candidates = [step.target.value, ...(step.target.fallbackSelectors ?? [])];
-    for (const candidate of candidates) {
-      const locator = buildLocator(step, candidate, ctx);
-      try {
-        if (await locator.first().count()) return locator;
-      } catch {}
-    }
-    return buildLocator(step, candidates[0], ctx);
+    return resolveCandidates((candidate) => buildLocator(step, candidate, ctx), candidates, {
+      timeout: Math.max(0, Math.min(step.timeout ?? 10000, 30000)),
+      visible: !['upload', 'extract', 'extractData'].includes(step.action),
+    });
   }
 
   const resolution = await ctx.selectorEngine.resolve({

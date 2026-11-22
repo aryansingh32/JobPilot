@@ -20,28 +20,14 @@ export interface DryRunResult {
   steps: DryRunStepResult[];
 }
 
-// Action types that are safe to actually perform against the real site during
-// a dry run — they resolve a selector and interact with it, exercising the
-// exact same 4-tier fallback (stored selector → text → heuristic → AI) the
-// real executor uses, so a dry run genuinely validates the recorded steps.
-const SAFE_TARGET_ACTIONS = new Set([
-  'click',
-  'fill',
-  'humanType',
-  'select',
-  'check',
-  'uncheck',
-  'hover',
-  'doubleClick',
-  'rightClick',
-  'clearField',
-  'waitForSelector',
-  'assertText',
-  'assertURL',
-  'extractData',
-  'extract',
-  'scroll',
+// Inspection only: interacting with arbitrary forms (including fill/change)
+// can submit or autosave. Resolve targets but report these steps as untested.
+const INTERACTIVE_ACTIONS = new Set([
+  'click', 'doubleClick', 'rightClick', 'fill', 'humanType', 'select',
+  'check', 'uncheck', 'hover', 'clearField', 'scroll',
 ]);
+
+const SAFE_TARGET_ACTIONS = new Set(['waitForSelector', 'assertText', 'extractData', 'extract']);
 
 // Action types that either have real-world consequences (money, credentials)
 // or need a live human/nested-step interpreter this service doesn't run —
@@ -73,7 +59,8 @@ export class DryRunService {
 
     try {
       const page = await pool.getOrCreatePage(lease.contextId);
-      await page.goto(url, { waitUntil: 'networkidle' });
+      if (!steps.length) throw new Error('Workflow has no steps to validate');
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
 
       const ctx: ExecutionContext = {
         page,
@@ -99,8 +86,8 @@ export class DryRunService {
           continue;
         }
 
-        if (step.action === 'navigate' && step.target?.value) {
-          await page.goto(step.target.value, { waitUntil: 'networkidle', timeout: step.timeout ?? 15000 });
+        if (step.action === 'navigate' && (step.value || step.target?.value)) {
+          await page.goto(step.value || step.target!.value, { waitUntil: 'domcontentloaded', timeout: step.timeout ?? 15000 });
           stepResults.push({ stepId: step.id, action: step.action, status: 'ok' });
           stepsExecuted++;
           continue;
@@ -109,6 +96,20 @@ export class DryRunService {
         if (step.action === 'waitForTimeout' || step.action === 'wait') {
           await page.waitForTimeout(Math.min(step.timeout ?? 1000, 5000));
           stepResults.push({ stepId: step.id, action: step.action, status: 'ok' });
+          stepsExecuted++;
+          continue;
+        }
+
+        if (step.action === 'assertURL') {
+          if (!step.value || !page.url().includes(step.value)) throw new Error(`assertURL failed: expected ${step.value}, got ${page.url()}`);
+          stepResults.push({ stepId: step.id, action: step.action, status: 'ok' });
+          stepsExecuted++;
+          continue;
+        }
+        if (INTERACTIVE_ACTIONS.has(step.action)) {
+          const locator = await resolveLocator(step, ctx);
+          await locator.first().waitFor({ state: 'visible', timeout: step.timeout ?? 5000 });
+          stepResults.push({ stepId: step.id, action: step.action, status: 'skipped', note: 'Target found; interaction not executed because arbitrary sites may submit or autosave. Test replay on a controlled fixture.' });
           stepsExecuted++;
           continue;
         }
@@ -129,9 +130,9 @@ export class DryRunService {
 
       const failed = stepResults.find((r) => r.status === 'failed');
       return {
-        success: !failed,
+        success: !failed && stepResults.length > 0 && stepResults.every((r) => r.status === 'ok'),
         stepsExecuted,
-        error: failed?.note,
+        error: failed?.note ?? (stepResults.some((r) => r.status === 'skipped') ? 'Incomplete validation: some steps were not executed' : undefined),
         failedStepId: failed?.stepId,
         durationMs: Date.now() - startTime,
         steps: stepResults,
@@ -154,30 +155,6 @@ export class DryRunService {
   private async performSafeAction(step: ActionStep, locator: ReturnType<ExecutionContext['page']['locator']>): Promise<void> {
     const timeout = step.timeout ?? 5000;
     switch (step.action) {
-      case 'click':
-      case 'doubleClick':
-      case 'rightClick':
-        await locator.first().click({ timeout, button: step.action === 'rightClick' ? 'right' : 'left', clickCount: step.action === 'doubleClick' ? 2 : 1 });
-        return;
-      case 'fill':
-      case 'humanType':
-        await locator.first().fill(step.value ?? '', { timeout });
-        return;
-      case 'clearField':
-        await locator.first().fill('', { timeout });
-        return;
-      case 'select':
-        await locator.first().selectOption(step.value ?? '', { timeout });
-        return;
-      case 'check':
-        await locator.first().check({ timeout });
-        return;
-      case 'uncheck':
-        await locator.first().uncheck({ timeout });
-        return;
-      case 'hover':
-        await locator.first().hover({ timeout });
-        return;
       case 'waitForSelector':
         await locator.first().waitFor({ timeout });
         return;
@@ -188,17 +165,9 @@ export class DryRunService {
         }
         return;
       }
-      case 'assertURL':
-        // URL assertions don't need the locator; handled by the caller's page.url() in a
-        // fuller implementation — treated as a pass here since reaching this step at all
-        // means navigation already succeeded.
-        return;
       case 'extractData':
       case 'extract':
-        await locator.first().textContent({ timeout }).catch(() => null);
-        return;
-      case 'scroll':
-        await locator.first().scrollIntoViewIfNeeded({ timeout });
+        await locator.first().textContent({ timeout });
         return;
       default:
         return;

@@ -1,3 +1,4 @@
+import { supportsRecordedJob } from './workflow-support.js';
 import { getPgPool, getRedisClient } from '../db/index.js';
 import { getBool, getNumber } from '../config/settings.js';
 import { profileService } from '../profile/index.js';
@@ -56,13 +57,13 @@ const toSettings = (r: Record<string, unknown> | undefined): AutoApplySettings =
 });
 
 /** Applicant systems with their own published apply workflow. */
-async function dedicatedAtsTypes(): Promise<Set<string>> {
+async function dedicatedWorkflows(): Promise<Array<{ ats: string; patterns: string[] }>> {
   const { rows } = await getPgPool().query(
-    `SELECT DISTINCT metadata->>'atsType' AS ats FROM site_workflows
+    `SELECT metadata->>'atsType' AS ats, page_url_patterns AS patterns FROM site_workflows
       WHERE status = 'published' AND is_active AND metadata->>'kind' = 'job-apply'
         AND metadata->>'atsType' IS NOT NULL AND metadata->>'atsType' <> 'generic'`,
   );
-  return new Set(rows.map((r) => r.ats as string));
+  return rows;
 }
 
 // ─── Guard rules ──────────────────────────────────────────────
@@ -186,13 +187,13 @@ export const autoApplyService = {
     const now = Math.min(leftToday, freeSlots, dailyLimitLeft, affordable ?? Number.POSITIVE_INFINITY);
 
     // SmartRecruiters puts a human check (DataDome) in front of its form: it needs a person, never the background bot.
-    const supported = new Set([...(await dedicatedAtsTypes())].filter((t) => !HUMAN_CHECK_ATS.has(t)));
+    const supported = await dedicatedWorkflows();
     const excluded = new Set(s.excludeCompanies.map((c) => c.toLowerCase()));
     const recs = await recommendJobs(userId, profile.data, 100);
     const guards = await loadGuards(userId);
     const held = { companyCooldown: 0, repeatedFailures: 0, unhealthySystem: [] as string[] };
     const candidates = recs
-      .filter((r) => r.score >= s.minScore && supported.has(r.job.ats_type) && !excluded.has((r.job.company ?? '').toLowerCase()))
+      .filter((r) => r.score >= s.minScore && !HUMAN_CHECK_ATS.has(r.job.ats_type) && supportsRecordedJob(r.job.url, r.job.ats_type, supported) && !excluded.has((r.job.company ?? '').toLowerCase()))
       .filter((r) => {
         if (guards.failedJobs.has(r.job.id)) { held.repeatedFailures++; return false; }
         if (guards.unhealthyAts.has(r.job.ats_type)) {
