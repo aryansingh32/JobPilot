@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { BrowserContext, CDPSession, Page } from 'playwright';
+import { latestFramePublisher } from './frame-throttle.js';
 import { getBrowserPool } from './browser-pool.js';
 import { getRedisClient } from '../shared/db/index.js';
 import { RECORD_FRAME_CHANNEL, RECORD_STEP_CHANNEL } from '../shared/control-bus/index.js';
@@ -58,6 +59,7 @@ interface Session {
   contextId: string;
   page: Page;
   cdp?: CDPSession;
+  stopFrameStream?: () => void;
   context: BrowserContext;
   steps: RawStep[];
   viewport: { width: number; height: number };
@@ -84,6 +86,7 @@ export class RecorderService {
     const pool = getBrowserPool();
     const lease = await pool.acquireContext(`record-${sessionId}`, 'admin');
     // Without this the pool's 5-minute idle reclaim closes the browser under a slow, human-paced recording.
+    try {
     pool.markActive(lease.contextId);
     const page = await pool.getOrCreatePage(lease.contextId);
     const viewport = page.viewportSize() ?? { width: 1280, height: 800 };
@@ -127,6 +130,11 @@ export class RecorderService {
 
     await this.startScreencast(sessionId, session);
     return { viewport };
+    } catch (error) {
+      if (this.sessions.has(sessionId)) await this.stopRecording(sessionId).catch(() => {});
+      else await pool.releaseContext(lease.contextId).catch(() => {});
+      throw error;
+    }
   }
 
   /** Per-page listeners: URL changes for the live view, JS dialogs and file downloads. */
@@ -180,16 +188,17 @@ export class RecorderService {
     const { page, viewport } = s;
     const cdp = await page.context().newCDPSession(page);
     s.cdp = cdp;
+    s.stopFrameStream?.();
+    const stream = latestFramePublisher((frame: { data: string; metadata: { deviceWidth?: number; deviceHeight?: number } }) => {
+      if (!this.sessions.has(sessionId)) return;
+      getRedisClient()
+        .then((r) => r.publish(RECORD_FRAME_CHANNEL, JSON.stringify({ sessionId, data: frame.data, width: frame.metadata.deviceWidth, height: frame.metadata.deviceHeight, url: page.url() })))
+        .catch(() => {});
+    });
+    s.stopFrameStream = stream.dispose;
     cdp.on('Page.screencastFrame', (frame: { data: string; sessionId: number; metadata: { deviceWidth?: number; deviceHeight?: number } }) => {
       cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
-      getRedisClient()
-        .then((r) =>
-          r.publish(
-            RECORD_FRAME_CHANNEL,
-            JSON.stringify({ sessionId, data: frame.data, width: frame.metadata.deviceWidth, height: frame.metadata.deviceHeight, url: page.url() }),
-          ),
-        )
-        .catch(() => {});
+      stream.push(frame);
     });
     await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: viewport.width, maxHeight: viewport.height });
     // CDP's screencast event is change-driven and does not guarantee an
@@ -274,13 +283,14 @@ export class RecorderService {
     const s = this.sessions.get(sessionId);
     if (!s) throw new Error('Session not found');
     clearInterval(s.idleTimer);
+    s.stopFrameStream?.();
     // The field still focused hasn't fired "change" yet — blur it so its value is captured.
     await s.page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur()).catch(() => {});
     await s.page.waitForTimeout(300).catch(() => {});
     this.sessions.delete(sessionId);
     await s.cdp?.send('Page.stopScreencast').catch(() => {});
     await s.cdp?.detach().catch(() => {});
-    getBrowserPool().releaseContext(s.contextId);
+    await getBrowserPool().releaseContext(s.contextId);
     return s.steps;
   }
 
@@ -304,12 +314,14 @@ export const RECORDER_SCRIPT = `(() => {
   const selectorsOf = (el) => {
     const out = [];
     const tag = el.tagName.toLowerCase();
-    const tid = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-qa');
-    if (tid) out.push('[data-testid="' + tid + '"]');
+    for (const attr of ['data-testid', 'data-test', 'data-qa', 'data-automation-id']) {
+      const value = el.getAttribute(attr);
+      if (value) out.push('[' + attr + '="' + esc(value) + '"]');
+    }
     if (el.id && !/\\d{4,}|^:r/.test(el.id)) out.push('#' + esc(el.id));
-    const name = el.getAttribute('name'); if (name) out.push(tag + '[name="' + name + '"]');
-    const aria = el.getAttribute('aria-label'); if (aria) out.push(tag + '[aria-label="' + aria + '"]');
-    const ph = el.getAttribute('placeholder'); if (ph) out.push(tag + '[placeholder="' + ph + '"]');
+    const name = el.getAttribute('name'); if (name) out.push(tag + '[name="' + esc(name) + '"]');
+    const aria = el.getAttribute('aria-label'); if (aria) out.push(tag + '[aria-label="' + esc(aria) + '"]');
+    const ph = el.getAttribute('placeholder'); if (ph) out.push(tag + '[placeholder="' + esc(ph) + '"]');
     let path = [], n = el;
     while (n && n.nodeType === 1 && path.length < 5 && n !== document.body) {
       let part = n.tagName.toLowerCase();
@@ -365,7 +377,8 @@ export const RECORDER_SCRIPT = `(() => {
   else observePage();
   const report = (s) => { try { window.reportAction(Object.assign({ timestamp: Date.now() }, s)); } catch (e) {} };
   document.addEventListener('click', (e) => {
-    const el = e.target && e.target.closest ? e.target.closest('a, button, [role="button"], [role="option"], [role="tab"], input[type="checkbox"], input[type="radio"], label, summary, li, div, span') : null;
+    const origin = e.composedPath()[0];
+    const el = origin && origin.closest ? origin.closest('a, button, [role="button"], [role="option"], [role="tab"], input[type="checkbox"], input[type="radio"], label, summary, li, div, span') : null;
     if (!el) return;
     const t = el.tagName.toLowerCase();
     if (t === 'input' && !['checkbox', 'radio', 'submit', 'button'].includes(el.type)) return;
@@ -374,19 +387,21 @@ export const RECORDER_SCRIPT = `(() => {
   // Enter submits many portal forms (login, search, track-status) without any click to record.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
-    const el = e.target; if (!el || !el.tagName || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON' || el.tagName === 'A') return;
+    const el = e.composedPath()[0]; if (!el || !el.tagName || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON' || el.tagName === 'A') return;
     if (el.tagName === 'INPUT' && ['submit', 'button', 'checkbox', 'radio'].includes(el.type)) return;
     const target = { selectors: selectorsOf(el), tag: el.tagName.toLowerCase(), label: labelOf(el), metadata: meta(el) };
     // After the field's own "change" has been reported, so the value is typed before Enter is pressed.
     setTimeout(() => report({ action: 'press', value: 'Enter', target }), 80);
   }, true);
-  document.addEventListener('change', (e) => {
-    const el = e.target; if (!el || !el.tagName) return;
+  const recordValue = (e) => {
+    const el = e.composedPath()[0]; if (!el || !el.tagName) return;
     const t = el.tagName.toLowerCase();
     if (!['input', 'textarea', 'select'].includes(t) || ['checkbox', 'radio'].includes(el.type)) return;
     const value = t === 'select' ? clean(el.options[el.selectedIndex] && el.options[el.selectedIndex].text) : el.type === 'file' ? (el.files && el.files[0] ? el.files[0].name : '') : el.value;
     report({ action: el.type === 'file' ? 'upload' : t === 'select' ? 'select' : 'fill', target: { selectors: selectorsOf(el), tag: t, label: labelOf(el), metadata: meta(el) }, value: redact(el, value) });
-  }, true);
+  };
+  document.addEventListener('input', recordValue, true);
+  document.addEventListener('change', recordValue, true);
   setInterval(() => {
     if (document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-turnstile') && !window.__jpCaptcha) { window.__jpCaptcha = true; report({ action: 'captcha' }); }
   }, 3000);

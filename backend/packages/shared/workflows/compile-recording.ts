@@ -130,18 +130,18 @@ export function compileRecordingDetailed(raw: RawStep[], opts: CompileOptions = 
     if (value && value.length > 1 && !byValue.has(value.trim().toLowerCase())) byValue.set(value.trim().toLowerCase(), key);
   }
 
-  // 1. Last value wins per field; consecutive duplicate clicks collapse.
+  // 1. Last value wins only within the same frame and tab. Clicks are distinct actions.
   const events: RawStep[] = [];
-  for (const ev of raw) {
+  for (const source of raw) {
+    const ev = { ...source };
     if (ev.action === 'input') ev.action = 'fill';
     if (!['navigate', 'click', 'fill', 'select', 'upload', 'change', 'captcha', 'press', 'dialog', 'download'].includes(ev.action)) continue;
     if (ev.action === 'change') ev.action = 'fill';
     const prev = events.at(-1);
-    if (prev && (ev.action === 'fill' || ev.action === 'select') && prev.action === ev.action && sameField(prev.target, ev.target)) {
+    if (prev && (ev.action === 'fill' || ev.action === 'select') && prev.action === ev.action && prev.frameUrl === ev.frameUrl && (prev.tab ?? 0) === (ev.tab ?? 0) && sameField(prev.target, ev.target)) {
       events[events.length - 1] = ev;
       continue;
     }
-    if (prev && ev.action === 'click' && prev.action === 'click' && sameField(prev.target, ev.target)) continue;
     // A navigate right after a click is that click's result, not a step.
     if (ev.action === 'navigate' && prev?.action === 'click' && events.length > 1) continue;
     events.push(ev);
@@ -151,18 +151,18 @@ export function compileRecordingDetailed(raw: RawStep[], opts: CompileOptions = 
     if (ev.action !== 'click') return true;
     const next = events[i + 1];
     if (!next || !['fill', 'select', 'upload'].includes(next.action)) return true;
-    const isLabelish = ev.target?.tag === 'label' || ev.target?.tag === 'div' || ev.target?.tag === 'span';
-    return !(isLabelish || sameField(ev.target, next.target));
+    return !(ev.frameUrl === next.frameUrl && (ev.tab ?? 0) === (next.tab ?? 0) && sameField(ev.target, next.target));
   });
 
   // 3. Emit executor steps.
   const steps: ActionStep[] = [];
+  let nextStepId = 1;
   let firstNavigate = true;
   let currentTab = 0;
   let curFrame: string | undefined;
   const frameMeta = () => (curFrame ? { frameUrl: curFrame } : {});
   const push = (s: Omit<ActionStep, 'id' | 'order'>) =>
-    steps.push({ id: `s${steps.length + 1}`, order: steps.length + 1, ...s, metadata: { ...s.metadata, ...frameMeta() } } as ActionStep);
+    steps.push({ id: `s${nextStepId++}`, order: steps.length + 1, ...s, metadata: { ...s.metadata, ...frameMeta() } } as ActionStep);
   for (const ev of kept) {
     curFrame = ev.frameUrl;
     const label = ev.target?.label || ev.target?.text || ev.target?.metadata?.name || 'field';
@@ -188,7 +188,7 @@ export function compileRecordingDetailed(raw: RawStep[], opts: CompileOptions = 
         push({ action: 'click', target: toTarget(ev.target), description: `Click "${(ev.target?.text || label).slice(0, 60)}"`, timeout: 15_000 });
         break;
       case 'upload':
-        push({ action: 'upload', target: toTarget(ev.target), value: '{{userFile:resume}}', description: `Upload resume into "${label}"` });
+        push({ action: 'upload', target: toTarget(ev.target), value: opts.jobApply ? '{{userFile:resume}}' : '{{userFile:document}}', description: `Upload ${opts.jobApply ? 'resume' : 'document'} into "${label}"` });
         break;
       case 'select':
       case 'fill': {
@@ -201,7 +201,7 @@ export function compileRecordingDetailed(raw: RawStep[], opts: CompileOptions = 
             contextMessage: `Please enter your ${label}`,
             timeout: 10 * 60_000,
           });
-          push({ action: 'fill', target: toTarget(ev.target), value: `{{userInput:s${steps.length}}}`, description: `Fill "${label}"`, humanType: false });
+          push({ action: 'fill', target: toTarget(ev.target), value: `{{userInput:${steps.at(-1)!.id}}}`, description: `Fill "${label}"`, humanType: false });
           break;
         }
         // Phone numbers match by digits ("98765 43210" = "+91 9876543210").
@@ -266,14 +266,19 @@ export function compileRecordingDetailed(raw: RawStep[], opts: CompileOptions = 
       }
     }
   }
+  // Remove the recorded submit before frame wrapping; otherwise an iframe
+  // wrapper hides it and replay submits before the review gate.
+  if (opts.jobApply) {
+    const last = steps.at(-1);
+    if (last?.action === 'click' && /submit|apply|send/i.test(last.description ?? '')) steps.pop();
+  }
   const framed = wrapFrames(steps);
   steps.splice(0, steps.length, ...framed);
   if (opts.jobApply) {
     // The recorded final "Submit"/"Apply" click is replaced by the standard tail:
     // fill whatever the recording didn't (résumé upload, extra questions), let the
     // user review everything, then submit with confirmation detection.
-    const last = steps.at(-1);
-    if (last?.action === 'click' && /submit|apply|send/i.test(last.description ?? '')) steps.pop();
+    curFrame = undefined;
     push({ action: 'autofillForm', description: 'Fill the rest from the profile (résumé, other questions)', retries: 0, metadata: { openApplyButton: false } });
     push({ action: 'reviewForm', description: 'Wait for the user to approve', retries: 0 });
     push({

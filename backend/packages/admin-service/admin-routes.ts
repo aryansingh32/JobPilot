@@ -591,16 +591,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/record/generalize', { preHandler: adminAuth }, async (req, reply) => {
     const body = req.body as { steps: any[]; starterActionPlan?: string };
     const { starterActionPlan } = body;
-    // Nothing a person typed reaches the model: page snapshots go, and every value is dropped
-    // except structure-only ones (navigate URLs, selects) — fills become placeholders.
-    const steps = (body.steps ?? [])
-      .filter((s) => s?.action !== 'page')
-      .map((s) => (s.action === 'fill' ? { ...s, value: '[VALUE_HIDDEN]' } : s));
     try {
-      const generalized = await generalizeSteps(steps, starterActionPlan);
-      // The model only saw placeholders: put the recorded values back (locally).
-      const original = new Map<number, any>((body.steps ?? []).map((o) => [o.timestamp, o]));
-      for (const g of generalized as any[]) if (g?.action === 'fill' && g.value === '[VALUE_HIDDEN]') g.value = original.get(g.timestamp)?.value;
+      const generalized = await generalizeSteps(body.steps ?? [], starterActionPlan);
       return reply.send({ success: true, generalized });
     } catch (e: any) {
       return reply.status(500).send({ error: e.message });

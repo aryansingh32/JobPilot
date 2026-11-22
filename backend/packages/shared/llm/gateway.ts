@@ -1,3 +1,4 @@
+import { estimateTokenCost, type TokenRates } from './pricing.js';
 import type OpenAI from 'openai';
 import { getLLMProviders, getProviderFallbackModel, isDummyLLMKey } from './index.js';
 import { getBool, getNumber, getSetting, getString, type SettingKey } from '../config/settings.js';
@@ -76,11 +77,11 @@ async function checkBudgets(userId?: string): Promise<void> {
   }
 }
 
-async function priceFor(model: string, input: number, output: number): Promise<number> {
-  const prices = ((await getSetting('llm.prices')) ?? {}) as Record<string, { input?: number; output?: number }>;
-  const p = prices[model];
-  if (!p) return 0;
-  return (input * (p.input ?? 0) + output * (p.output ?? 0)) / 1_000_000;
+async function priceFor(model: string, usage: CompleteResult['usage']): Promise<number> {
+  const prices = ((await getSetting('llm.prices')) ?? {}) as Record<string, TokenRates>;
+  const cost = estimateTokenCost(usage, prices[model]);
+  if (cost === null) logger.warn('llm:unpriced-model', { model });
+  return cost ?? 0;
 }
 
 async function record(opts: CompleteOptions, model: string, res: Partial<CompleteResult>, latencyMs: number, error?: string) {
@@ -93,7 +94,7 @@ async function record(opts: CompleteOptions, model: string, res: Partial<Complet
       [opts.purpose, model, u.prompt, u.completion, u.reasoning, u.cached, u.cacheWrite, res.costUsd ?? 0, latencyMs,
         opts.userId ?? null, opts.jobId ?? null, !error, error ?? null],
     );
-    if (!error) {
+    if (u.prompt + u.completion > 0 || res.costUsd) {
       const redis = await getRedisClient();
       const multi = redis.multi();
       if (opts.userId) {
@@ -119,6 +120,7 @@ function isRetryable(err: unknown): boolean {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
+  if (!Number.isInteger(opts.maxTokens) || opts.maxTokens <= 0) throw new Error('maxTokens must be a positive integer');
   await checkBudgets(opts.userId);
   const primary = await getString(`llm.model.${opts.purpose}` as SettingKey);
   const reasoning = opts.allowReasoning && (await getBool('llm.reasoning.enabled'));
@@ -142,7 +144,9 @@ export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
     const currentProvider = providers[providerIndex];
     const model = modelFor(providerIndex);
     for (let attempt = 0; attempt < 2; attempt++) {
+      await checkBudgets(opts.userId);
       const t0 = Date.now();
+      let accounted = false;
       try {
         const body: Record<string, unknown> = {
           model,
@@ -155,11 +159,11 @@ export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
         body.reasoning = { enabled: !!reasoning };
         const resp = (await currentProvider.client.chat.completions.create(body as never, {
           timeout: opts.timeoutMs ?? 30_000,
+          maxRetries: 0, // Gateway owns retries; avoid multiplying them inside the SDK.
         })) as OpenAI.Chat.Completions.ChatCompletion;
         const raw = resp.choices?.[0]?.message?.content;
         const text = typeof raw === 'string' ? raw : '';
         // An empty answer is no answer: the next model gets its turn.
-        if (!text.trim()) throw Object.assign(new Error(`Empty reply from ${model}`), { emptyReply: true });
         const u = resp.usage as
           | (OpenAI.Completions.CompletionUsage & {
               completion_tokens_details?: { reasoning_tokens?: number };
@@ -167,6 +171,7 @@ export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
               input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number; cache_creation_tokens?: number };
               cache_read_input_tokens?: number;
               cache_creation_input_tokens?: number;
+              cost?: number;
             })
           | undefined;
         const promptDetails = u?.prompt_tokens_details ?? u?.input_tokens_details;
@@ -181,13 +186,16 @@ export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
           text,
           model: resp.model ?? model,
           usage,
-          costUsd: await priceFor(model, usage.prompt, usage.completion),
+          costUsd: typeof u?.cost === 'number' && Number.isFinite(u.cost) && u.cost >= 0 ? u.cost : await priceFor(model, usage),
         };
-        await record(opts, model, result, Date.now() - t0);
+        const empty = !text.trim();
+        await record(opts, model, result, Date.now() - t0, empty ? 'Empty provider reply' : undefined);
+        accounted = true;
+        if (empty) throw Object.assign(new Error(`Empty reply from ${model}`), { emptyReply: true });
         return result;
       } catch (err) {
         lastErr = err;
-        await record(opts, model, {}, Date.now() - t0, (err as Error).message?.slice(0, 500));
+        if (!accounted) await record(opts, model, {}, Date.now() - t0, (err as Error).message?.slice(0, 500));
         const status = (err as { status?: number }).status;
         // Quota/rate limits and provider capacity are provider-wide: move to
         // the next provider immediately instead of retrying a spent quota.

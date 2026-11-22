@@ -457,9 +457,11 @@ const executeWorker = createWorker<ExecuteJob>('execute', async (job) => {
 
     // Record AI flow outcome — feeds the learning flywheel (zero-shot
     // history + cached-flow -> draft-workflow promotion).
-    await aiPlanner.recordOutcome(job.payload.siteId, job.payload.task, result.success, {
-      zeroShotHistoryId: job.metadata?.zeroShotHistoryId as string | undefined,
-    });
+    if (job.metadata?.planSource === 'ai-generated' || job.metadata?.planSource === 'cached-flow') {
+      await aiPlanner.recordOutcome(job.payload.siteId, job.payload.task, result.success, {
+        zeroShotHistoryId: job.metadata?.zeroShotHistoryId as string | undefined,
+      });
+    }
 
     jobCounter.inc({ type: 'execute', status: result.success ? 'success' : 'failure' });
 
